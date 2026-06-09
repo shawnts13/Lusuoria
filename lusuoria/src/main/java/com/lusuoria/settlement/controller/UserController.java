@@ -54,7 +54,6 @@ public class UserController {
         user.setIsDeleted(false);
         user.setUsername(req.getUsername());
         user.setPassword(passwordEncoder.encode(req.getPassword()));
-        user.setRealName(req.getRealName());
         user.setRole(req.getRole());
         user.setEnabled(req.getEnabled() != null ? req.getEnabled() : true);
 
@@ -82,7 +81,6 @@ public class UserController {
         }
 
         user.setUsername(req.getUsername());
-        user.setRealName(req.getRealName());
         user.setRole(req.getRole());
         if (req.getEnabled() != null) user.setEnabled(req.getEnabled());
 
@@ -163,7 +161,11 @@ public class UserController {
         UserResponse r = new UserResponse();
         r.setId(u.getId());
         r.setUsername(u.getUsername());
-        r.setRealName(u.getRealName());
+        // 显示名称：优先用关联员工姓名，没有则用用户名
+        String displayName = (u.getEmployee() != null && u.getEmployee().getName() != null)
+                ? u.getEmployee().getName()
+                : u.getUsername();
+        r.setRealName(displayName);
         r.setRole(u.getRole());
         r.setRoleLabel(roleLabel(u.getRole()));
         r.setEnabled(u.getEnabled());

@@ -19,14 +19,12 @@ public class SysUser extends BaseEntity {
     @Column(name = "password", nullable = false)
     private String password;
 
-    @Column(name = "real_name", length = 50)
-    private String realName;
-
     /**
      * 角色：
-     *   ADMIN   - 管理员，可执行老板审核，可管理账号
-     *   STAFF   - 普通员工，可进行除老板审核外的所有操作
-     *   AUDITOR - 审计/会计，只读 + 导出
+     *   ADMIN   - 老板/管理员：全部权限 + 老板审核 + 账号管理
+     *   STAFF   - 普通员工：可写操作，看不到收入/利润/提成
+     *   AUDITOR - 审计/会计：只读 + 导出，可看全部财务数据
+     *   GUEST   - 访客：只读，看不到收入/利润/提成
      */
     @Column(name = "role", nullable = false, length = 20)
     private String role;
@@ -36,7 +34,7 @@ public class SysUser extends BaseEntity {
 
     /**
      * 关联员工记录（可选）
-     * 用于将系统账号与员工提成记录绑定
+     * 关联后右上角显示名称将使用员工姓名，否则显示用户名
      */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "employee_id")

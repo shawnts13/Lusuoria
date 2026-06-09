@@ -57,6 +57,7 @@ public interface ProjectOrderRepository extends JpaRepository<ProjectOrder, Long
            "AND (:projectType IS NULL OR p.projectType = :projectType) " +
            "AND (:clientStatus IS NULL OR p.clientStatus = :clientStatus) " +
            "AND (:internalStatus IS NULL OR p.internalStatus = :internalStatus) " +
+           "AND (:influencerId IS NULL OR p.influencer.id = :influencerId) " +
            "AND (:keyword IS NULL OR p.internalProjectNo LIKE %:keyword% OR p.clientOrderNo LIKE %:keyword%) " +
            "ORDER BY p.createdAt DESC")
     Page<ProjectOrder> findByFilters(
@@ -65,6 +66,7 @@ public interface ProjectOrderRepository extends JpaRepository<ProjectOrder, Long
             @Param("projectType") ProjectType projectType,
             @Param("clientStatus") ClientStatus clientStatus,
             @Param("internalStatus") InternalSettlementStatus internalStatus,
+            @Param("influencerId") Long influencerId,
             @Param("keyword") String keyword,
             Pageable pageable);
 

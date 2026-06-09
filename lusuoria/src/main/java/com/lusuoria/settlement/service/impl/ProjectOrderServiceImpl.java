@@ -119,9 +119,10 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
     @Transactional(readOnly = true)
     public Page<ProjectOrderResponse> list(Long brandId, String projectMonth, ProjectType projectType,
                                            ClientStatus clientStatus, InternalSettlementStatus internalStatus,
-                                           String keyword, Pageable pageable) {
+                                           Long influencerId, String keyword, Pageable pageable) {
         return projectOrderRepo
-                .findByFilters(brandId, projectMonth, projectType, clientStatus, internalStatus, keyword, pageable)
+                .findByFilters(brandId, projectMonth, projectType, clientStatus, internalStatus,
+                        influencerId, keyword, pageable)
                 .map(this::toResponse);
     }
 

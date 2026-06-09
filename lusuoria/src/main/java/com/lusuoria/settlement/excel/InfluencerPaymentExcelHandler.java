@@ -55,7 +55,7 @@ public class InfluencerPaymentExcelHandler {
         cols.add(new String[]{"结款单号",     "0"});
         cols.add(new String[]{"结算月份",     "0"});
         cols.add(new String[]{"红人团队",     "0"});
-        cols.add(new String[]{"红人账号",     "0"});
+        cols.add(new String[]{"红人ID",     "0"});
         cols.add(new String[]{"关联项目编号", "0"});
         cols.add(new String[]{"合作内容",     "0"});
         cols.add(new String[]{"合作数量",     "0"});
@@ -127,7 +127,7 @@ public class InfluencerPaymentExcelHandler {
 
         List<String[]> cols = new ArrayList<String[]>();
         cols.add(new String[]{"结算月份(必填,如202604)", "0"});
-        cols.add(new String[]{"红人账号(必填)",          "0"});
+        cols.add(new String[]{"红人ID(必填)",          "0"});
         cols.add(new String[]{"合作内容",                "0"});
         cols.add(new String[]{"合作数量",                "0"});
         cols.add(new String[]{"红人单价",                "0"});
@@ -205,18 +205,18 @@ public class InfluencerPaymentExcelHandler {
             if (row == null || isRowEmpty(row)) continue;
             try {
                 String settlementMonth = getStr(row, colMap, "结算月份(必填,如202604)");
-                String accountName     = getStr(row, colMap, "红人账号(必填)");
+                String accountName     = getStr(row, colMap, "红人ID(必填)");
                 String cooperationContent = getStr(row, colMap, "合作内容");
 
                 if (settlementMonth == null || settlementMonth.isEmpty()) {
                     errors.add("第" + (i + 1) + "行：结算月份不能为空"); continue;
                 }
                 if (accountName == null || accountName.isEmpty()) {
-                    errors.add("第" + (i + 1) + "行：红人账号不能为空"); continue;
+                    errors.add("第" + (i + 1) + "行：红人ID不能为空"); continue;
                 }
                 Influencer influencer = influencerMap.get(accountName.trim());
                 if (influencer == null) {
-                    errors.add("第" + (i + 1) + "行：红人账号 [" + accountName + "] 不存在"); continue;
+                    errors.add("第" + (i + 1) + "行：红人ID [" + accountName + "] 不存在"); continue;
                 }
 
                 // 去重：结算月份 + 红人 + 合作内容
@@ -302,7 +302,7 @@ public class InfluencerPaymentExcelHandler {
     private String getPaymentExampleValue(String col) {
         Map<String, String> m = new HashMap<String, String>();
         m.put("结算月份(必填,如202604)", "202604");
-        m.put("红人账号(必填)",          "bigdogtech");
+        m.put("红人ID(必填)",          "bigdogtech");
         m.put("合作内容",                "视频拍摄");
         m.put("合作数量",                "5");
         m.put("红人单价",                "130");

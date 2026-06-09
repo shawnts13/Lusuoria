@@ -22,7 +22,7 @@ public interface ProjectOrderService {
 
     Page<ProjectOrderResponse> list(Long brandId, String projectMonth, ProjectType projectType,
                                     ClientStatus clientStatus, InternalSettlementStatus internalStatus,
-                                    String keyword, Pageable pageable);
+                                    Long influencerId, String keyword, Pageable pageable);
 
     void delete(Long id);
 

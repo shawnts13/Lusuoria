@@ -3,11 +3,15 @@ package com.lusuoria.settlement.controller;
 import com.lusuoria.settlement.dto.request.InfluencerRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.Influencer;
+import com.lusuoria.settlement.enums.InfluencerContactStatus;
 import com.lusuoria.settlement.enums.ProjectType;
 import com.lusuoria.settlement.excel.InfluencerExcelHandler;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -24,35 +28,67 @@ public class InfluencerController {
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private InfluencerExcelHandler excelHandler;
 
+    /** 分页查询（支持红人团队、平台筛选） */
     @GetMapping
-    public ApiResponse<List<Influencer>> list(@RequestParam(required = false) ProjectType type) {
-        if (type != null) return ApiResponse.success(influencerRepo.findByInfluencerTypeAndIsDeletedFalse(type));
-        return ApiResponse.success(influencerRepo.findByIsDeletedFalseOrderByTeamNameAscAccountNameAsc());
+    public ApiResponse<Page<Influencer>> list(
+            @RequestParam(required = false) ProjectType influencerType,
+            @RequestParam(required = false) String platform,
+            @RequestParam(required = false) String countryMarket,
+            @RequestParam(required = false) String teamName,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "0")  int page,
+            @RequestParam(defaultValue = "20") int size) {
+        PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.ASC, "accountName"));
+        Page<Influencer> result = influencerRepo.findByFilters(
+                influencerType, platform, countryMarket, teamName, keyword, pageable);
+        // 非敏感角色脱敏敏感字段
+        if (!RoleUtil.canViewSensitiveFields()) {
+            result.getContent().forEach(inf -> {
+                inf.setInfluencerCost(null);
+                inf.setClientPrice(null);
+            });
+        }
+        return ApiResponse.success(result);
+    }
+
+    /** 简单列表（供其他模块下拉选择用，不分页） */
+    @GetMapping("/simple")
+    public ApiResponse<List<Influencer>> simpleList() {
+        List<Influencer> list = influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc();
+        if (!RoleUtil.canViewSensitiveFields()) {
+            list.forEach(inf -> { inf.setInfluencerCost(null); inf.setClientPrice(null); });
+        }
+        return ApiResponse.success(list);
     }
 
     @GetMapping("/{id}")
     public ApiResponse<Influencer> getById(@PathVariable Long id) {
-        return ApiResponse.success(influencerRepo.findByIdAndIsDeletedFalse(id)
-                .orElseThrow(() -> new RuntimeException("红人不存在")));
+        Influencer inf = influencerRepo.findByIdAndIsDeletedFalse(id)
+                .orElseThrow(() -> new RuntimeException("红人不存在"));
+        if (!RoleUtil.canViewSensitiveFields()) {
+            inf.setInfluencerCost(null);
+            inf.setClientPrice(null);
+        }
+        return ApiResponse.success(inf);
     }
 
-    /** 导出 - 所有角色，收款信息按角色脱敏 */
+    /** 导出 */
     @GetMapping("/export/excel")
-    public void exportExcel(@RequestParam(required = false) ProjectType type,
+    public void exportExcel(@RequestParam(required = false) ProjectType influencerType,
                             HttpServletResponse response) throws IOException {
-        List<Influencer> list = type != null
-                ? influencerRepo.findByInfluencerTypeAndIsDeletedFalse(type)
-                : influencerRepo.findByIsDeletedFalseOrderByTeamNameAscAccountNameAsc();
+        List<Influencer> list = influencerType != null
+                ? influencerRepo.findByInfluencerTypeAndIsDeletedFalse(influencerType)
+                : influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc();
         excelHandler.export(list, RoleUtil.canViewSensitiveFields(), response);
     }
 
-    /** 下载模板 - 所有角色，按权限决定是否含收款信息列 */
+    /** 下载导入模板 */
     @GetMapping("/import/template")
     public void downloadTemplate(HttpServletResponse response) throws IOException {
         excelHandler.downloadTemplate(RoleUtil.canViewSensitiveFields(), response);
     }
 
-    /** 导入 - ADMIN 和 STAFF */
+    /** 导入 */
     @PostMapping("/import/excel")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<List<String>> importExcel(@RequestParam("file") MultipartFile file) throws IOException {
@@ -60,9 +96,10 @@ public class InfluencerController {
         String fn = file.getOriginalFilename();
         if (fn == null || (!fn.endsWith(".xlsx") && !fn.endsWith(".xls")))
             return ApiResponse.error(400, "只支持 .xlsx 或 .xls 格式");
-        return ApiResponse.success(excelHandler.importData(file));
+        return ApiResponse.success(excelHandler.importData(file, RoleUtil.canViewSensitiveFields()));
     }
 
+    /** 新建/更新 */
     @PostMapping
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Influencer> save(@Valid @RequestBody InfluencerRequest req) {
@@ -75,13 +112,26 @@ public class InfluencerController {
             influencer.setIsDeleted(false);
         }
         influencer.setInfluencerType(req.getInfluencerType());
-        influencer.setTeamName(req.getTeamName());
+        influencer.setTeamNames(listToStr(req.getTeamNames()));
         influencer.setAccountName(req.getAccountName());
         influencer.setCountryMarket(req.getCountryMarket());
         influencer.setPlatform(req.getPlatform());
-        influencer.setCooperationMode(req.getCooperationMode());
-        influencer.setPaymentInfo(req.getPaymentInfo());
+        influencer.setDomain(req.getDomain());
+        influencer.setFollowerCount(req.getFollowerCount());
+        influencer.setLinks(listToStr(req.getLinks()));
+        influencer.setCasesLinks(listToStr(req.getCasesLinks()));
+        influencer.setEmail(req.getEmail());
+        influencer.setContactStatus(req.getContactStatus());
+        influencer.setPaymentCycle(req.getPaymentCycle());
+        influencer.setFollowerPerson(req.getFollowerPerson());
         influencer.setNotes(req.getNotes());
+
+        // 敏感字段只有有权限的角色才能修改
+        if (RoleUtil.canViewSensitiveFields()) {
+            influencer.setInfluencerCost(req.getInfluencerCost());
+            influencer.setClientPrice(req.getClientPrice());
+        }
+
         return ApiResponse.success(influencerRepo.save(influencer));
     }
 
@@ -93,5 +143,18 @@ public class InfluencerController {
         inf.setIsDeleted(true);
         influencerRepo.save(inf);
         return ApiResponse.success();
+    }
+
+    // 列表转逗号分隔字符串
+    private String listToStr(List<String> list) {
+        if (list == null || list.isEmpty()) return null;
+        StringBuilder sb = new StringBuilder();
+        for (String s : list) {
+            if (s != null && !s.trim().isEmpty()) {
+                if (sb.length() > 0) sb.append(",");
+                sb.append(s.trim());
+            }
+        }
+        return sb.length() > 0 ? sb.toString() : null;
     }
 }

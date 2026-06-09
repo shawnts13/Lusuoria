@@ -10,6 +10,7 @@ import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import javax.validation.Valid;
@@ -26,6 +27,7 @@ public class AuthController {
     @Autowired private PasswordEncoder passwordEncoder;
 
     @PostMapping("/login")
+    @Transactional(readOnly = true)
     public ApiResponse<Map<String, Object>> login(@Valid @RequestBody LoginRequest req) {
         Authentication auth = authManager.authenticate(
                 new UsernamePasswordAuthenticationToken(req.getUsername(), req.getPassword()));
@@ -35,11 +37,16 @@ public class AuthController {
 
         String token = jwtUtil.generateToken(user.getUsername(), user.getRole());
 
+        // 显示名称优先用关联员工的姓名，没有关联员工则用用户名
+        String displayName = (user.getEmployee() != null && user.getEmployee().getName() != null)
+                ? user.getEmployee().getName()
+                : user.getUsername();
+
         Map<String, Object> result = new HashMap<String, Object>();
-        result.put("token", token);
-        result.put("username", user.getUsername());
-        result.put("realName", user.getRealName());
-        result.put("role", user.getRole());
+        result.put("token",       token);
+        result.put("username",    user.getUsername());
+        result.put("displayName", displayName);
+        result.put("role",        user.getRole());
 
         return ApiResponse.success(result);
     }
