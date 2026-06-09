@@ -1,5 +1,5 @@
 server:
-  port: ${PORT:8080}
+  port: ${PORT:18080}
 
 spring:
   application:
@@ -8,7 +8,7 @@ spring:
   datasource:
     url: jdbc:postgresql://aws-1-ap-south-1.pooler.supabase.com:5432/postgres
     username: postgres.howghxmumvgririurroc
-    password: 'hx19970704QQ!!'
+    password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 3          # Render 免费版 512MB 内存，严格限制连接数
