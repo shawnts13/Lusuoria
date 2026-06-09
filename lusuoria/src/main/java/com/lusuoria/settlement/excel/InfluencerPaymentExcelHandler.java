@@ -90,7 +90,7 @@ public class InfluencerPaymentExcelHandler {
 
             setCellStr(row, c++, p.getPaymentNo(), nor);
             setCellStr(row, c++, p.getSettlementMonth(), nor);
-            setCellStr(row, c++, p.getInfluencer() != null ? p.getInfluencer().getTeamName()    : "", nor);
+            setCellStr(row, c++, p.getInfluencer() != null ? p.getInfluencer().getTeamNames()   : "", nor);
             setCellStr(row, c++, p.getInfluencer() != null ? p.getInfluencer().getAccountName() : "", nor);
             setCellStr(row, c++, p.getProjectOrder() != null ? p.getProjectOrder().getInternalProjectNo() : "", nor);
             setCellStr(row, c++, p.getCooperationContent(), nor);
@@ -194,7 +194,7 @@ public class InfluencerPaymentExcelHandler {
 
         // 构建账号 -> 红人 映射
         Map<String, Influencer> influencerMap = new HashMap<String, Influencer>();
-        influencerRepo.findByIsDeletedFalseOrderByTeamNameAscAccountNameAsc()
+        influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc()
                 .forEach(inf -> influencerMap.put(inf.getAccountName().trim(), inf));
 
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");

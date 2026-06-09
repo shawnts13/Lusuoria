@@ -23,7 +23,7 @@ public interface InfluencerPaymentRepository extends JpaRepository<InfluencerPay
            "AND (:settlementMonth IS NULL OR ip.settlementMonth = :settlementMonth) " +
            "AND (:influencerId IS NULL OR ip.influencer.id = :influencerId) " +
            "AND (:paymentStatus IS NULL OR ip.paymentStatus = :paymentStatus) " +
-           "ORDER BY ip.settlementMonth DESC, ip.influencer.teamName ASC")
+           "ORDER BY ip.settlementMonth DESC, ip.influencer.accountName ASC")
     Page<InfluencerPayment> findByFilters(
             @Param("settlementMonth") String settlementMonth,
             @Param("influencerId") Long influencerId,

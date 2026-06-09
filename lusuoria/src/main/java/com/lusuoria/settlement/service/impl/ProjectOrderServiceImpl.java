@@ -265,7 +265,7 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         }
         if (o.getInfluencer() != null) {
             r.setInfluencerId(o.getInfluencer().getId());
-            r.setInfluencerTeam(o.getInfluencer().getTeamName());
+            r.setInfluencerTeam(o.getInfluencer().getTeamNames());
             r.setInfluencerAccount(o.getInfluencer().getAccountName());
         }
         if (o.getProjectManager() != null) {
