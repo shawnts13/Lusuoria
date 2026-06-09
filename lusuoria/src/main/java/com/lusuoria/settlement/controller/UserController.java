@@ -27,9 +27,6 @@ public class UserController {
     @Autowired private EmployeeRepository employeeRepo;
     @Autowired private PasswordEncoder passwordEncoder;
 
-    // ===== 仅 ADMIN 可访问 =====
-
-    /** 获取所有用户列表 */
     @GetMapping
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<List<UserResponse>> list() {
@@ -39,7 +36,6 @@ public class UserController {
         return ApiResponse.success(users.stream().map(this::toResponse).collect(Collectors.toList()));
     }
 
-    /** 创建新账号 */
     @PostMapping
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<UserResponse> create(@Valid @RequestBody UserCreateRequest req) {
@@ -66,7 +62,6 @@ public class UserController {
         return ApiResponse.success(toResponse(userRepo.save(user)));
     }
 
-    /** 更新账号信息（不含密码） */
     @PutMapping("/{id}")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<UserResponse> update(@PathVariable Long id,
@@ -74,7 +69,6 @@ public class UserController {
         SysUser user = userRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("用户不存在"));
 
-        // 如果改了用户名，检查是否重复
         if (!user.getUsername().equals(req.getUsername())
                 && userRepo.existsByUsernameAndIsDeletedFalse(req.getUsername())) {
             throw new RuntimeException("用户名已存在：" + req.getUsername());
@@ -84,7 +78,6 @@ public class UserController {
         user.setRole(req.getRole());
         if (req.getEnabled() != null) user.setEnabled(req.getEnabled());
 
-        // 如果传了新密码则重置
         if (req.getPassword() != null && !req.getPassword().isEmpty()) {
             user.setPassword(passwordEncoder.encode(req.getPassword()));
         }
@@ -100,14 +93,12 @@ public class UserController {
         return ApiResponse.success(toResponse(userRepo.save(user)));
     }
 
-    /** 启用/禁用账号 */
     @PatchMapping("/{id}/toggle")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<UserResponse> toggle(@PathVariable Long id) {
         SysUser user = userRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("用户不存在"));
 
-        // 不能禁用自己
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth.getName().equals(user.getUsername())) {
             throw new RuntimeException("不能禁用自己的账号");
@@ -117,7 +108,6 @@ public class UserController {
         return ApiResponse.success(toResponse(userRepo.save(user)));
     }
 
-    /** 删除账号 */
     @DeleteMapping("/{id}")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<Void> delete(@PathVariable Long id) {
@@ -134,9 +124,6 @@ public class UserController {
         return ApiResponse.success();
     }
 
-    // ===== 所有登录用户可访问 =====
-
-    /** 修改自己的密码 */
     @PostMapping("/change-password")
     public ApiResponse<Void> changePassword(@Valid @RequestBody ChangePasswordRequest req) {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
@@ -147,7 +134,6 @@ public class UserController {
         return ApiResponse.success();
     }
 
-    /** 获取当前登录用户信息 */
     @GetMapping("/me")
     public ApiResponse<UserResponse> me() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
@@ -165,7 +151,7 @@ public class UserController {
         String displayName = (u.getEmployee() != null && u.getEmployee().getName() != null)
                 ? u.getEmployee().getName()
                 : u.getUsername();
-        r.setRealName(displayName);
+        r.setDisplayName(displayName);
         r.setRole(u.getRole());
         r.setRoleLabel(roleLabel(u.getRole()));
         r.setEnabled(u.getEnabled());
@@ -182,6 +168,7 @@ public class UserController {
         if ("ADMIN".equals(role))   return "管理员";
         if ("STAFF".equals(role))   return "普通员工";
         if ("AUDITOR".equals(role)) return "审计/会计";
+        if ("GUEST".equals(role))   return "访客";
         return role;
     }
 }
