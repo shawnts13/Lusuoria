@@ -3,11 +3,15 @@ package com.lusuoria.settlement.util;
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.Date;
+import java.util.List;
 
 @Component
 public class JwtUtil {
@@ -40,6 +44,18 @@ public class JwtUtil {
                 .setExpiration(expireDate)
                 .signWith(getSigningKey(), SignatureAlgorithm.HS256)
                 .compact();
+    }
+
+    /**
+     * 从 Token 中获取 Spring Security 格式的权限列表
+     * 注意：必须加 "ROLE_" 前缀，@PreAuthorize("hasRole('ADMIN')") 才能正确匹配
+     */
+    public List<GrantedAuthority> getAuthoritiesFromToken(String token) {
+        String role = getRoleFromToken(token);
+        if (role != null && !role.isEmpty()) {
+            return Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + role));
+        }
+        return Collections.emptyList();
     }
 
     public String getUsernameFromToken(String token) {

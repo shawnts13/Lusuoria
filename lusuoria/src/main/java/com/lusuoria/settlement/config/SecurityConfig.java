@@ -13,11 +13,8 @@ import org.springframework.security.config.annotation.method.configuration.Enabl
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
-import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.core.userdetails.UserDetails;
-import org.springframework.security.core.userdetails.UserDetailsService;
-import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
@@ -28,24 +25,23 @@ import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-import javax.servlet.FilterChain;
+import javax.servlet.FilterChain; // 2.7.x 依旧使用 javax
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.Arrays;
-import java.util.Collections;
+import java.util.List;
 
 @Configuration
 @EnableWebSecurity
-@EnableGlobalMethodSecurity(prePostEnabled = true)   // 启用 @PreAuthorize
+@EnableGlobalMethodSecurity(prePostEnabled = true) // 2.7.x 保持使用该注解
 public class SecurityConfig {
 
     @Value("${cors.allowed-origins}")
     private String allowedOrigins;
 
     @Autowired private JwtUtil jwtUtil;
-    @Autowired private UserDetailsService userDetailsService;
 
     @Bean
     public PasswordEncoder passwordEncoder() {
@@ -59,21 +55,18 @@ public class SecurityConfig {
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        // 针对 2.7.x 优化的配置写法，避免过多的 .and() 嵌套
         http
-            .cors().configurationSource(corsConfigurationSource())
-            .and()
-            .csrf().disable()
-            .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
-            .and()
-            .authorizeRequests()
-                .antMatchers("/api/auth/**").permitAll()
-                .antMatchers("/actuator/health").permitAll()
+                .cors().configurationSource(corsConfigurationSource()).and()
+                .csrf().disable()
+                .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS).and()
+                .authorizeRequests()
+                .antMatchers("/api/auth/**", "/actuator/health").permitAll() // 合并放行路径
                 .antMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                // AUDITOR 只能 GET（读取）和导出（GET /export/excel）
-                // 具体写操作限制在 Controller 层用 @PreAuthorize 控制
-                .anyRequest().authenticated()
-            .and()
-            .addFilterBefore(jwtAuthFilter(), UsernamePasswordAuthenticationFilter.class);
+                .anyRequest().authenticated();
+
+        // 将 JWT 过滤器置于用户名密码认证过滤器之前
+        http.addFilterBefore(jwtAuthFilter(), UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
     }
@@ -84,7 +77,8 @@ public class SecurityConfig {
         String[] origins = allowedOrigins.split(",");
         config.setAllowedOrigins(Arrays.asList(origins));
         config.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
-        config.setAllowedHeaders(Arrays.asList("*"));
+        // 显式指定 Header，防止使用 "*" 配合 AllowCredentials(true) 在某些浏览器/容器中报错
+        config.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type", "X-Requested-With", "Accept"));
         config.setAllowCredentials(true);
         config.setMaxAge(3600L);
 
@@ -105,15 +99,19 @@ public class SecurityConfig {
                     String token = header.substring(7);
                     if (jwtUtil.validateToken(token)) {
                         String username = jwtUtil.getUsernameFromToken(token);
-                        try {
-                            UserDetails userDetails = userDetailsService.loadUserByUsername(username);
-                            UsernamePasswordAuthenticationToken auth =
-                                    new UsernamePasswordAuthenticationToken(
-                                            userDetails, null, userDetails.getAuthorities());
-                            SecurityContextHolder.getContext().setAuthentication(auth);
-                        } catch (UsernameNotFoundException ignored) {}
+
+                        // 【核心优化】：不要在这里调用 userDetailsService.loadUserByUsername(username) 查库！
+                        // 应当直接从 Token 的 Claims 中解析出权限列表
+                        List<GrantedAuthority> authorities = jwtUtil.getAuthoritiesFromToken(token);
+
+                        // 直接构建认证令牌，放入安全上下文中
+                        UsernamePasswordAuthenticationToken auth =
+                                new UsernamePasswordAuthenticationToken(username, null, authorities);
+
+                        SecurityContextHolder.getContext().setAuthentication(auth);
                     }
                 }
+                // 无论 Token 是否有效，都放行给后面的过滤器（如果没有凭证，后面的 authorizeRequests 会拦住并返回 403）
                 filterChain.doFilter(request, response);
             }
         };
