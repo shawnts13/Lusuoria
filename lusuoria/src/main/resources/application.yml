@@ -6,7 +6,7 @@ spring:
     name: lusuoria-settlement
 
   datasource:
-    url: jdbc:postgresql://aws-1-ap-south-1.pooler.supabase.com:5432/postgres?sslmode=require
+    url: jdbc:postgresql://aws-1-ap-south-1.pooler.supabase.com:5432/postgres?sslmode=disable
     username: postgres.howghxmumvgririurroc
     password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
