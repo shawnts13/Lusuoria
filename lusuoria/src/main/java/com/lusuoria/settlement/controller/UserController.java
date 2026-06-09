@@ -167,7 +167,7 @@ public class UserController {
     private String roleLabel(String role) {
         if ("ADMIN".equals(role))   return "管理员";
         if ("STAFF".equals(role))   return "普通员工";
-        if ("AUDITOR".equals(role)) return "审计/会计";
+        if ("AUDITOR".equals(role)) return "财务";
         if ("GUEST".equals(role))   return "访客";
         return role;
     }
