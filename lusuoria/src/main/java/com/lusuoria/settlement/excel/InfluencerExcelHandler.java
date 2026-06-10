@@ -265,6 +265,28 @@ public class InfluencerExcelHandler {
             if (cell != null) colMap.put(cell.getStringCellValue().trim(), c);
         }
 
+        // ---- 预检：找出 Excel 里重复的红人ID，提示用户 ----
+        Map<String, List<Integer>> accountRowMap = new LinkedHashMap<String, List<Integer>>();
+        for (int i = 1; i <= totalRows; i++) {
+            Row row = sheet.getRow(i);
+            if (row == null || isRowEmpty(row)) continue;
+            String accountName = getStr(row, colMap, "红人ID(必填)");
+            if (accountName == null || accountName.isEmpty())
+                accountName = getStr(row, colMap, "红人ID");
+            if (accountName != null && !accountName.isEmpty()) {
+                accountRowMap.computeIfAbsent(accountName.trim(),
+                        k -> new java.util.ArrayList<Integer>()).add(i + 1);
+            }
+        }
+        Set<String> duplicateAccounts = new HashSet<String>();
+        for (Map.Entry<String, List<Integer>> entry : accountRowMap.entrySet()) {
+            if (entry.getValue().size() > 1) {
+                duplicateAccounts.add(entry.getKey());
+                errors.add("红人ID [" + entry.getKey() + "] 在 Excel 中重复出现，位于第 "
+                        + entry.getValue().toString() + " 行，请删除重复行后重新导入，本次已跳过重复行");
+            }
+        }
+
         int successCount = 0, updateCount = 0;
 
         // ---- 导入前预加载，避免循环内反复查库 ----
@@ -304,6 +326,10 @@ public class InfluencerExcelHandler {
 
                 // 查预加载的 Map，不查库
                 Influencer inf = existingMap.get(accountName.trim());
+
+                // 重复行：所有出现过的都跳过，让用户自行决定保留哪行
+                if (duplicateAccounts.contains(accountName.trim())) continue;
+
                 boolean isNew = (inf == null);
                 if (isNew) { inf = new Influencer(); inf.setIsDeleted(false); }
 
@@ -421,6 +447,7 @@ public class InfluencerExcelHandler {
 
                 if (isNew) {
                     toSave.add(inf);
+                    existingMap.put(accountName.trim(), inf);  // 防止同一 Excel 里重复 accountName 被误判
                     successCount++;
                 } else {
                     Influencer original = existingMap.get(accountName.trim());
@@ -556,7 +583,7 @@ public class InfluencerExcelHandler {
         return !eq(original.getInfluencerType() != null ? original.getInfluencerType().name() : null,
                    updated.getInfluencerType()   != null ? updated.getInfluencerType().name()   : null)
             || !eq(original.getTeamName(),       updated.getTeamName())
-            || !eqLong(idOf(original.getBrand()),    idOf(updated.getBrand()))
+            || !eqLong(original.getBrandId(),         updated.getBrandId())
             || !eq(original.getCountryMarket(),  updated.getCountryMarket())
             || !eq(original.getPlatform(),       updated.getPlatform())
             || !eq(original.getDomains(),        updated.getDomains())
@@ -585,13 +612,6 @@ public class InfluencerExcelHandler {
         if (a == null && b == null) return true;
         if (a == null || b == null) return false;
         return a.equals(b);
-    }
-
-    private Long idOf(Object entity) {
-        if (entity == null) return null;
-        if (entity instanceof com.lusuoria.settlement.entity.Brand)
-            return ((com.lusuoria.settlement.entity.Brand) entity).getId();
-        return null;
     }
 
     /** Excel 单元格有实际内容（非null、非空、非纯空格） */
