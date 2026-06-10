@@ -22,9 +22,15 @@ public class InfluencerPayment extends BaseEntity {
     @Column(name = "settlement_month", nullable = false, length = 6)
     private String settlementMonth;
 
+    @Column(name = "influencer_id", insertable = false, updatable = false)
+    private Long influencerId;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "influencer_id", nullable = false)
     private Influencer influencer;
+
+    @Column(name = "project_order_id", insertable = false, updatable = false)
+    private Long projectOrderId;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_order_id")

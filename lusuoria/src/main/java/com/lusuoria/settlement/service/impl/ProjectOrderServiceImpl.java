@@ -1,5 +1,7 @@
 package com.lusuoria.settlement.service.impl;
 
+import com.lusuoria.settlement.config.BrandCache;
+import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.dto.request.ProjectOrderRequest;
 import com.lusuoria.settlement.dto.response.MonthlySummaryResponse;
 import com.lusuoria.settlement.dto.response.ProjectOrderResponse;
@@ -34,6 +36,8 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
     @Autowired private BrandRepository brandRepo;
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private EmployeeRepository employeeRepo;
+    @Autowired private BrandCache brandCache;
+    @Autowired private EmployeeCache employeeCache;
     @Autowired private ProfitCalculator profitCalculator;
     @Autowired private ProjectNoGenerator projectNoGenerator;
     @Autowired private ProjectOrderExcelHandler excelHandler;
@@ -171,13 +175,14 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
                 totalNet        = totalNet.add(safe(o.getCompanyNetProfit()));
             }
 
-            if (canView && o.getProjectManager() != null) {
-                Long mid = o.getProjectManager().getId();
+            if (canView && o.getProjectManagerId() != null) {
+                Long mid = o.getProjectManagerId();
+                Employee mgr = employeeCache.findById(mid);
                 MonthlySummaryResponse.ManagerCommissionItem item = managerMap.get(mid);
                 if (item == null) {
                     item = new MonthlySummaryResponse.ManagerCommissionItem();
                     item.setManagerId(mid);
-                    item.setManagerName(o.getProjectManager().getName());
+                    item.setManagerName(mgr != null ? mgr.getName() : "未知");
                     item.setProjectCount(0);
                     item.setTotalCommission(BigDecimal.ZERO);
                     managerMap.put(mid, item);
@@ -259,18 +264,21 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         r.setCooperationQuantity(o.getCooperationQuantity());
         r.setIsOwnResource(o.getIsOwnResource());
 
-        if (o.getBrand() != null) {
-            r.setBrandId(o.getBrand().getId());
-            r.setBrandName(o.getBrand().getName());
+        // brand 和 projectManager 走缓存，influencer 由 @EntityGraph 提前 JOIN 进来
+        Brand brand = brandCache.findById(o.getBrandId());
+        if (brand != null) {
+            r.setBrandId(brand.getId());
+            r.setBrandName(brand.getName());
         }
         if (o.getInfluencer() != null) {
             r.setInfluencerId(o.getInfluencer().getId());
             r.setInfluencerTeam(o.getInfluencer().getTeamNames());
             r.setInfluencerAccount(o.getInfluencer().getAccountName());
         }
-        if (o.getProjectManager() != null) {
-            r.setProjectManagerId(o.getProjectManager().getId());
-            r.setProjectManagerName(o.getProjectManager().getName());
+        Employee manager = employeeCache.findById(o.getProjectManagerId());
+        if (manager != null) {
+            r.setProjectManagerId(manager.getId());
+            r.setProjectManagerName(manager.getName());
         }
 
         // 非敏感成本字段（所有角色可见）

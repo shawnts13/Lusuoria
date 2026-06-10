@@ -6,6 +6,7 @@ import com.lusuoria.settlement.enums.InternalSettlementStatus;
 import com.lusuoria.settlement.enums.ProjectType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -50,6 +51,7 @@ public interface ProjectOrderRepository extends JpaRepository<ProjectOrder, Long
             @Param("influencerId") Long influencerId,
             @Param("cooperationContent") String cooperationContent);
 
+    @EntityGraph(attributePaths = {"influencer"})
     @Query("SELECT p FROM ProjectOrder p " +
            "WHERE p.isDeleted = false " +
            "AND (:brandId IS NULL OR p.brand.id = :brandId) " +
@@ -70,6 +72,7 @@ public interface ProjectOrderRepository extends JpaRepository<ProjectOrder, Long
             @Param("keyword") String keyword,
             Pageable pageable);
 
+    @EntityGraph(attributePaths = {"influencer"})
     @Query("SELECT p FROM ProjectOrder p " +
            "WHERE p.isDeleted = false " +
            "AND p.projectMonth = :month " +

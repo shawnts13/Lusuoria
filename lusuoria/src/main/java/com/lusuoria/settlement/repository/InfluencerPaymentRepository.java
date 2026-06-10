@@ -4,6 +4,7 @@ import com.lusuoria.settlement.entity.InfluencerPayment;
 import com.lusuoria.settlement.enums.InfluencerPaymentStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -18,6 +19,7 @@ public interface InfluencerPaymentRepository extends JpaRepository<InfluencerPay
 
     Optional<InfluencerPayment> findByIdAndIsDeletedFalse(Long id);
 
+    @EntityGraph(attributePaths = {"influencer", "projectOrder"})
     @Query("SELECT ip FROM InfluencerPayment ip " +
            "WHERE ip.isDeleted = false " +
            "AND (:settlementMonth IS NULL OR ip.settlementMonth = :settlementMonth) " +

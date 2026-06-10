@@ -11,7 +11,7 @@ import java.util.Date;
 
 /**
  * 项目订单 - 系统核心表
- * 项目编号格式：品牌方-月份-红人账号-序号，如 TEMU-202604-bigdogtech-001
+ * 项目编号格式：品牌方-月份-红人ID-序号，如 TEMU-202604-bigdogtech-001
  */
 @Entity
 @Table(name = "project_orders")
@@ -46,13 +46,22 @@ public class ProjectOrder extends BaseEntity {
     private Boolean isOwnResource = false; // 自带资源/供应商项目（影响提成比例）
 
     // ===== 关联 =====
+    @Column(name = "brand_id", insertable = false, updatable = false)
+    private Long brandId;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "brand_id", nullable = false)
     private Brand brand;
 
+    @Column(name = "influencer_id", insertable = false, updatable = false)
+    private Long influencerId;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "influencer_id")
     private Influencer influencer;
+
+    @Column(name = "project_manager_id", insertable = false, updatable = false)
+    private Long projectManagerId;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_manager_id")

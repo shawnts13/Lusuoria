@@ -1,5 +1,6 @@
 package com.lusuoria.settlement.controller;
 
+import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.dto.request.BrandRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.Brand;
@@ -21,31 +22,30 @@ public class BrandController {
 
     @Autowired private BrandRepository brandRepo;
     @Autowired private BrandExcelHandler excelHandler;
+    @Autowired private BrandCache brandCache;
 
     @GetMapping
     public ApiResponse<List<Brand>> list() {
-        return ApiResponse.success(brandRepo.findByIsDeletedFalseOrderByNameAsc());
+        return ApiResponse.success(brandCache.getAll());
     }
 
     @GetMapping("/{id}")
     public ApiResponse<Brand> getById(@PathVariable Long id) {
-        return ApiResponse.success(brandRepo.findByIdAndIsDeletedFalse(id)
-                .orElseThrow(() -> new RuntimeException("品牌方不存在")));
+        Brand brand = brandCache.findById(id);
+        if (brand == null) throw new RuntimeException("品牌方不存在");
+        return ApiResponse.success(brand);
     }
 
-    /** 导出 - 所有角色（品牌方无敏感字段）*/
     @GetMapping("/export/excel")
     public void exportExcel(HttpServletResponse response) throws IOException {
-        excelHandler.export(brandRepo.findByIsDeletedFalseOrderByNameAsc(), response);
+        excelHandler.export(brandCache.getAll(), response);
     }
 
-    /** 下载模板 - 所有角色 */
     @GetMapping("/import/template")
     public void downloadTemplate(HttpServletResponse response) throws IOException {
         excelHandler.downloadTemplate(response);
     }
 
-    /** 导入 - ADMIN 和 STAFF */
     @PostMapping("/import/excel")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<List<String>> importExcel(@RequestParam("file") MultipartFile file) throws IOException {
@@ -53,7 +53,9 @@ public class BrandController {
         String fn = file.getOriginalFilename();
         if (fn == null || (!fn.endsWith(".xlsx") && !fn.endsWith(".xls")))
             return ApiResponse.error(400, "只支持 .xlsx 或 .xls 格式");
-        return ApiResponse.success(excelHandler.importData(file));
+        List<String> result = excelHandler.importData(file);
+        brandCache.refresh();
+        return ApiResponse.success(result);
     }
 
     @PostMapping
@@ -76,7 +78,9 @@ public class BrandController {
         brand.setSettlementCurrency(req.getSettlementCurrency());
         brand.setPaymentCycle(req.getPaymentCycle());
         brand.setNotes(req.getNotes());
-        return ApiResponse.success(brandRepo.save(brand));
+        Brand saved = brandRepo.save(brand);
+        brandCache.refresh();
+        return ApiResponse.success(saved);
     }
 
     @DeleteMapping("/{id}")
@@ -86,6 +90,7 @@ public class BrandController {
                 .orElseThrow(() -> new RuntimeException("品牌方不存在"));
         brand.setIsDeleted(true);
         brandRepo.save(brand);
+        brandCache.refresh();
         return ApiResponse.success();
     }
 }
