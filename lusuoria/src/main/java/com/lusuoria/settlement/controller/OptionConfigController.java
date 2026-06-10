@@ -31,9 +31,7 @@ public class OptionConfigController {
                 InfluencerOptions.PAYMENT_CYCLES,
                 InfluencerOptions.PAYMENT_CYCLES));
 
-        result.put("domain", toOptions(
-                InfluencerOptions.DOMAINS,
-                InfluencerOptions.DOMAINS));
+        // 注意：领域已改为数据库表管理，通过 /api/domains 接口获取
 
         result.put("platform", toOptions(
                 InfluencerOptions.PLATFORMS,

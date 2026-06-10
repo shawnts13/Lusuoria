@@ -19,6 +19,7 @@ spring:
       keepalive-time: 30000         # Supabase 免费版连接会断开，保持心跳
 
   jpa:
+    open-in-view: false             # 关闭 open-in-view，请求结束后立即释放数据库连接
     hibernate:
       ddl-auto: update              # 首次部署后建议改为 validate
     show-sql: false

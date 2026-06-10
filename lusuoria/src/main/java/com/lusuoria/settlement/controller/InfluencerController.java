@@ -1,13 +1,19 @@
 package com.lusuoria.settlement.controller;
 
+import com.lusuoria.settlement.config.BrandCache;
+import com.lusuoria.settlement.config.DomainCache;
+import com.lusuoria.settlement.config.EmployeeCache;
+import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.dto.request.InfluencerRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
+import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.enums.ProjectType;
 import com.lusuoria.settlement.excel.InfluencerExcelHandler;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.ProjectOrderRepository;
 import com.lusuoria.settlement.util.RoleUtil;
+import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -21,6 +27,7 @@ import javax.validation.Valid;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/influencers")
@@ -29,13 +36,20 @@ public class InfluencerController {
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private InfluencerExcelHandler excelHandler;
     @Autowired private ProjectOrderRepository projectOrderRepo;
+    @Autowired private BrandCache brandCache;
+    @Autowired private EmployeeCache employeeCache;
+    @Autowired private DomainCache domainCache;
+    @Autowired private InfluencerTeamCache teamCache;
 
-    /** 分页查询（支持红人团队、平台筛选） */
+    // Google Drive 合同上传页面地址（后续在此配置）
+    private static final String CONTRACT_UPLOAD_URL = "";
+
     @GetMapping
     public ApiResponse<Page<Influencer>> list(
             @RequestParam(required = false) ProjectType influencerType,
             @RequestParam(required = false) String platform,
             @RequestParam(required = false) String countryMarket,
+            @RequestParam(required = false) Long brandId,
             @RequestParam(required = false) String teamName,
             @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "0")  int page,
@@ -43,21 +57,18 @@ public class InfluencerController {
         size = Math.max(1, Math.min(size, 200));
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.ASC, "accountName"));
         Page<Influencer> result = influencerRepo.findByFilters(
-                influencerType, platform, countryMarket, teamName, keyword, pageable);
+                influencerType, platform, countryMarket, brandId, teamName, keyword, pageable);
         if (!RoleUtil.canViewSensitiveFields()) {
-            // 用 map 生成新对象，不修改 JPA 管理的 Entity 本身
             return ApiResponse.success(result.map(this::maskSensitive));
         }
         return ApiResponse.success(result);
     }
 
-    /** 简单列表（供其他模块下拉选择用，不分页） */
     @GetMapping("/simple")
     public ApiResponse<List<Influencer>> simpleList() {
         List<Influencer> list = influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc();
         if (!RoleUtil.canViewSensitiveFields()) {
-            return ApiResponse.success(list.stream().map(this::maskSensitive)
-                    .collect(java.util.stream.Collectors.toList()));
+            return ApiResponse.success(list.stream().map(this::maskSensitive).collect(Collectors.toList()));
         }
         return ApiResponse.success(list);
     }
@@ -66,13 +77,16 @@ public class InfluencerController {
     public ApiResponse<Influencer> getById(@PathVariable Long id) {
         Influencer inf = influencerRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("红人不存在"));
-        if (!RoleUtil.canViewSensitiveFields()) {
-            return ApiResponse.success(maskSensitive(inf));
-        }
+        if (!RoleUtil.canViewSensitiveFields()) return ApiResponse.success(maskSensitive(inf));
         return ApiResponse.success(inf);
     }
 
-    /** 导出 */
+    /** 获取合同上传页面地址 */
+    @GetMapping("/contract-upload-url")
+    public ApiResponse<String> contractUploadUrl() {
+        return ApiResponse.success(CONTRACT_UPLOAD_URL);
+    }
+
     @GetMapping("/export/excel")
     public void exportExcel(@RequestParam(required = false) ProjectType influencerType,
                             HttpServletResponse response) throws IOException {
@@ -82,13 +96,11 @@ public class InfluencerController {
         excelHandler.export(list, RoleUtil.canViewSensitiveFields(), response);
     }
 
-    /** 下载导入模板 */
     @GetMapping("/import/template")
     public void downloadTemplate(HttpServletResponse response) throws IOException {
         excelHandler.downloadTemplate(RoleUtil.canViewSensitiveFields(), response);
     }
 
-    /** 导入 */
     @PostMapping("/import/excel")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<List<String>> importExcel(@RequestParam("file") MultipartFile file) throws IOException {
@@ -99,56 +111,63 @@ public class InfluencerController {
         return ApiResponse.success(excelHandler.importData(file, RoleUtil.canViewSensitiveFields()));
     }
 
-    /** 新建/更新 */
-    @PostMapping
-    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
-    public ApiResponse<Influencer> save(@Valid @RequestBody InfluencerRequest req) {
-        Influencer influencer;
-        if (req.getId() != null) {
-            influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getId())
-                    .orElseThrow(() -> new RuntimeException("红人不存在"));
-        } else {
-            influencer = new Influencer();
-            influencer.setIsDeleted(false);
-        }
-        influencer.setInfluencerType(req.getInfluencerType());
-        influencer.setTeamNames(listToStr(req.getTeamNames()));
-        influencer.setAccountName(req.getAccountName());
-        influencer.setCountryMarket(req.getCountryMarket());
-        influencer.setPlatform(req.getPlatform());
-        influencer.setDomain(req.getDomain());
-        influencer.setFollowerCount(req.getFollowerCount());
-        influencer.setLinks(listToStr(req.getLinks()));
-        influencer.setCasesLinks(listToStr(req.getCasesLinks()));
-        influencer.setEmail(req.getEmail());
-        influencer.setContactStatus(req.getContactStatus());
-        influencer.setPaymentCycle(req.getPaymentCycle());
-        influencer.setFollowerPerson(req.getFollowerPerson());
-        influencer.setNotes(req.getNotes());
-
-        // 敏感字段只有有权限的角色才能修改
-        if (RoleUtil.canViewSensitiveFields()) {
-            influencer.setInfluencerCost(req.getInfluencerCost());
-            influencer.setClientPrice(req.getClientPrice());
-        }
-
-        return ApiResponse.success(influencerRepo.save(influencer));
-    }
-
-    /**
-     * 批量查询红人的合作项目数量（一条 SQL）
-     * 前端传当前页的 influencer id 列表
-     * 返回：{ influencerId: count, ... }
-     */
     @PostMapping("/project-counts")
     public ApiResponse<Map<Long, Long>> projectCounts(@RequestBody List<Long> influencerIds) {
         Map<Long, Long> result = new java.util.LinkedHashMap<Long, Long>();
-        // 先把所有 id 初始化为 0（没有项目的红人不会出现在查询结果里）
         for (Long id : influencerIds) result.put(id, 0L);
-        // 一条 SQL 批量查有项目的红人
         projectOrderRepo.countByInfluencerIds(influencerIds)
                 .forEach(row -> result.put((Long) row[0], (Long) row[1]));
         return ApiResponse.success(result);
+    }
+
+    @PostMapping
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    public ApiResponse<Influencer> save(@Valid @RequestBody InfluencerRequest req) {
+        Influencer inf;
+        if (req.getId() != null) {
+            inf = influencerRepo.findByIdAndIsDeletedFalse(req.getId())
+                    .orElseThrow(() -> new RuntimeException("红人不存在"));
+        } else {
+            inf = new Influencer();
+            inf.setIsDeleted(false);
+        }
+        inf.setInfluencerType(req.getInfluencerType());
+        // 保存红人时自动把新团队名注册到 influencer_teams 表
+        if (req.getTeamName() != null && !req.getTeamName().trim().isEmpty()) {
+            teamCache.getOrCreate(req.getTeamName().trim());
+        }
+        inf.setTeamName(req.getTeamName());
+        inf.setAccountName(req.getAccountName());
+        inf.setCountryMarket(req.getCountryMarket());
+        inf.setPlatform(req.getPlatform());
+        inf.setDomains(listToStr(req.getDomains(), "\n"));
+        inf.setFollowerCount(req.getFollowerCount());
+        inf.setLinks(listToStr(req.getLinks(), "\n"));
+        inf.setCasesLinks(listToStr(req.getCasesLinks(), "\n"));
+        inf.setContractLink(req.getContractLink());
+        inf.setEmail(req.getEmail());
+        inf.setContacts(req.getContacts());
+        inf.setContactStatus(req.getContactStatus());
+        inf.setPaymentCycle(req.getPaymentCycle());
+        inf.setFollowerPerson(req.getFollowerPerson());
+        inf.setNotes(req.getNotes());
+
+        // 关联品牌方
+        if (req.getBrandId() != null) {
+            Brand brand = brandCache.findById(req.getBrandId());
+            if (brand == null) throw new RuntimeException("品牌方不存在：" + req.getBrandId());
+            inf.setBrand(brand);
+        } else {
+            inf.setBrand(null);
+        }
+
+        // 敏感字段只有有权限的角色才能修改
+        if (RoleUtil.canViewSensitiveFields()) {
+            inf.setInfluencerCost(req.getInfluencerCost());
+            inf.setClientPrice(req.getClientPrice());
+        }
+
+        return ApiResponse.success(influencerRepo.save(inf));
     }
 
     @DeleteMapping("/{id}")
@@ -161,25 +180,20 @@ public class InfluencerController {
         return ApiResponse.success();
     }
 
-    /**
-     * 返回一个浅拷贝，将敏感字段置空
-     * 不修改 JPA 管理的原始 Entity，避免意外触发 Hibernate dirty-check update
-     */
     private Influencer maskSensitive(Influencer inf) {
         Influencer copy = new Influencer();
-        org.springframework.beans.BeanUtils.copyProperties(inf, copy);
+        BeanUtils.copyProperties(inf, copy);
         copy.setInfluencerCost(null);
         copy.setClientPrice(null);
         return copy;
     }
 
-    // 列转逗号分隔字符串
-    private String listToStr(List<String> list) {
+    private String listToStr(List<String> list, String sep) {
         if (list == null || list.isEmpty()) return null;
         StringBuilder sb = new StringBuilder();
         for (String s : list) {
             if (s != null && !s.trim().isEmpty()) {
-                if (sb.length() > 0) sb.append(",");
+                if (sb.length() > 0) sb.append(sep);
                 sb.append(s.trim());
             }
         }

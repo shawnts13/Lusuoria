@@ -23,23 +23,20 @@ public interface InfluencerRepository extends JpaRepository<Influencer, Long> {
 
     List<Influencer> findByInfluencerTypeAndIsDeletedFalse(ProjectType type);
 
-    /** 按红人团队名称模糊搜索（teamNames 字段逗号分隔存储） */
-    @Query("SELECT i FROM Influencer i WHERE i.isDeleted = false AND i.teamNames LIKE %:teamName%")
-    List<Influencer> findByTeamNameContaining(@Param("teamName") String teamName);
-
-    /** 筛选查询（支持红人团队、平台过滤） */
     @Query("SELECT i FROM Influencer i " +
            "WHERE i.isDeleted = false " +
            "AND (:influencerType IS NULL OR i.influencerType = :influencerType) " +
            "AND (:platform IS NULL OR i.platform = :platform) " +
            "AND (:countryMarket IS NULL OR i.countryMarket = :countryMarket) " +
-           "AND (:teamName IS NULL OR i.teamNames LIKE %:teamName%) " +
-           "AND (:keyword IS NULL OR i.accountName LIKE %:keyword% OR i.teamNames LIKE %:keyword%) " +
+           "AND (:brandId IS NULL OR i.brandId = :brandId) " +
+           "AND (:teamName IS NULL OR i.teamName LIKE %:teamName%) " +
+           "AND (:keyword IS NULL OR i.accountName LIKE %:keyword% OR i.teamName LIKE %:keyword%) " +
            "ORDER BY i.accountName ASC")
     Page<Influencer> findByFilters(
             @Param("influencerType") ProjectType influencerType,
             @Param("platform") String platform,
             @Param("countryMarket") String countryMarket,
+            @Param("brandId") Long brandId,
             @Param("teamName") String teamName,
             @Param("keyword") String keyword,
             Pageable pageable);

@@ -21,9 +21,8 @@ public class InfluencerOptions {
         "7天", "14天", "30天"
     };
 
-    public static final String[] DOMAINS = {
-        "家居", "科技"
-    };
+    // 注意：领域（domain）已改为数据库表管理，不在此处维护
+    // 参见 DomainCache 和 DomainController
 
     public static final String[] PLATFORMS = {
         "TikTok", "Instagram", "YouTube", "Facebook", "微博", "小红书", "抖音"

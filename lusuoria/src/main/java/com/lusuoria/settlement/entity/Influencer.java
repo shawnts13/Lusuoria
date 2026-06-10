@@ -9,10 +9,13 @@ import javax.persistence.*;
 /**
  * 红人管理
  *
- * 多值字段用逗号分隔字符串存储（TEXT）：
- *   teamNames  - 红人团队，如 "游琳团队,田震团队"
- *   links      - 主页链接，如 "https://tiktok.com/xxx,https://ins.com/xxx"
- *   casesLinks - 合作案例链接，如 "https://..."
+ * 多值字段用换行符分隔存储（TEXT）：
+ *   domains    - 所属领域，如 "家居\n科技"
+ *   links      - 主页链接
+ *   casesLinks - 合作案例链接
+ *
+ * contacts 字段存 JSON 数组：
+ *   [{"type":"phone","value":"xxx"},{"type":"whatsapp","value":"xxx"},...]
  */
 @Entity
 @Table(name = "influencers")
@@ -26,55 +29,75 @@ public class Influencer extends BaseEntity {
     // ===== 基本信息 =====
     @Enumerated(EnumType.STRING)
     @Column(name = "influencer_type", nullable = false)
-    private ProjectType influencerType;     // 海外红人 / 中国红人 / 境外红人（在华）
+    private ProjectType influencerType;
 
-    /** 红人团队（多个，逗号分隔），外部机构/MCN 团队名称 */
-    @Column(name = "team_names", columnDefinition = "TEXT")
-    private String teamNames;
+    /** 红人团队（单个，外部机构/MCN 名称） */
+    @Column(name = "team_name")
+    private String teamName;
 
     @Column(name = "account_name", nullable = false)
-    private String accountName;             // 红人ID（前端展示为"红人ID"）
+    private String accountName;             // 红人ID
+
+    /** 关联品牌方 id（直读列，不触发懒加载） */
+    @Column(name = "brand_id", insertable = false, updatable = false)
+    private Long brandId;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "brand_id")
+    private Brand brand;
 
     @Column(name = "country_market")
-    private String countryMarket;           // 国家/市场（中文名，如"美国"、"中国"）
+    private String countryMarket;           // 服务国家/市场
 
     @Column(name = "platform")
-    private String platform;               // 平台 TikTok / Instagram / YouTube 等
+    private String platform;
 
-    @Column(name = "domain")
-    private String domain;                 // 领域：家居 / 科技
+    /** 所属领域（多个，换行符分隔，如 "家居\n科技"） */
+    @Column(name = "domains", columnDefinition = "TEXT")
+    private String domains;
 
     @Column(name = "follower_count")
-    private Long followerCount;            // 粉丝量
+    private Long followerCount;
 
-    /** 主页链接（多条，逗号分隔） */
     @Column(name = "links", columnDefinition = "TEXT")
     private String links;
 
-    /** 合作案例链接（多条，逗号分隔） */
     @Column(name = "cases_links", columnDefinition = "TEXT")
     private String casesLinks;
 
-    // ===== 合作信息 =====
-    @Column(name = "email")
-    private String email;                  // 红人邮箱
+    /** 已签署合同链接（Google Drive 链接） */
+    @Column(name = "contract_link")
+    private String contractLink;
 
+    // ===== 联系方式 =====
+    @Column(name = "email")
+    private String email;
+
+    /**
+     * 联系方式 JSON 数组
+     * 格式：[{"type":"phone","value":"xxx"},{"type":"whatsapp","value":"xxx"}]
+     * type 枚举：phone / whatsapp / line / telegram
+     */
+    @Column(name = "contacts", columnDefinition = "TEXT")
+    private String contacts;
+
+    // ===== 合作信息 =====
     @Enumerated(EnumType.STRING)
     @Column(name = "contact_status", length = 30)
-    private InfluencerContactStatus contactStatus; // 建联情况，null 表示未设置
+    private InfluencerContactStatus contactStatus;
 
     @Column(name = "payment_cycle", length = 20)
-    private String paymentCycle;           // 付款周期：7天 / 14天 / 30天
+    private String paymentCycle;
 
     @Column(name = "follower_person")
-    private String followerPerson;         // 跟进人（员工真实姓名）
+    private String followerPerson;
 
     // ===== 敏感字段（仅 ADMIN / AUDITOR）=====
     @Column(name = "influencer_cost", columnDefinition = "TEXT")
-    private String influencerCost;         // 红人成本（美金），可能是金额或备注文字
+    private String influencerCost;
 
     @Column(name = "client_price", columnDefinition = "TEXT")
-    private String clientPrice;            // 客户合作价格（美金），可能是金额或备注文字
+    private String clientPrice;
 
     @Column(name = "notes", columnDefinition = "TEXT")
     private String notes;
