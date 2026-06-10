@@ -2,6 +2,7 @@ package com.lusuoria.settlement.entity;
 
 import com.lusuoria.settlement.enums.InfluencerContactStatus;
 import com.lusuoria.settlement.enums.ProjectType;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.*;
 
 import javax.persistence.*;
@@ -42,6 +43,7 @@ public class Influencer extends BaseEntity {
     @Column(name = "brand_id", insertable = false, updatable = false)
     private Long brandId;
 
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "brand_id")
     private Brand brand;

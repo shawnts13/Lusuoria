@@ -3,6 +3,7 @@ package com.lusuoria.settlement.entity;
 import com.lusuoria.settlement.enums.ClientStatus;
 import com.lusuoria.settlement.enums.InternalSettlementStatus;
 import com.lusuoria.settlement.enums.ProjectType;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.*;
 
 import javax.persistence.*;
@@ -49,6 +50,7 @@ public class ProjectOrder extends BaseEntity {
     @Column(name = "brand_id", insertable = false, updatable = false)
     private Long brandId;
 
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "brand_id", nullable = false)
     private Brand brand;
@@ -56,6 +58,7 @@ public class ProjectOrder extends BaseEntity {
     @Column(name = "influencer_id", insertable = false, updatable = false)
     private Long influencerId;
 
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "influencer_id")
     private Influencer influencer;
@@ -63,6 +66,7 @@ public class ProjectOrder extends BaseEntity {
     @Column(name = "project_manager_id", insertable = false, updatable = false)
     private Long projectManagerId;
 
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_manager_id")
     private Employee projectManager;

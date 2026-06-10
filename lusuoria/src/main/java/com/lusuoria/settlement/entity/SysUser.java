@@ -1,5 +1,6 @@
 package com.lusuoria.settlement.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.*;
 
 import javax.persistence.*;
@@ -43,6 +44,7 @@ public class SysUser extends BaseEntity {
      * 关联员工记录（可选）
      * 关联后右上角显示名称将使用员工姓名，否则显示用户名
      */
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "employee_id")
     private Employee employee;

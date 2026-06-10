@@ -22,8 +22,7 @@ import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.*;
-
-import static java.util.stream.Collectors.toCollection;
+import java.util.stream.Collectors;
 
 @Component
 public class InfluencerExcelHandler {
@@ -265,6 +264,23 @@ public class InfluencerExcelHandler {
         }
 
         int successCount = 0, updateCount = 0;
+
+        // ---- 导入前预加载，避免循环内反复查库 ----
+        // 所有现有红人：accountName -> Influencer
+        Map<String, Influencer> existingMap = new HashMap<String, Influencer>();
+        influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc()
+                .forEach(inf -> existingMap.put(inf.getAccountName().trim(), inf));
+
+        // 品牌方：name -> Brand
+        Map<String, Brand> brandMap = new HashMap<String, Brand>();
+        brandCache.getAll().forEach(b -> brandMap.put(b.getName().trim(), b));
+
+        // 收集所有需要新建/更新的 Influencer，最后批量 save
+        List<Influencer> toSave = new ArrayList<Influencer>();
+        // 收集本次导入中出现的新团队和新领域，导入后统一刷新缓存
+        Set<String> newTeams   = new HashSet<String>();
+        Set<String> newDomains = new HashSet<String>();
+
         for (int i = 1; i <= totalRows; i++) {
             Row row = sheet.getRow(i);
             if (row == null || isRowEmpty(row)) continue;
@@ -284,26 +300,26 @@ public class InfluencerExcelHandler {
                     errors.add("第" + (i + 1) + "行：红人类型不能为空"); continue;
                 }
 
-                Influencer inf = influencerRepo.findByAccountNameAndIsDeletedFalse(accountName).orElse(null);
+                // 查预加载的 Map，不查库
+                Influencer inf = existingMap.get(accountName.trim());
                 boolean isNew = (inf == null);
                 if (isNew) { inf = new Influencer(); inf.setIsDeleted(false); }
 
                 inf.setInfluencerType(parseType(typeStr));
                 inf.setAccountName(accountName);
 
-                // 团队：自动注册新团队
+                // 团队：记录新团队，导入后统一注册
                 String teamName = getStr(row, colMap, "红人团队");
                 if (teamName != null && !teamName.trim().isEmpty()) {
-                    teamCache.getOrCreate(teamName.trim());
+                    if (teamCache.findByName(teamName.trim()) == null)
+                        newTeams.add(teamName.trim());
                 }
                 inf.setTeamName(teamName);
 
-                // 品牌方：按名称从缓存查
+                // 品牌方：查预加载的 Map
                 String brandName = getStr(row, colMap, "品牌方");
                 if (brandName != null && !brandName.isEmpty()) {
-                    Brand brand = brandCache.getAll().stream()
-                            .filter(b -> brandName.trim().equals(b.getName()))
-                            .findFirst().orElse(null);
+                    Brand brand = brandMap.get(brandName.trim());
                     if (brand == null) {
                         errors.add("第" + (i + 1) + "行：品牌方 [" + brandName + "] 不存在"); continue;
                     }
@@ -313,33 +329,29 @@ public class InfluencerExcelHandler {
                 inf.setCountryMarket(getStr(row, colMap, "服务国家/市场"));
                 inf.setPlatform(getStr(row, colMap, "平台"));
 
-                // 所属领域：多个用换行或逗号分隔，不存在的自动创建
-                // 中国红人：强制包含4个默认领域，再追加 excel 里的其他领域
+                // 所属领域：中国红人强制补4个默认领域
                 String domainsRaw = getStr(row, colMap, "所属领域(多个用换行分隔)");
                 if (domainsRaw == null || domainsRaw.isEmpty())
                     domainsRaw = getStr(row, colMap, "所属领域");
 
-                Set<String> domainSet = new java.util.LinkedHashSet<>();
-                boolean isChinaInfluencer = ProjectType.CHINA_INFLUENCER.equals(inf.getInfluencerType());
-                if (isChinaInfluencer) {
-                    // 中国红人先加4个默认领域
-                    for (String d : CHINA_DEFAULT_DOMAINS) {
-                        domainCache.getOrCreate(d);
-                        domainSet.add(d);
-                    }
+                Set<String> domainSet = new java.util.LinkedHashSet<String>();
+                if (ProjectType.CHINA_INFLUENCER.equals(inf.getInfluencerType())) {
+                    domainSet.addAll(CHINA_DEFAULT_DOMAINS);
                 }
                 if (domainsRaw != null && !domainsRaw.isEmpty()) {
                     for (String d : domainsRaw.split("[,\n\r]+")) {
                         String dn = d.trim();
                         if (!dn.isEmpty()) {
-                            domainCache.getOrCreate(dn);
+                            if (domainCache.findByName(dn) == null) newDomains.add(dn);
                             domainSet.add(dn);
                         }
                     }
                 }
-                if (!domainSet.isEmpty()) {
-                    inf.setDomains(String.join("\n", domainSet));
+                // 中国红人默认4个领域也要确保在领域表里存在
+                if (ProjectType.CHINA_INFLUENCER.equals(inf.getInfluencerType())) {
+                    newDomains.addAll(CHINA_DEFAULT_DOMAINS);
                 }
+                if (!domainSet.isEmpty()) inf.setDomains(String.join("\n", domainSet));
 
                 String followerStr = getStr(row, colMap, "粉丝量");
                 if (followerStr != null && !followerStr.isEmpty()) {
@@ -357,18 +369,15 @@ public class InfluencerExcelHandler {
 
                 inf.setContractLink(getStr(row, colMap, "已签署合同链接"));
                 inf.setEmail(getStr(row, colMap, "红人邮箱"));
-
-                // 联系方式：4列分别读取，组装成 JSON
                 inf.setContacts(buildContacts(
                         getStr(row, colMap, "红人电话"),
                         getStr(row, colMap, "红人WhatsApp"),
                         getStr(row, colMap, "红人Line"),
                         getStr(row, colMap, "红人Telegram")));
-
                 inf.setContactStatus(parseContactStatus(getStr(row, colMap, "建联情况")));
                 inf.setPaymentCycle(getStr(row, colMap, "付款周期"));
 
-                // 跟进人：按姓名从缓存匹配
+                // 跟进人：查缓存
                 String followerPersonName = getStr(row, colMap, "跟进人");
                 if (followerPersonName != null && !followerPersonName.isEmpty()) {
                     Employee emp = employeeCache.findByName(followerPersonName);
@@ -381,13 +390,12 @@ public class InfluencerExcelHandler {
                 }
 
                 inf.setNotes(getStr(row, colMap, "备注"));
-
                 if (canViewSensitive) {
                     inf.setInfluencerCost(getStr(row, colMap, "红人成本（美金）"));
                     inf.setClientPrice(getStr(row, colMap, "客户合作价格（美金）"));
                 }
 
-                influencerRepo.save(inf);
+                toSave.add(inf);
                 if (isNew) successCount++; else updateCount++;
 
             } catch (Exception e) {
@@ -395,6 +403,14 @@ public class InfluencerExcelHandler {
             }
         }
         workbook.close();
+
+        // ---- 批量写库（一次事务）----
+        influencerRepo.saveAll(toSave);
+
+        // ---- 统一注册新团队和新领域（写库次数少很多）----
+        for (String t : newTeams)   teamCache.getOrCreate(t);
+        for (String d : newDomains) domainCache.getOrCreate(d);
+
         errors.add(0, "新增 " + successCount + " 条，更新 " + updateCount + " 条，失败 " + errors.size() + " 条");
         return errors;
     }

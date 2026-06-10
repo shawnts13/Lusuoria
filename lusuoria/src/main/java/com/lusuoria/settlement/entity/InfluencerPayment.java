@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.entity;
 
 import com.lusuoria.settlement.enums.InfluencerPaymentStatus;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.*;
 
 import javax.persistence.*;
@@ -25,6 +26,7 @@ public class InfluencerPayment extends BaseEntity {
     @Column(name = "influencer_id", insertable = false, updatable = false)
     private Long influencerId;
 
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "influencer_id", nullable = false)
     private Influencer influencer;
@@ -32,6 +34,7 @@ public class InfluencerPayment extends BaseEntity {
     @Column(name = "project_order_id", insertable = false, updatable = false)
     private Long projectOrderId;
 
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_order_id")
     private ProjectOrder projectOrder;
