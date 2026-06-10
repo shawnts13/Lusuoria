@@ -1,20 +1,17 @@
-# 第一阶段：构建 (使用包含Maven和JDK8的镜像)
 FROM maven:3.6.3-openjdk-8 AS build
 
-# 复制项目文件
-COPY . .
+WORKDIR /app
 
-# 执行打包命令，跳过测试
+# 使用Render提供的缓存目录（免费版也支持）
+ENV MAVEN_OPTS="-Dmaven.repo.local=$XDG_CACHE_HOME/maven/repository"
+
+COPY pom.xml .
+RUN mvn dependency:go-offline -B
+
+COPY src ./src
 RUN mvn clean package -DskipTests
 
-# 第二阶段：运行 (使用Eclipse Temurin的JRE8镜像，基于轻量级Alpine Linux)
-FROM eclipse-temurin:8-jre
-
-# 从构建阶段复制生成的jar包
-COPY --from=build /target/*.jar app.jar
-
-# 暴露应用端口
+FROM eclipse-temurin:8-jre-alpine
+COPY --from=build /app/target/*.jar app.jar
 EXPOSE 8080
-
-# 设置启动命令
 ENTRYPOINT ["java", "-jar", "app.jar"]
