@@ -82,6 +82,21 @@ public interface ProjectOrderRepository extends JpaRepository<ProjectOrder, Long
            "AND p.projectMonth = :month")
     long countByBrandAndMonth(@Param("brandId") Long brandId, @Param("month") String month);
 
+    @Query("SELECT COUNT(p) FROM ProjectOrder p " +
+           "WHERE p.isDeleted = false " +
+           "AND p.influencer.id = :influencerId")
+    long countByInfluencer(@Param("influencerId") Long influencerId);
+
+    /**
+     * 批量查询多个红人的项目数量，一次 SQL 搞定
+     * 返回格式：[[influencerId, count], ...]
+     */
+    @Query("SELECT p.influencer.id, COUNT(p) FROM ProjectOrder p " +
+           "WHERE p.isDeleted = false " +
+           "AND p.influencer.id IN :influencerIds " +
+           "GROUP BY p.influencer.id")
+    List<Object[]> countByInfluencerIds(@Param("influencerIds") List<Long> influencerIds);
+
     @Query("SELECT p FROM ProjectOrder p " +
            "WHERE p.isDeleted = false " +
            "AND p.projectManager.id = :managerId " +

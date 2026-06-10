@@ -7,7 +7,7 @@ import com.lusuoria.settlement.enums.InfluencerContactStatus;
 import com.lusuoria.settlement.enums.ProjectType;
 import com.lusuoria.settlement.excel.InfluencerExcelHandler;
 import com.lusuoria.settlement.repository.InfluencerRepository;
-import com.lusuoria.settlement.util.RoleUtil;
+import com.lusuoria.settlement.repository.ProjectOrderRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -20,6 +20,9 @@ import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
+
+import com.lusuoria.settlement.util.RoleUtil;
 
 @RestController
 @RequestMapping("/api/influencers")
@@ -27,6 +30,7 @@ public class InfluencerController {
 
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private InfluencerExcelHandler excelHandler;
+    @Autowired private ProjectOrderRepository projectOrderRepo;
 
     /** 分页查询（支持红人团队、平台筛选） */
     @GetMapping
@@ -133,6 +137,22 @@ public class InfluencerController {
         }
 
         return ApiResponse.success(influencerRepo.save(influencer));
+    }
+
+    /**
+     * 批量查询红人的合作项目数量（一条 SQL）
+     * 前端传当前页的 influencer id 列表
+     * 返回：{ influencerId: count, ... }
+     */
+    @PostMapping("/project-counts")
+    public ApiResponse<Map<Long, Long>> projectCounts(@RequestBody List<Long> influencerIds) {
+        Map<Long, Long> result = new java.util.LinkedHashMap<Long, Long>();
+        // 先把所有 id 初始化为 0（没有项目的红人不会出现在查询结果里）
+        for (Long id : influencerIds) result.put(id, 0L);
+        // 一条 SQL 批量查有项目的红人
+        projectOrderRepo.countByInfluencerIds(influencerIds)
+                .forEach(row -> result.put((Long) row[0], (Long) row[1]));
+        return ApiResponse.success(result);
     }
 
     @DeleteMapping("/{id}")

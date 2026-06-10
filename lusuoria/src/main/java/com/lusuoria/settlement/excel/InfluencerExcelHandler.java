@@ -276,6 +276,7 @@ public class InfluencerExcelHandler {
     private InfluencerContactStatus parseContactStatus(String label) {
         if (label == null || label.trim().isEmpty()) return null;
         switch (label.trim()) {
+            case "未开发":     return InfluencerContactStatus.UNDEVELOPED;
             case "已回复开发信": return InfluencerContactStatus.REPLIED;
             case "有合作意愿":   return InfluencerContactStatus.INTERESTED;
             case "正在合作":     return InfluencerContactStatus.COOPERATING;

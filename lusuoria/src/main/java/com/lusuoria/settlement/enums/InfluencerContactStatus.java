@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.enums;
 
 public enum InfluencerContactStatus {
+    UNDEVELOPED("未开发"),
     REPLIED("已回复开发信"),
     INTERESTED("有合作意愿"),
     COOPERATING("正在合作"),

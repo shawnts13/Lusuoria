@@ -24,7 +24,7 @@ public class OptionConfigController {
                 InfluencerOptions.INFLUENCER_TYPES));
 
         result.put("contact_status", toOptions(
-                new String[]{"", "REPLIED", "INTERESTED", "COOPERATING", "COOPERATED"},
+                new String[]{"UNDEVELOPED", "REPLIED", "INTERESTED", "COOPERATING", "COOPERATED"},
                 InfluencerOptions.CONTACT_STATUSES));
 
         result.put("payment_cycle", toOptions(
