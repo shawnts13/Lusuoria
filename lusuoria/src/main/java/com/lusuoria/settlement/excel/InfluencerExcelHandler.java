@@ -1,6 +1,8 @@
 package com.lusuoria.settlement.excel;
 
 import com.lusuoria.settlement.config.InfluencerOptions;
+import com.lusuoria.settlement.config.EmployeeCache;
+import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.enums.InfluencerContactStatus;
 import com.lusuoria.settlement.enums.ProjectType;
@@ -21,6 +23,7 @@ import java.util.*;
 public class InfluencerExcelHandler {
 
     @Autowired private InfluencerRepository influencerRepo;
+    @Autowired private EmployeeCache employeeCache;
 
     // ===================================================================
     // 导出
@@ -260,7 +263,19 @@ public class InfluencerExcelHandler {
                 inf.setEmail(getStr(row, colMap, "红人邮箱"));
                 inf.setContactStatus(parseContactStatus(getStr(row, colMap, "建联情况")));
                 inf.setPaymentCycle(getStr(row, colMap, "付款周期"));
-                inf.setFollowerPerson(getStr(row, colMap, "跟进人"));
+
+                // 跟进人：按姓名从缓存中匹配，存储姓名字符串（不存在则直接存入原文）
+                String followerPersonName = getStr(row, colMap, "跟进人");
+                if (followerPersonName != null && !followerPersonName.isEmpty()) {
+                    Employee emp = employeeCache.findByName(followerPersonName);
+                    if (emp == null) {
+                        errors.add("第" + (i + 1) + "行：跟进人 [" + followerPersonName + "] 不存在，请检查员工姓名");
+                        continue;
+                    }
+                    inf.setFollowerPerson(emp.getName());
+                } else {
+                    inf.setFollowerPerson(null);
+                }
                 inf.setNotes(getStr(row, colMap, "备注"));
 
                 if (canViewSensitive) {

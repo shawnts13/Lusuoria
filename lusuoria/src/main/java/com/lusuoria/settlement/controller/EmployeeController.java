@@ -1,10 +1,10 @@
 package com.lusuoria.settlement.controller;
 
+import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.dto.request.EmployeeRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.repository.EmployeeRepository;
-import io.micrometer.core.instrument.util.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -17,10 +17,12 @@ import java.util.List;
 public class EmployeeController {
 
     @Autowired private EmployeeRepository employeeRepo;
+    @Autowired private EmployeeCache employeeCache;
 
     @GetMapping
     public ApiResponse<List<Employee>> list(@RequestParam(required = false) String role) {
-        if (role != null && !role.isEmpty()) return ApiResponse.success(employeeRepo.findByRoleAndIsDeletedFalse(role));
+        if (role != null && !role.isEmpty())
+            return ApiResponse.success(employeeRepo.findByRoleAndIsDeletedFalse(role));
         return ApiResponse.success(employeeRepo.findByIsDeletedFalseOrderByNameAsc());
     }
 
@@ -30,7 +32,6 @@ public class EmployeeController {
                 .orElseThrow(() -> new RuntimeException("员工不存在")));
     }
 
-    /** 员工信息管理仅 ADMIN */
     @PostMapping
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<Employee> save(@Valid @RequestBody EmployeeRequest req) {
@@ -44,12 +45,12 @@ public class EmployeeController {
         }
         employee.setName(req.getName());
         employee.setRole(req.getRole());
-        if(StringUtils.isNotBlank(req.getEmail())){
-            employee.setEmail(req.getEmail());
-        }
+        employee.setEmail(req.getEmail());
         employee.setDefaultCommissionRate(req.getDefaultCommissionRate());
         employee.setNotes(req.getNotes());
-        return ApiResponse.success(employeeRepo.save(employee));
+        Employee saved = employeeRepo.save(employee);
+        employeeCache.refresh();  // 立即更新缓存
+        return ApiResponse.success(saved);
     }
 
     @DeleteMapping("/{id}")
@@ -59,6 +60,7 @@ public class EmployeeController {
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
         emp.setIsDeleted(true);
         employeeRepo.save(emp);
+        employeeCache.refresh();  // 立即更新缓存
         return ApiResponse.success();
     }
 }
