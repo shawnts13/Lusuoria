@@ -212,11 +212,17 @@ public class InfluencerExcelHandler {
             Row row = sheet.getRow(i);
             if (row == null || isRowEmpty(row)) continue;
             try {
+                // 兼容导出文件（如"红人ID"）和导入模板（如"红人ID(必填)"）
                 String accountName = getStr(row, colMap, "红人ID(必填)");
+                if (accountName == null || accountName.isEmpty())
+                    accountName = getStr(row, colMap, "红人ID");
                 if (accountName == null || accountName.isEmpty()) {
                     errors.add("第" + (i + 1) + "行：红人ID不能为空"); continue;
                 }
+
                 String typeStr = getStr(row, colMap, "红人类型(必填)");
+                if (typeStr == null || typeStr.isEmpty())
+                    typeStr = getStr(row, colMap, "红人类型");
                 if (typeStr == null || typeStr.isEmpty()) {
                     errors.add("第" + (i + 1) + "行：红人类型不能为空"); continue;
                 }
@@ -228,7 +234,12 @@ public class InfluencerExcelHandler {
 
                 inf.setInfluencerType(parseType(typeStr));
                 inf.setAccountName(accountName);
-                inf.setTeamNames(parseMulti(getStr(row, colMap, "红人团队(多个用换行分隔)")));
+
+                // 兼容导出列名（无括号）和模板列名（有括号说明）
+                String teamNamesRaw = getStr(row, colMap, "红人团队(多个用换行分隔)");
+                if (teamNamesRaw == null) teamNamesRaw = getStr(row, colMap, "红人团队");
+                inf.setTeamNames(parseMulti(teamNamesRaw));
+
                 inf.setCountryMarket(getStr(row, colMap, "国家/市场"));
                 inf.setPlatform(getStr(row, colMap, "平台"));
                 inf.setDomain(getStr(row, colMap, "领域"));
@@ -239,8 +250,13 @@ public class InfluencerExcelHandler {
                     catch (NumberFormatException ignored) {}
                 }
 
-                inf.setLinks(parseLinks(getStr(row, colMap, "主页链接(多条用换行分隔)")));
-                inf.setCasesLinks(parseLinks(getStr(row, colMap, "合作案例链接(多条用换行分隔)")));
+                String linksRaw = getStr(row, colMap, "主页链接(多条用换行分隔)");
+                if (linksRaw == null) linksRaw = getStr(row, colMap, "主页链接");
+                inf.setLinks(parseLinks(linksRaw));
+
+                String casesRaw = getStr(row, colMap, "合作案例链接(多条用换行分隔)");
+                if (casesRaw == null) casesRaw = getStr(row, colMap, "合作案例链接");
+                inf.setCasesLinks(parseLinks(casesRaw));
                 inf.setEmail(getStr(row, colMap, "红人邮箱"));
                 inf.setContactStatus(parseContactStatus(getStr(row, colMap, "建联情况")));
                 inf.setPaymentCycle(getStr(row, colMap, "付款周期"));
