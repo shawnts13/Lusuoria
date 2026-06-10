@@ -17,10 +17,12 @@ public class DomainController {
     @Autowired private DomainRepository domainRepo;
     @Autowired private DomainCache domainCache;
 
-    /** 获取所有领域（前端下拉用） */
+    /** 获取所有领域，按名称排序（前端下拉用） */
     @GetMapping
     public ApiResponse<List<Domain>> list() {
-        return ApiResponse.success(domainCache.getAll());
+        List<Domain> all = domainCache.getAll();
+        all.sort(java.util.Comparator.comparing(Domain::getName));
+        return ApiResponse.success(all);
     }
 
     /** 新增领域（在红人编辑表单里新增） */

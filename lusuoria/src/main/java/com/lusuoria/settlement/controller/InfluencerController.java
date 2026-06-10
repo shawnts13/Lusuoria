@@ -2,6 +2,7 @@ package com.lusuoria.settlement.controller;
 
 import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.config.DomainCache;
+import com.lusuoria.settlement.config.DomainSyncService;
 import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.dto.request.InfluencerRequest;
@@ -17,6 +18,7 @@ import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.domain.Sort;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -40,6 +42,7 @@ public class InfluencerController {
     @Autowired private EmployeeCache employeeCache;
     @Autowired private DomainCache domainCache;
     @Autowired private InfluencerTeamCache teamCache;
+    @Autowired private DomainSyncService domainSyncService;
 
     // Google Drive 合同上传页面地址（后续在此配置）
     private static final String CONTRACT_UPLOAD_URL = "";
@@ -51,13 +54,21 @@ public class InfluencerController {
             @RequestParam(required = false) String countryMarket,
             @RequestParam(required = false) Long brandId,
             @RequestParam(required = false) String teamName,
+            @RequestParam(required = false) Long followerMin,
+            @RequestParam(required = false) Long followerMax,
             @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "accountName") String sortBy,
+            @RequestParam(defaultValue = "asc") String sortDir,
             @RequestParam(defaultValue = "0")  int page,
             @RequestParam(defaultValue = "20") int size) {
         size = Math.max(1, Math.min(size, 200));
-        PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.ASC, "accountName"));
+        Sort sort = sortDir.equalsIgnoreCase("desc")
+                ? Sort.by(Sort.Direction.DESC, sortBy)
+                : Sort.by(Sort.Direction.ASC,  sortBy);
+        PageRequest pageable = PageRequest.of(page, size, sort);
         Page<Influencer> result = influencerRepo.findByFilters(
-                influencerType, platform, countryMarket, brandId, teamName, keyword, pageable);
+                influencerType, platform, countryMarket, brandId, teamName,
+                followerMin, followerMax, keyword, pageable);
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.success(result.map(this::maskSensitive));
         }
@@ -108,7 +119,9 @@ public class InfluencerController {
         String fn = file.getOriginalFilename();
         if (fn == null || (!fn.endsWith(".xlsx") && !fn.endsWith(".xls")))
             return ApiResponse.error(400, "只支持 .xlsx 或 .xls 格式");
-        return ApiResponse.success(excelHandler.importData(file, RoleUtil.canViewSensitiveFields()));
+        List<String> result = excelHandler.importData(file, RoleUtil.canViewSensitiveFields());
+        domainSyncService.sync();
+        return ApiResponse.success(result);
     }
 
     @PostMapping("/project-counts")
@@ -167,7 +180,9 @@ public class InfluencerController {
             inf.setClientPrice(req.getClientPrice());
         }
 
-        return ApiResponse.success(influencerRepo.save(inf));
+        Influencer saved = influencerRepo.save(inf);
+        domainSyncService.sync();
+        return ApiResponse.success(saved);
     }
 
     @DeleteMapping("/{id}")
@@ -177,6 +192,7 @@ public class InfluencerController {
                 .orElseThrow(() -> new RuntimeException("红人不存在"));
         inf.setIsDeleted(true);
         influencerRepo.save(inf);
+        domainSyncService.sync();
         return ApiResponse.success();
     }
 

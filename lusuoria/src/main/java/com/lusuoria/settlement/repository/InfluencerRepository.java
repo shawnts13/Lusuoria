@@ -26,18 +26,21 @@ public interface InfluencerRepository extends JpaRepository<Influencer, Long> {
     @Query("SELECT i FROM Influencer i " +
            "WHERE i.isDeleted = false " +
            "AND (:influencerType IS NULL OR i.influencerType = :influencerType) " +
-           "AND (:platform IS NULL OR i.platform = :platform) " +
+           "AND (:platform IS NULL OR i.platform LIKE %:platform%) " +
            "AND (:countryMarket IS NULL OR i.countryMarket = :countryMarket) " +
            "AND (:brandId IS NULL OR i.brandId = :brandId) " +
            "AND (:teamName IS NULL OR i.teamName LIKE %:teamName%) " +
-           "AND (:keyword IS NULL OR i.accountName LIKE %:keyword% OR i.teamName LIKE %:keyword%) " +
-           "ORDER BY i.accountName ASC")
+           "AND (:followerMin IS NULL OR i.followerCount >= :followerMin) " +
+           "AND (:followerMax IS NULL OR i.followerCount <= :followerMax) " +
+           "AND (:keyword IS NULL OR i.accountName LIKE %:keyword% OR i.teamName LIKE %:keyword%)")
     Page<Influencer> findByFilters(
             @Param("influencerType") ProjectType influencerType,
             @Param("platform") String platform,
             @Param("countryMarket") String countryMarket,
             @Param("brandId") Long brandId,
             @Param("teamName") String teamName,
+            @Param("followerMin") Long followerMin,
+            @Param("followerMax") Long followerMax,
             @Param("keyword") String keyword,
             Pageable pageable);
 }
