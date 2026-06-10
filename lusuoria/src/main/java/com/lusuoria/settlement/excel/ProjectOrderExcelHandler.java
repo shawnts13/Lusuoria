@@ -163,7 +163,7 @@ public class ProjectOrderExcelHandler {
             setCellStr(row, c++, o.getProjectMonth(), normal);
             setCellStr(row, c++, o.getProjectType() != null ? o.getProjectType().getLabel() : "", normal);
             setCellStr(row, c++, o.getBrand() != null ? o.getBrand().getName() : "", normal);
-            setCellStr(row, c++, o.getInfluencer() != null ? o.getInfluencer().getTeamNames() : "", normal);
+            setCellStr(row, c++, o.getInfluencer() != null ? o.getInfluencer().getTeamName() : "", normal);
             setCellStr(row, c++, o.getInfluencer() != null ? o.getInfluencer().getAccountName() : "", normal);
             setCellStr(row, c++, o.getCooperationContent(), normal);
             setCellNum(row, c++, o.getCooperationQuantity() != null ? (double) o.getCooperationQuantity() : null, normal);

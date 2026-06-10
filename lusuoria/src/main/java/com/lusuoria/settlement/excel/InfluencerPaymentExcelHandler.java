@@ -90,7 +90,7 @@ public class InfluencerPaymentExcelHandler {
 
             setCellStr(row, c++, p.getPaymentNo(), nor);
             setCellStr(row, c++, p.getSettlementMonth(), nor);
-            setCellStr(row, c++, p.getInfluencer() != null ? p.getInfluencer().getTeamNames()   : "", nor);
+            setCellStr(row, c++, p.getInfluencer() != null ? p.getInfluencer().getTeamName()   : "", nor);
             setCellStr(row, c++, p.getInfluencer() != null ? p.getInfluencer().getAccountName() : "", nor);
             setCellStr(row, c++, p.getProjectOrder() != null ? p.getProjectOrder().getInternalProjectNo() : "", nor);
             setCellStr(row, c++, p.getCooperationContent(), nor);

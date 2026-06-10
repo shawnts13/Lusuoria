@@ -272,7 +272,7 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         }
         if (o.getInfluencer() != null) {
             r.setInfluencerId(o.getInfluencer().getId());
-            r.setInfluencerTeam(o.getInfluencer().getTeamNames());
+            r.setInfluencerTeam(o.getInfluencer().getTeamName());
             r.setInfluencerAccount(o.getInfluencer().getAccountName());
         }
         Employee manager = employeeCache.findById(o.getProjectManagerId());
