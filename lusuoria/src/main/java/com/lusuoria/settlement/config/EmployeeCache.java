@@ -32,7 +32,7 @@ public class EmployeeCache {
 
     /** 每4小时自动刷新一次 */
     @Scheduled(fixedDelay = 4 * 60 * 60 * 1000)
-    public void refresh() {
+    public synchronized void refresh() {
         List<Employee> all = employeeRepo.findByIsDeletedFalseOrderByNameAsc();
         Map<String, Employee> nm = new ConcurrentHashMap<String, Employee>();
         Map<Long, Employee>   im = new ConcurrentHashMap<Long, Employee>();

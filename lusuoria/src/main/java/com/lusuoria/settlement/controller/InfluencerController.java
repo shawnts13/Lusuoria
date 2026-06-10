@@ -3,11 +3,11 @@ package com.lusuoria.settlement.controller;
 import com.lusuoria.settlement.dto.request.InfluencerRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.Influencer;
-import com.lusuoria.settlement.enums.InfluencerContactStatus;
 import com.lusuoria.settlement.enums.ProjectType;
 import com.lusuoria.settlement.excel.InfluencerExcelHandler;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.ProjectOrderRepository;
+import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -21,8 +21,6 @@ import javax.validation.Valid;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
-
-import com.lusuoria.settlement.util.RoleUtil;
 
 @RestController
 @RequestMapping("/api/influencers")
@@ -42,15 +40,13 @@ public class InfluencerController {
             @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "0")  int page,
             @RequestParam(defaultValue = "20") int size) {
+        size = Math.max(1, Math.min(size, 200));
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.ASC, "accountName"));
         Page<Influencer> result = influencerRepo.findByFilters(
                 influencerType, platform, countryMarket, teamName, keyword, pageable);
-        // 非敏感角色脱敏敏感字段
         if (!RoleUtil.canViewSensitiveFields()) {
-            result.getContent().forEach(inf -> {
-                inf.setInfluencerCost(null);
-                inf.setClientPrice(null);
-            });
+            // 用 map 生成新对象，不修改 JPA 管理的 Entity 本身
+            return ApiResponse.success(result.map(this::maskSensitive));
         }
         return ApiResponse.success(result);
     }
@@ -60,7 +56,8 @@ public class InfluencerController {
     public ApiResponse<List<Influencer>> simpleList() {
         List<Influencer> list = influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc();
         if (!RoleUtil.canViewSensitiveFields()) {
-            list.forEach(inf -> { inf.setInfluencerCost(null); inf.setClientPrice(null); });
+            return ApiResponse.success(list.stream().map(this::maskSensitive)
+                    .collect(java.util.stream.Collectors.toList()));
         }
         return ApiResponse.success(list);
     }
@@ -70,8 +67,7 @@ public class InfluencerController {
         Influencer inf = influencerRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("红人不存在"));
         if (!RoleUtil.canViewSensitiveFields()) {
-            inf.setInfluencerCost(null);
-            inf.setClientPrice(null);
+            return ApiResponse.success(maskSensitive(inf));
         }
         return ApiResponse.success(inf);
     }
@@ -165,7 +161,19 @@ public class InfluencerController {
         return ApiResponse.success();
     }
 
-    // 列表转逗号分隔字符串
+    /**
+     * 返回一个浅拷贝，将敏感字段置空
+     * 不修改 JPA 管理的原始 Entity，避免意外触发 Hibernate dirty-check update
+     */
+    private Influencer maskSensitive(Influencer inf) {
+        Influencer copy = new Influencer();
+        org.springframework.beans.BeanUtils.copyProperties(inf, copy);
+        copy.setInfluencerCost(null);
+        copy.setClientPrice(null);
+        return copy;
+    }
+
+    // 列转逗号分隔字符串
     private String listToStr(List<String> list) {
         if (list == null || list.isEmpty()) return null;
         StringBuilder sb = new StringBuilder();

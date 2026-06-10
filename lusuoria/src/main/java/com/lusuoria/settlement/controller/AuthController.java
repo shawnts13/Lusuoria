@@ -1,5 +1,6 @@
 package com.lusuoria.settlement.controller;
 
+import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.dto.request.LoginRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.SysUser;
@@ -25,9 +26,9 @@ public class AuthController {
     @Autowired private JwtUtil jwtUtil;
     @Autowired private SysUserRepository userRepo;
     @Autowired private PasswordEncoder passwordEncoder;
+    @Autowired private EmployeeCache employeeCache;
 
     @PostMapping("/login")
-    @Transactional(readOnly = true)
     public ApiResponse<Map<String, Object>> login(@Valid @RequestBody LoginRequest req) {
         Authentication auth = authManager.authenticate(
                 new UsernamePasswordAuthenticationToken(req.getUsername(), req.getPassword()));
@@ -37,10 +38,9 @@ public class AuthController {
 
         String token = jwtUtil.generateToken(user.getUsername(), user.getRole());
 
-        // 显示名称优先用关联员工的姓名，没有关联员工则用用户名
-        String displayName = (user.getEmployee() != null && user.getEmployee().getName() != null)
-                ? user.getEmployee().getName()
-                : user.getUsername();
+        // 用 employeeId 查缓存，不触发懒加载
+        com.lusuoria.settlement.entity.Employee emp = employeeCache.findById(user.getEmployeeId());
+        String displayName = (emp != null) ? emp.getName() : user.getUsername();
 
         Map<String, Object> result = new HashMap<String, Object>();
         result.put("token",       token);

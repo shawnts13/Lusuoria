@@ -1,5 +1,6 @@
 package com.lusuoria.settlement.controller;
 
+import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.dto.request.ChangePasswordRequest;
 import com.lusuoria.settlement.dto.request.UserCreateRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
@@ -26,6 +27,7 @@ public class UserController {
     @Autowired private SysUserRepository userRepo;
     @Autowired private EmployeeRepository employeeRepo;
     @Autowired private PasswordEncoder passwordEncoder;
+    @Autowired private EmployeeCache employeeCache;
 
     @GetMapping
     @PreAuthorize("hasRole('ADMIN')")
@@ -54,8 +56,9 @@ public class UserController {
         user.setEnabled(req.getEnabled() != null ? req.getEnabled() : true);
 
         if (req.getEmployeeId() != null) {
-            Employee emp = employeeRepo.findByIdAndIsDeletedFalse(req.getEmployeeId())
-                    .orElseThrow(() -> new RuntimeException("员工不存在：" + req.getEmployeeId()));
+            // 走缓存，不查库
+            Employee emp = employeeCache.findById(req.getEmployeeId());
+            if (emp == null) throw new RuntimeException("员工不存在：" + req.getEmployeeId());
             user.setEmployee(emp);
         }
 
@@ -83,8 +86,9 @@ public class UserController {
         }
 
         if (req.getEmployeeId() != null) {
-            Employee emp = employeeRepo.findByIdAndIsDeletedFalse(req.getEmployeeId())
-                    .orElseThrow(() -> new RuntimeException("员工不存在：" + req.getEmployeeId()));
+            // 走缓存，不查库
+            Employee emp = employeeCache.findById(req.getEmployeeId());
+            if (emp == null) throw new RuntimeException("员工不存在：" + req.getEmployeeId());
             user.setEmployee(emp);
         } else {
             user.setEmployee(null);
@@ -147,19 +151,18 @@ public class UserController {
         UserResponse r = new UserResponse();
         r.setId(u.getId());
         r.setUsername(u.getUsername());
-        // 显示名称：优先用关联员工姓名，没有则用用户名
-        String displayName = (u.getEmployee() != null && u.getEmployee().getName() != null)
-                ? u.getEmployee().getName()
-                : u.getUsername();
-        r.setDisplayName(displayName);
+
+        // 用 employeeId 字段（直接读列，不触发懒加载）查缓存，零额外 SQL
+        Employee emp = employeeCache.findById(u.getEmployeeId());
+        r.setDisplayName(emp != null ? emp.getName() : u.getUsername());
         r.setRole(u.getRole());
         r.setRoleLabel(roleLabel(u.getRole()));
         r.setEnabled(u.getEnabled());
         r.setCreatedAt(u.getCreatedAt());
         r.setUpdatedAt(u.getUpdatedAt());
-        if (u.getEmployee() != null) {
-            r.setEmployeeId(u.getEmployee().getId());
-            r.setEmployeeName(u.getEmployee().getName());
+        if (emp != null) {
+            r.setEmployeeId(emp.getId());
+            r.setEmployeeName(emp.getName());
         }
         return r;
     }

@@ -33,6 +33,13 @@ public class SysUser extends BaseEntity {
     private Boolean enabled = true;
 
     /**
+     * 关联员工 ID（直接读列，不触发懒加载）
+     * toResponse() 用这个字段查 EmployeeCache，零额外 SQL
+     */
+    @Column(name = "employee_id", insertable = false, updatable = false)
+    private Long employeeId;
+
+    /**
      * 关联员工记录（可选）
      * 关联后右上角显示名称将使用员工姓名，否则显示用户名
      */
