@@ -36,8 +36,8 @@ public class Influencer extends BaseEntity {
     @Column(name = "team_name")
     private String teamName;
 
-    @Column(name = "account_name", nullable = false)
-    private String accountName;             // 红人ID
+    @Column(name = "account_name", nullable = false, unique = true)
+    private String accountName;             // 红人ID（全局唯一）
 
     /** 关联品牌方 id（直读列，不触发懒加载） */
     @Column(name = "brand_id", insertable = false, updatable = false)
