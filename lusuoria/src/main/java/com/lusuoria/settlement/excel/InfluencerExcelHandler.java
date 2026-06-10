@@ -199,12 +199,18 @@ public class InfluencerExcelHandler {
         DataValidationHelper dv = sheet.getDataValidationHelper();
         addDropdown(sheet, dv, colIdxMap, "红人类型(必填)", InfluencerOptions.INFLUENCER_TYPES);
         addDropdown(sheet, dv, colIdxMap, "平台",           InfluencerOptions.PLATFORMS);
-        addDropdown(sheet, dv, colIdxMap, "建联情况",       InfluencerOptions.CONTACT_STATUSES);
+        // 建联情况：过滤掉空字符串，空字符串在 Excel 下拉里会报警
+        String[] contactStatuses = java.util.Arrays.stream(InfluencerOptions.CONTACT_STATUSES)
+                .filter(s -> !s.isEmpty()).toArray(String[]::new);
+        addDropdown(sheet, dv, colIdxMap, "建联情况", contactStatuses);
         addDropdown(sheet, dv, colIdxMap, "付款周期",       InfluencerOptions.PAYMENT_CYCLES);
         addFormulaDropdown(sheet, dv, colIdxMap, "服务国家/市场",
                 "_lists!$A$1:$A$" + InfluencerOptions.COUNTRIES.length);
-        addFormulaDropdown(sheet, dv, colIdxMap, "品牌方",
-                "_lists!$B$1:$B$" + brands.size());
+        // 品牌方：只有有品牌方数据时才添加下拉，否则跳过避免非法范围
+        if (!brands.isEmpty()) {
+            addFormulaDropdown(sheet, dv, colIdxMap, "品牌方",
+                    "_lists!$B$1:$B$" + brands.size());
+        }
 
         // 示例行
         Row ex = sheet.createRow(1);
