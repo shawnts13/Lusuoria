@@ -287,7 +287,7 @@ public class InfluencerExcelHandler {
             }
         }
 
-        int successCount = 0, updateCount = 0;
+        int successCount = 0, updateCount = 0, duplicateSkipCount = 0, processedCount = 0;
 
         // ---- 导入前预加载，避免循环内反复查库 ----
         // 所有现有红人：accountName -> Influencer
@@ -308,6 +308,7 @@ public class InfluencerExcelHandler {
         for (int i = 1; i <= totalRows; i++) {
             Row row = sheet.getRow(i);
             if (row == null || isRowEmpty(row)) continue;
+            processedCount++;
             try {
                 // 兼容导出列名和模板列名
                 String accountName = getStr(row, colMap, "红人ID(必填)");
@@ -328,7 +329,10 @@ public class InfluencerExcelHandler {
                 Influencer inf = existingMap.get(accountName.trim());
 
                 // 重复行：所有出现过的都跳过，让用户自行决定保留哪行
-                if (duplicateAccounts.contains(accountName.trim())) continue;
+                if (duplicateAccounts.contains(accountName.trim())) {
+                    duplicateSkipCount++;
+                    continue;
+                }
 
                 boolean isNew = (inf == null);
                 if (isNew) { inf = new Influencer(); inf.setIsDeleted(false); }
@@ -477,9 +481,16 @@ public class InfluencerExcelHandler {
         for (String t : newTeams)   teamCache.getOrCreate(t);
         for (String d : newDomains) domainCache.getOrCreate(d);
 
-        int skipCount = (totalRows - 1) - successCount - updateCount - errors.size();
-        errors.add(0, "新增 " + successCount + " 条，更新 " + updateCount + " 条，无变化跳过 "
-                + Math.max(0, skipCount) + " 条，失败 " + errors.size() + " 条");
+        int skipCount = processedCount - successCount - updateCount - duplicateSkipCount - errors.size();
+        StringBuilder summary = new StringBuilder();
+        summary.append("新增 ").append(successCount)
+               .append(" 条，更新 ").append(updateCount)
+               .append(" 条，无变化跳过 ").append(Math.max(0, skipCount))
+               .append(" 条");
+        if (duplicateSkipCount > 0)
+            summary.append("，重复行跳过 ").append(duplicateSkipCount).append(" 条（详见下方提示）");
+        summary.append("，失败 ").append(errors.size()).append(" 条");
+        errors.add(0, summary.toString());
         return errors;
     }
 
