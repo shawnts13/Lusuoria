@@ -19,7 +19,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
-import org.springframework.data.domain.Sort;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -178,6 +177,10 @@ public class InfluencerController {
         if (RoleUtil.canViewSensitiveFields()) {
             inf.setInfluencerCost(req.getInfluencerCost());
             inf.setClientPrice(req.getClientPrice());
+            inf.setAdSpendCost(req.getAdSpendCost());
+            inf.setAdSpendTerm(req.getAdSpendTerm());
+            inf.setCopyrightCost(req.getCopyrightCost());
+            inf.setCopyrightTerm(req.getCopyrightTerm());
         }
 
         Influencer saved = influencerRepo.save(inf);
@@ -201,6 +204,10 @@ public class InfluencerController {
         BeanUtils.copyProperties(inf, copy);
         copy.setInfluencerCost(null);
         copy.setClientPrice(null);
+        copy.setAdSpendCost(null);
+        copy.setAdSpendTerm(null);
+        copy.setCopyrightCost(null);
+        copy.setCopyrightTerm(null);
         return copy;
     }
 

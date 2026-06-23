@@ -72,8 +72,12 @@ public class InfluencerExcelHandler {
         cols.add(new String[]{"建联情况",            "0"});
         cols.add(new String[]{"跟进人",              "0"});
         cols.add(new String[]{"备注",                "0"});
-        cols.add(new String[]{"红人成本（美金）",    "1"});
-        cols.add(new String[]{"客户合作价格（美金）","1"});
+        cols.add(new String[]{"红人视频制作与发布成本（美金）", "1"});
+        cols.add(new String[]{"客户合作价格（美金）",          "1"});
+        cols.add(new String[]{"视频投流成本（美金）",          "1"});
+        cols.add(new String[]{"视频投流期限",                  "1"});
+        cols.add(new String[]{"视频版权成本（美金）",          "1"});
+        cols.add(new String[]{"视频版权期限",                  "1"});
         cols.add(new String[]{"合作案例链接",        "0"});
         cols.add(new String[]{"红人邮箱",            "0"});
         cols.add(new String[]{"红人电话",            "0"});
@@ -112,8 +116,12 @@ public class InfluencerExcelHandler {
             setCellStr(row, c++, inf.getFollowerPerson(), wrap);                // 跟进人
             setCellStr(row, c++, inf.getNotes(), wrap);                         // 备注
             if (canViewSensitive) {
-                setCellStrColored(row, c++, inf.getInfluencerCost(), wrap, red);  // 红人成本
+                setCellStrColored(row, c++, inf.getInfluencerCost(), wrap, red);  // 红人视频制作与发布成本
                 setCellStrColored(row, c++, inf.getClientPrice(),    wrap, red);  // 客户合作价格
+                setCellStrColored(row, c++, inf.getAdSpendCost(),    wrap, red);  // 视频投流成本
+                setCellStr(row, c++, inf.getAdSpendTerm(),           wrap);        // 视频投流期限
+                setCellStrColored(row, c++, inf.getCopyrightCost(),  wrap, red);  // 视频版权成本
+                setCellStr(row, c++, inf.getCopyrightTerm(),         wrap);        // 视频版权期限
             }
             setCellStr(row, c++, inf.getCasesLinks(),    wrap);                 // 合作案例链接
             setCellStr(row, c++, inf.getEmail(),         wrap);                 // 红人邮箱
@@ -173,8 +181,12 @@ public class InfluencerExcelHandler {
         cols.add(new String[]{"建联情况",                 "0"});
         cols.add(new String[]{"跟进人",                   "0"});
         cols.add(new String[]{"备注",                     "0"});
-        cols.add(new String[]{"红人成本（美金）",         "1"});
-        cols.add(new String[]{"客户合作价格（美金）",     "1"});
+        cols.add(new String[]{"红人视频制作与发布成本（美金）", "1"});
+        cols.add(new String[]{"客户合作价格（美金）",          "1"});
+        cols.add(new String[]{"视频投流成本（美金）",          "1"});
+        cols.add(new String[]{"视频投流期限",                  "1"});
+        cols.add(new String[]{"视频版权成本（美金）",          "1"});
+        cols.add(new String[]{"视频版权期限",                  "1"});
         cols.add(new String[]{"合作案例链接(多条用换行分隔)", "0"});
         cols.add(new String[]{"红人邮箱",                 "0"});
         cols.add(new String[]{"红人电话",                 "0"});
@@ -205,6 +217,8 @@ public class InfluencerExcelHandler {
                 .filter(s -> !s.isEmpty()).toArray(String[]::new);
         addDropdown(sheet, dv, colIdxMap, "建联情况", contactStatuses);
         addDropdown(sheet, dv, colIdxMap, "付款周期",       InfluencerOptions.PAYMENT_CYCLES);
+        addDropdown(sheet, dv, colIdxMap, "视频投流期限",   InfluencerOptions.TERMS);
+        addDropdown(sheet, dv, colIdxMap, "视频版权期限",   InfluencerOptions.TERMS);
         addFormulaDropdown(sheet, dv, colIdxMap, "服务国家/市场",
                 "_lists!$A$1:$A$" + InfluencerOptions.COUNTRIES.length);
         // 品牌方：只有有品牌方数据时才添加下拉，否则跳过避免非法范围
@@ -235,9 +249,13 @@ public class InfluencerExcelHandler {
         examples.put("建联情况",                 "有合作意愿");
         examples.put("付款周期",                 "30天");
         examples.put("跟进人",                   "Charlene");
-        examples.put("红人成本（美金）",         "500");
-        examples.put("客户合作价格（美金）",     "价格待定，预计1000-1500");
-        examples.put("备注",                     "示例数据，填完后请删除");
+        examples.put("红人视频制作与发布成本（美金）", "500");
+        examples.put("客户合作价格（美金）",           "价格待定，预计1000-1500");
+        examples.put("视频投流成本（美金）",           "200");
+        examples.put("视频投流期限",                   "1年");
+        examples.put("视频版权成本（美金）",           "300");
+        examples.put("视频版权期限",                   "永久");
+        examples.put("备注",                           "示例数据，填完后请删除");
         for (Map.Entry<String, Integer> entry : colIdxMap.entrySet()) {
             String val = examples.get(entry.getKey());
             if (val != null) ex.createCell(entry.getValue()).setCellValue(val);
@@ -445,8 +463,14 @@ public class InfluencerExcelHandler {
                 setIfPresent(inf::setNotes, getStr(row, colMap, "备注"));
 
                 if (canViewSensitive) {
-                    setIfPresent(inf::setInfluencerCost, getStr(row, colMap, "红人成本（美金）"));
+                    String oldCost = getStr(row, colMap, "红人视频制作与发布成本（美金）");
+                    if (!hasValue(oldCost)) oldCost = getStr(row, colMap, "红人成本（美金）"); // 兼容旧模板列名
+                    setIfPresent(inf::setInfluencerCost, oldCost);
                     setIfPresent(inf::setClientPrice,    getStr(row, colMap, "客户合作价格（美金）"));
+                    setIfPresent(inf::setAdSpendCost,    getStr(row, colMap, "视频投流成本（美金）"));
+                    setIfPresent(inf::setAdSpendTerm,    getStr(row, colMap, "视频投流期限"));
+                    setIfPresent(inf::setCopyrightCost,  getStr(row, colMap, "视频版权成本（美金）"));
+                    setIfPresent(inf::setCopyrightTerm,  getStr(row, colMap, "视频版权期限"));
                 }
 
                 if (isNew) {
@@ -610,7 +634,11 @@ public class InfluencerExcelHandler {
             || !eq(original.getFollowerPerson(), updated.getFollowerPerson())
             || !eq(original.getNotes(),          updated.getNotes())
             || !eq(original.getInfluencerCost(), updated.getInfluencerCost())
-            || !eq(original.getClientPrice(),    updated.getClientPrice());
+            || !eq(original.getClientPrice(),    updated.getClientPrice())
+            || !eq(original.getAdSpendCost(),    updated.getAdSpendCost())
+            || !eq(original.getAdSpendTerm(),    updated.getAdSpendTerm())
+            || !eq(original.getCopyrightCost(),  updated.getCopyrightCost())
+            || !eq(original.getCopyrightTerm(),  updated.getCopyrightTerm());
     }
 
     private boolean eq(String a, String b) {

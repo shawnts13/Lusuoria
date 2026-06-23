@@ -95,11 +95,28 @@ public class Influencer extends BaseEntity {
     private String followerPerson;
 
     // ===== 敏感字段（仅 ADMIN / AUDITOR）=====
+    /** 红人视频制作与发布成本（美金），原"红人成本" */
     @Column(name = "influencer_cost", columnDefinition = "TEXT")
     private String influencerCost;
 
     @Column(name = "client_price", columnDefinition = "TEXT")
     private String clientPrice;
+
+    /** 视频投流成本（美金） */
+    @Column(name = "ad_spend_cost", columnDefinition = "TEXT")
+    private String adSpendCost;
+
+    /** 视频投流期限：1年/3年/永久 */
+    @Column(name = "ad_spend_term", length = 20)
+    private String adSpendTerm;
+
+    /** 视频版权成本（美金） */
+    @Column(name = "copyright_cost", columnDefinition = "TEXT")
+    private String copyrightCost;
+
+    /** 视频版权期限：1年/3年/永久 */
+    @Column(name = "copyright_term", length = 20)
+    private String copyrightTerm;
 
     @Column(name = "notes", columnDefinition = "TEXT")
     private String notes;

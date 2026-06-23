@@ -45,8 +45,12 @@ public class InfluencerRequest {
     private String followerPerson;
 
     // 敏感字段
-    private String influencerCost;
+    private String influencerCost;   // 红人视频制作与发布成本（美金）
     private String clientPrice;
+    private String adSpendCost;      // 视频投流成本（美金）
+    private String adSpendTerm;      // 视频投流期限：1年/3年/永久
+    private String copyrightCost;    // 视频版权成本（美金）
+    private String copyrightTerm;    // 视频版权期限：1年/3年/永久
 
     private String notes;
 }

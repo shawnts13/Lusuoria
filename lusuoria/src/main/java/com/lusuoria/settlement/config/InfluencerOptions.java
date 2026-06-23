@@ -21,6 +21,11 @@ public class InfluencerOptions {
         "7天", "14天", "30天"
     };
 
+    /** 视频投流期限 / 视频版权期限 共用此选项 */
+    public static final String[] TERMS = {
+        "1年", "3年", "永久"
+    };
+
     // 注意：领域（domain）已改为数据库表管理，不在此处维护
     // 参见 DomainCache 和 DomainController
 
