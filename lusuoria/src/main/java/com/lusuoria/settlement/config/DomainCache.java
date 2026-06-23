@@ -52,15 +52,27 @@ public class DomainCache {
      * 按名称获取或创建领域（Excel 导入时使用）
      * 如果领域不存在则插入数据库并刷新缓存
      */
-    public Domain getOrCreate(String name) {
+    public synchronized Domain getOrCreate(String name) {
         if (name == null || name.trim().isEmpty()) return null;
-        Domain existing = findByName(name.trim());
+        String trimmed = name.trim();
+        Domain existing = findByName(trimmed);
         if (existing != null) return existing;
-        Domain domain = new Domain();
-        domain.setName(name.trim());
-        domain.setIsDeleted(false);
-        Domain saved = domainRepo.save(domain);
+
+        // 缓存里没有，但数据库可能有一条软删除的同名记录，需复活而非新插入
+        // 否则会撞唯一约束 uk_..._name
+        Domain domain = domainRepo.findByName(trimmed).orElse(null);
+        if (domain != null) {
+            if (Boolean.TRUE.equals(domain.getIsDeleted())) {
+                domain.setIsDeleted(false);
+                domain = domainRepo.save(domain);
+            }
+        } else {
+            domain = new Domain();
+            domain.setName(trimmed);
+            domain.setIsDeleted(false);
+            domain = domainRepo.save(domain);
+        }
         refresh();
-        return saved;
+        return domain;
     }
 }

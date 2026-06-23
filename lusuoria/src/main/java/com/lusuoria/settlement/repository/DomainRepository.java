@@ -14,5 +14,8 @@ public interface DomainRepository extends JpaRepository<Domain, Long> {
 
     Optional<Domain> findByNameAndIsDeletedFalse(String name);
 
+    /** 按名称查询，不论是否软删除（用于复活软删除的领域，避免唯一约束冲突） */
+    Optional<Domain> findByName(String name);
+
     boolean existsByNameAndIsDeletedFalse(String name);
 }

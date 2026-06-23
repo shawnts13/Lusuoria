@@ -51,15 +51,26 @@ public class InfluencerTeamCache {
     /**
      * 按名称获取或创建团队（保存红人时自动注册新团队名）
      */
-    public InfluencerTeam getOrCreate(String name) {
+    public synchronized InfluencerTeam getOrCreate(String name) {
         if (name == null || name.trim().isEmpty()) return null;
-        InfluencerTeam existing = findByName(name.trim());
+        String trimmed = name.trim();
+        InfluencerTeam existing = findByName(trimmed);
         if (existing != null) return existing;
-        InfluencerTeam team = new InfluencerTeam();
-        team.setName(name.trim());
-        team.setIsDeleted(false);
-        InfluencerTeam saved = teamRepo.save(team);
+
+        // 缓存里没有，但数据库可能有软删除的同名记录，复活而非新插入，避免唯一约束冲突
+        InfluencerTeam team = teamRepo.findByName(trimmed).orElse(null);
+        if (team != null) {
+            if (Boolean.TRUE.equals(team.getIsDeleted())) {
+                team.setIsDeleted(false);
+                team = teamRepo.save(team);
+            }
+        } else {
+            team = new InfluencerTeam();
+            team.setName(trimmed);
+            team.setIsDeleted(false);
+            team = teamRepo.save(team);
+        }
         refresh();
-        return saved;
+        return team;
     }
 }
