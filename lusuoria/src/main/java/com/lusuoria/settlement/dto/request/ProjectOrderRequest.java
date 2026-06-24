@@ -30,17 +30,14 @@ public class ProjectOrderRequest {
 
     private String clientOrderNo;
     private String cooperationContent;
-    private Integer cooperationQuantity;
     private Boolean isOwnResource;
 
     // 收入
-    private BigDecimal clientUnitPrice;
-    private BigDecimal clientRevenue;
-    private String currency;
+    /** 客户合作价格（美金），参与利润计算 */
+    private BigDecimal clientPrice;
     private BigDecimal exchangeRate;
 
     // 成本
-    private BigDecimal influencerUnitPrice;
     private BigDecimal influencerCost;
     private BigDecimal otherExternalCost;
     private BigDecimal internalExecutionCost;

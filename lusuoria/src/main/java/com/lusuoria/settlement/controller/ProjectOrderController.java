@@ -38,13 +38,15 @@ public class ProjectOrderController {
             @RequestParam(required = false) ClientStatus clientStatus,
             @RequestParam(required = false) InternalSettlementStatus internalStatus,
             @RequestParam(required = false) Long influencerId,
+            @RequestParam(required = false) String accountName,
+            @RequestParam(required = false) Long projectManagerId,
             @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "0")  int page,
             @RequestParam(defaultValue = "20") int size) {
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return ApiResponse.success(projectOrderService.list(
                 brandId, projectMonth, projectType, clientStatus, internalStatus,
-                influencerId, keyword, pageable));
+                influencerId, accountName, projectManagerId, keyword, pageable));
     }
 
     @GetMapping("/{id}")

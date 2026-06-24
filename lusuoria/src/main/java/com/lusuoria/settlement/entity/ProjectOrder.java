@@ -40,9 +40,6 @@ public class ProjectOrder extends BaseEntity {
     @Column(name = "cooperation_content", length = 200)
     private String cooperationContent;
 
-    @Column(name = "cooperation_quantity")
-    private Integer cooperationQuantity;
-
     @Column(name = "is_own_resource")
     private Boolean isOwnResource = false; // 自带资源/供应商项目（影响提成比例）
 
@@ -72,27 +69,19 @@ public class ProjectOrder extends BaseEntity {
     private Employee projectManager;
 
     // ===== 收入 =====
-    @Column(name = "client_unit_price", precision = 15, scale = 2)
-    private BigDecimal clientUnitPrice;
-
-    @Column(name = "client_revenue", precision = 15, scale = 2)
-    private BigDecimal clientRevenue;
-
-    @Column(name = "currency", length = 10)
-    private String currency;
+    /** 客户合作价格（美金），原"客户单价"，现参与利润计算 */
+    @Column(name = "client_price", precision = 15, scale = 2)
+    private BigDecimal clientPrice;
 
     @Column(name = "exchange_rate", precision = 10, scale = 4)
     private BigDecimal exchangeRate;
 
     @Column(name = "rmb_revenue", precision = 15, scale = 2)
-    private BigDecimal rmbRevenue;        // 自动计算
+    private BigDecimal rmbRevenue;        // 自动计算（公司利润（人民币））
 
     // ===== 成本 =====
-    @Column(name = "influencer_unit_price", precision = 15, scale = 2)
-    private BigDecimal influencerUnitPrice;
-
     @Column(name = "influencer_cost", precision = 15, scale = 2)
-    private BigDecimal influencerCost;    // 自动计算
+    private BigDecimal influencerCost;    // 自动计算（中国红人）或直填（海外红人）
 
     @Column(name = "other_external_cost", precision = 15, scale = 2)
     private BigDecimal otherExternalCost;

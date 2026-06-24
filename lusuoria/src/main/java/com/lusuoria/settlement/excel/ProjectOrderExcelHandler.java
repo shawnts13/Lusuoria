@@ -50,45 +50,40 @@ public class ProjectOrderExcelHandler {
         }
     }
 
-    /** 导出列定义（有序） */
+    /** 导出列定义（有序），按需求4指定的展示顺序排列 */
     private static final List<ColDef> EXPORT_COLS = new ArrayList<ColDef>();
     static {
-        // 非敏感
-        EXPORT_COLS.add(new ColDef("内部项目编号", false));
-        EXPORT_COLS.add(new ColDef("甲方订单号",   false));
-        EXPORT_COLS.add(new ColDef("项目月份",     false));
-        EXPORT_COLS.add(new ColDef("项目类型",     false));
-        EXPORT_COLS.add(new ColDef("品牌方",       false));
-        EXPORT_COLS.add(new ColDef("红人团队",     false));
-        EXPORT_COLS.add(new ColDef("红人社媒完整名字",     false));
-        EXPORT_COLS.add(new ColDef("合作内容",     false));
-        EXPORT_COLS.add(new ColDef("合作数量",     false));
-        EXPORT_COLS.add(new ColDef("项目负责人",   false));
-        // 非敏感（成本/操作信息，所有角色可见）
-        EXPORT_COLS.add(new ColDef("客户单价",     false));
-        EXPORT_COLS.add(new ColDef("币种",         false));
-        EXPORT_COLS.add(new ColDef("汇率",         false));
-        EXPORT_COLS.add(new ColDef("红人单价",     false));
-        EXPORT_COLS.add(new ColDef("红人成本",     false));
+        EXPORT_COLS.add(new ColDef("甲方订单号",       false));
+        EXPORT_COLS.add(new ColDef("项目月份",         false));
+        EXPORT_COLS.add(new ColDef("品牌方",           false));
+        EXPORT_COLS.add(new ColDef("项目类型",         false));
+        EXPORT_COLS.add(new ColDef("红人社媒完整名字", false));
+        EXPORT_COLS.add(new ColDef("项目负责人",       false));
+        EXPORT_COLS.add(new ColDef("甲方状态",         false));
+        EXPORT_COLS.add(new ColDef("内部状态",         false));
         // 敏感（收入/利润/提成，仅 ADMIN / AUDITOR）
-        EXPORT_COLS.add(new ColDef("客户收入",     true));
-        EXPORT_COLS.add(new ColDef("人民币收入",   true));
-        EXPORT_COLS.add(new ColDef("其他外部成本", true));
-        EXPORT_COLS.add(new ColDef("内部执行成本", true));
-        EXPORT_COLS.add(new ColDef("项目毛利",     true));
-        EXPORT_COLS.add(new ColDef("可分配利润",   true));
-        EXPORT_COLS.add(new ColDef("提成比例",     true));
-        EXPORT_COLS.add(new ColDef("负责人提成",   true));
-        EXPORT_COLS.add(new ColDef("公司剩余利润", true));
-        // 非敏感
-        EXPORT_COLS.add(new ColDef("甲方状态",     false));
-        EXPORT_COLS.add(new ColDef("合同签署",     false));
-        EXPORT_COLS.add(new ColDef("预计到账日",   false));
-        EXPORT_COLS.add(new ColDef("实际到账日",   false));
-        EXPORT_COLS.add(new ColDef("已到账金额",   false));
-        EXPORT_COLS.add(new ColDef("内部状态",     false));
-        EXPORT_COLS.add(new ColDef("备注",         false));
-        EXPORT_COLS.add(new ColDef("创建时间",     false));
+        EXPORT_COLS.add(new ColDef("客户合作价格",     true));
+        EXPORT_COLS.add(new ColDef("红人成本",         true));
+        EXPORT_COLS.add(new ColDef("币种",             false));
+        EXPORT_COLS.add(new ColDef("汇率",             false));
+        EXPORT_COLS.add(new ColDef("项目毛利",         true));
+        EXPORT_COLS.add(new ColDef("公司利润（美金）", true));
+        EXPORT_COLS.add(new ColDef("公司利润（人民币）", true));
+        EXPORT_COLS.add(new ColDef("负责人提成",       true));
+        EXPORT_COLS.add(new ColDef("提成比例",         true));
+        EXPORT_COLS.add(new ColDef("已到账金额",       false));
+        EXPORT_COLS.add(new ColDef("内部项目编号",     false));
+        // 其余信息列（非展示顺序要求里的，附在后面）
+        EXPORT_COLS.add(new ColDef("红人团队",         false));
+        EXPORT_COLS.add(new ColDef("合作内容",         false));
+        EXPORT_COLS.add(new ColDef("其他外部成本",     true));
+        EXPORT_COLS.add(new ColDef("内部执行成本",     true));
+        EXPORT_COLS.add(new ColDef("可分配利润",       true));
+        EXPORT_COLS.add(new ColDef("合同签署",         false));
+        EXPORT_COLS.add(new ColDef("预计到账日",       false));
+        EXPORT_COLS.add(new ColDef("实际到账日",       false));
+        EXPORT_COLS.add(new ColDef("备注",             false));
+        EXPORT_COLS.add(new ColDef("创建时间",         false));
     }
 
     /**
@@ -100,18 +95,15 @@ public class ProjectOrderExcelHandler {
         TEMPLATE_COLS.add(new ColDef("项目月份(必填,如202604)",             false));
         TEMPLATE_COLS.add(new ColDef("项目类型(必填,海外红人/中国红人)",     false));
         TEMPLATE_COLS.add(new ColDef("品牌方名称(必填)",                    false));
-        TEMPLATE_COLS.add(new ColDef("红人社媒完整名字",                           false));
+        TEMPLATE_COLS.add(new ColDef("红人社媒完整名字",                    false));
         TEMPLATE_COLS.add(new ColDef("甲方订单号",                         false));
         TEMPLATE_COLS.add(new ColDef("合作内容",                           false));
-        TEMPLATE_COLS.add(new ColDef("合作数量",                           false));
         TEMPLATE_COLS.add(new ColDef("项目负责人",                         false));
-        // 非敏感（成本/操作信息，所有角色可见）
-        TEMPLATE_COLS.add(new ColDef("客户单价",                           false));
-        TEMPLATE_COLS.add(new ColDef("币种(USD/RMB)",                     false));
-        TEMPLATE_COLS.add(new ColDef("汇率(外币填写,如7.25)",              false));
-        TEMPLATE_COLS.add(new ColDef("红人单价",                           false));
+        // 非敏感（汇率所有角色可见，币种固定为美元不再需要填写）
+        TEMPLATE_COLS.add(new ColDef("汇率(如7.25)",                       false));
         // 敏感（收入/利润/提成，仅 ADMIN / AUDITOR）
-        TEMPLATE_COLS.add(new ColDef("客户收入(必填)",                     true));
+        TEMPLATE_COLS.add(new ColDef("客户合作价格(必填)",                 true));
+        TEMPLATE_COLS.add(new ColDef("红人成本",                           true));
         TEMPLATE_COLS.add(new ColDef("其他外部成本",                       true));
         TEMPLATE_COLS.add(new ColDef("内部执行成本",                       true));
         TEMPLATE_COLS.add(new ColDef("提成比例(如0.25表示25%)",            true));
@@ -157,49 +149,47 @@ public class ProjectOrderExcelHandler {
             Row row = sheet.createRow(i + 1);
             int c = 0;
 
-            // 非敏感基础列（前10列始终写入）
-            setCellStr(row, c++, o.getInternalProjectNo(), normal);
+            // 非敏感基础列（按需求4指定顺序）
             setCellStr(row, c++, o.getClientOrderNo(), normal);
             setCellStr(row, c++, o.getProjectMonth(), normal);
-            setCellStr(row, c++, o.getProjectType() != null ? o.getProjectType().getLabel() : "", normal);
             setCellStr(row, c++, o.getBrand() != null ? o.getBrand().getName() : "", normal);
-            setCellStr(row, c++, o.getInfluencer() != null ? o.getInfluencer().getTeamName() : "", normal);
+            setCellStr(row, c++, o.getProjectType() != null ? o.getProjectType().getLabel() : "", normal);
             setCellStr(row, c++, o.getInfluencer() != null ? o.getInfluencer().getAccountName() : "", normal);
-            setCellStr(row, c++, o.getCooperationContent(), normal);
-            setCellNum(row, c++, o.getCooperationQuantity() != null ? (double) o.getCooperationQuantity() : null, normal);
             setCellStr(row, c++, o.getProjectManager() != null ? o.getProjectManager().getName() : "", normal);
-
-            // 非敏感成本列（所有角色）
-            setCellMoney(row, c++, o.getClientUnitPrice(), money);
-            setCellStr(row, c++, o.getCurrency(), normal);
-            setCellMoney(row, c++, o.getExchangeRate(), money);
-            setCellMoney(row, c++, o.getInfluencerUnitPrice(), money);
-            setCellMoney(row, c++, o.getInfluencerCost(), money);
+            setCellStr(row, c++, o.getClientStatus() != null ? o.getClientStatus().getLabel() : "", normal);
+            setCellStr(row, c++, o.getInternalStatus() != null ? o.getInternalStatus().getLabel() : "", normal);
 
             // 敏感列（只有有权限才写入，无权限跳过，列根本不存在）
             if (canViewSensitive) {
-                setCellMoney(row, c++, o.getClientRevenue(), money);
-                setCellMoney(row, c++, o.getRmbRevenue(), money);
-                setCellMoney(row, c++, o.getOtherExternalCost(), money);
-                setCellMoney(row, c++, o.getInternalExecutionCost(), money);
+                setCellMoney(row, c++, o.getClientPrice(), money);
+                setCellMoney(row, c++, o.getInfluencerCost(), money);
+            }
+            setCellStr(row, c++, "美元", normal);
+            setCellMoney(row, c++, o.getExchangeRate(), money);
+            if (canViewSensitive) {
                 setCellMoney(row, c++, o.getGrossProfit(), money);
-                setCellMoney(row, c++, o.getDistributableProfit(), money);
-                // 提成比例转百分比
+                setCellMoney(row, c++, o.getCompanyNetProfit(), money);
+                setCellMoney(row, c++, o.getRmbRevenue(), money);
+                setCellMoney(row, c++, o.getCommissionAmount(), money);
                 Cell rateCell = row.createCell(c++);
                 rateCell.setCellValue(o.getCommissionRate() != null
                         ? o.getCommissionRate().doubleValue() * 100 + "%" : "");
                 rateCell.setCellStyle(normal);
-                setCellMoney(row, c++, o.getCommissionAmount(), money);
-                setCellMoney(row, c++, o.getCompanyNetProfit(), money);
             }
+            setCellMoney(row, c++, o.getReceivedAmount(), money);
+            setCellStr(row, c++, o.getInternalProjectNo(), normal);
 
-            // 非敏感尾部列（始终写入）
-            setCellStr(row, c++, o.getClientStatus() != null ? o.getClientStatus().getLabel() : "", normal);
+            // 其余信息列
+            setCellStr(row, c++, o.getInfluencer() != null ? o.getInfluencer().getTeamName() : "", normal);
+            setCellStr(row, c++, o.getCooperationContent(), normal);
+            if (canViewSensitive) {
+                setCellMoney(row, c++, o.getOtherExternalCost(), money);
+                setCellMoney(row, c++, o.getInternalExecutionCost(), money);
+                setCellMoney(row, c++, o.getDistributableProfit(), money);
+            }
             setCellStr(row, c++, Boolean.TRUE.equals(o.getContractSigned()) ? "是" : "否", normal);
             setCellStr(row, c++, o.getExpectedReceiptDate() != null ? sdf.format(o.getExpectedReceiptDate()) : "", normal);
             setCellStr(row, c++, o.getActualReceiptDate()   != null ? sdf.format(o.getActualReceiptDate())   : "", normal);
-            setCellMoney(row, c++, o.getReceivedAmount(), money);
-            setCellStr(row, c++, o.getInternalStatus() != null ? o.getInternalStatus().getLabel() : "", normal);
             setCellStr(row, c++, o.getNotes(), normal);
             setCellStr(row, c++, o.getCreatedAt() != null ? sdtf.format(o.getCreatedAt()) : "", normal);
         }
@@ -364,7 +354,6 @@ public class ProjectOrderExcelHandler {
                 req.setInfluencerId(influencerId);
                 req.setClientOrderNo(clientOrderNo);
                 req.setCooperationContent(cooperationContent);
-                req.setCooperationQuantity(getIntByHeader(row, colIndexMap, "合作数量"));
 
                 String managerName = getByHeader(row, colIndexMap, "项目负责人");
                 if (managerName != null && !managerName.isEmpty()) {
@@ -375,11 +364,9 @@ public class ProjectOrderExcelHandler {
                     req.setProjectManagerId(mgId);
                 }
 
-                req.setClientUnitPrice(getBigDecimalByHeader(row, colIndexMap, "客户单价"));
-                req.setCurrency(getByHeader(row, colIndexMap, "币种(USD/RMB)"));
-                req.setExchangeRate(getBigDecimalByHeader(row, colIndexMap, "汇率(外币填写,如7.25)"));
-                req.setInfluencerUnitPrice(getBigDecimalByHeader(row, colIndexMap, "红人单价"));
-                req.setClientRevenue(getBigDecimalByHeader(row, colIndexMap, "客户收入(必填)"));
+                req.setClientPrice(getBigDecimalByHeader(row, colIndexMap, "客户合作价格(必填)"));
+                req.setInfluencerCost(getBigDecimalByHeader(row, colIndexMap, "红人成本"));
+                req.setExchangeRate(getBigDecimalByHeader(row, colIndexMap, "汇率(如7.25)"));
                 req.setOtherExternalCost(getBigDecimalByHeader(row, colIndexMap, "其他外部成本"));
                 req.setInternalExecutionCost(getBigDecimalByHeader(row, colIndexMap, "内部执行成本"));
                 req.setCommissionRate(getBigDecimalByHeader(row, colIndexMap, "提成比例(如0.25表示25%)"));
@@ -408,16 +395,13 @@ public class ProjectOrderExcelHandler {
         examples.put("项目月份(必填,如202604)",          "202604");
         examples.put("项目类型(必填,海外红人/中国红人)", "海外红人");
         examples.put("品牌方名称(必填)",                 "TEMU");
-        examples.put("红人社媒完整名字",                        "bigdogtech");
+        examples.put("红人社媒完整名字",                 "bigdogtech");
         examples.put("甲方订单号",                      "ORD-2024-001");
         examples.put("合作内容",                        "视频拍摄");
-        examples.put("合作数量",                        "5");
         examples.put("项目负责人",                      "Charlene");
-        examples.put("客户单价",                        "200");
-        examples.put("客户收入(必填)",                   "1000");
-        examples.put("币种(USD/RMB)",                  "USD");
-        examples.put("汇率(外币填写,如7.25)",            "7.25");
-        examples.put("红人单价",                        "130");
+        examples.put("汇率(如7.25)",                    "7.25");
+        examples.put("客户合作价格(必填)",               "1000");
+        examples.put("红人成本",                        "650");
         examples.put("其他外部成本",                    "0");
         examples.put("内部执行成本",                    "0");
         examples.put("提成比例(如0.25表示25%)",          "0.30");

@@ -27,7 +27,6 @@ public class ProjectOrderResponse {
     private ProjectType projectType;
     private String projectTypeLabel;
     private String cooperationContent;
-    private Integer cooperationQuantity;
     private Boolean isOwnResource;
 
     // 关联
@@ -40,22 +39,20 @@ public class ProjectOrderResponse {
     private String projectManagerName;
 
     // ===== 非敏感成本字段（所有角色可见）=====
-    private BigDecimal clientUnitPrice;      // 客户单价
-    private String currency;
+    private String currency;                 // 固定为美元展示
     private BigDecimal exchangeRate;
-    private BigDecimal influencerUnitPrice;  // 红人单价
     private BigDecimal influencerCost;       // 红人成本
 
     // ===== 敏感字段（ADMIN / AUDITOR 才能看到，其他角色返回 null）=====
-    private BigDecimal clientRevenue;        // 客户收入
-    private BigDecimal rmbRevenue;           // 人民币收入
+    private BigDecimal clientPrice;          // 客户合作价格（美金）
+    private BigDecimal rmbRevenue;           // 公司利润（人民币）
     private BigDecimal otherExternalCost;    // 其他外部成本
     private BigDecimal internalExecutionCost;// 内部执行成本
     private BigDecimal grossProfit;          // 项目毛利
     private BigDecimal distributableProfit;  // 可分配利润
     private BigDecimal commissionRate;       // 提成比例
     private BigDecimal commissionAmount;     // 提成金额
-    private BigDecimal companyNetProfit;     // 公司利润
+    private BigDecimal companyNetProfit;     // 公司利润（美金）
     // ===== 敏感字段结束 =====
 
     // 甲方状态（所有人可见）

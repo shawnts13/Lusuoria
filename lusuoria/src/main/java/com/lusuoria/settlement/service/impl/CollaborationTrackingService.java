@@ -183,7 +183,7 @@ public class CollaborationTrackingService {
         order.setCooperationContent(t.getDemandContent());
 
         // 金额：把跟踪记录的成本/客户价带到项目订单（解析成数字，解析失败则留空）
-        order.setClientRevenue(parseAmount(t.getClientPrice()));
+        order.setClientPrice(parseAmount(t.getClientPrice()));
         order.setInfluencerCost(parseAmount(t.getInfluencerCost()));
 
         // 项目编号：复用现有 ProjectNoGenerator（品牌-月份-红人ID-序号）

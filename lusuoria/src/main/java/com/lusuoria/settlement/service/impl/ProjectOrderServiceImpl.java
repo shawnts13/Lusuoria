@@ -57,7 +57,6 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         order.setProjectType(req.getProjectType());
         order.setClientOrderNo(req.getClientOrderNo());
         order.setCooperationContent(req.getCooperationContent());
-        order.setCooperationQuantity(req.getCooperationQuantity());
         order.setIsOwnResource(Boolean.TRUE.equals(req.getIsOwnResource()));
 
         Brand brand = brandRepo.findByIdAndIsDeletedFalse(req.getBrandId())
@@ -82,11 +81,8 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
             order.setCommissionRate(req.getCommissionRate());
         }
 
-        order.setClientUnitPrice(req.getClientUnitPrice());
-        order.setClientRevenue(req.getClientRevenue());
-        order.setCurrency(req.getCurrency());
+        order.setClientPrice(req.getClientPrice());
         order.setExchangeRate(req.getExchangeRate());
-        order.setInfluencerUnitPrice(req.getInfluencerUnitPrice());
         order.setInfluencerCost(req.getInfluencerCost());
         order.setOtherExternalCost(req.getOtherExternalCost());
         order.setInternalExecutionCost(req.getInternalExecutionCost());
@@ -123,10 +119,11 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
     @Transactional(readOnly = true)
     public Page<ProjectOrderResponse> list(Long brandId, String projectMonth, ProjectType projectType,
                                            ClientStatus clientStatus, InternalSettlementStatus internalStatus,
-                                           Long influencerId, String keyword, Pageable pageable) {
+                                           Long influencerId, String accountName, Long projectManagerId,
+                                           String keyword, Pageable pageable) {
         return projectOrderRepo
                 .findByFilters(brandId, projectMonth, projectType, clientStatus, internalStatus,
-                        influencerId, keyword, pageable)
+                        influencerId, accountName, projectManagerId, keyword, pageable)
                 .map(this::toResponse);
     }
 
@@ -164,7 +161,7 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
 
         for (ProjectOrder o : orders) {
             if (canView) {
-                totalRevenue    = totalRevenue.add(safe(o.getClientRevenue()));
+                totalRevenue    = totalRevenue.add(safe(o.getClientPrice()));
                 totalRmb        = totalRmb.add(safe(o.getRmbRevenue()));
                 totalInfCost    = totalInfCost.add(safe(o.getInfluencerCost()));
                 totalOther      = totalOther.add(safe(o.getOtherExternalCost()));
@@ -261,7 +258,6 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         r.setProjectType(o.getProjectType());
         r.setProjectTypeLabel(o.getProjectType() != null ? o.getProjectType().getLabel() : null);
         r.setCooperationContent(o.getCooperationContent());
-        r.setCooperationQuantity(o.getCooperationQuantity());
         r.setIsOwnResource(o.getIsOwnResource());
 
         // brand 和 projectManager 走缓存，influencer 由 @EntityGraph 提前 JOIN 进来
@@ -282,15 +278,13 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         }
 
         // 非敏感成本字段（所有角色可见）
-        r.setClientUnitPrice(o.getClientUnitPrice());
-        r.setCurrency(o.getCurrency());
+        r.setCurrency("美元");
         r.setExchangeRate(o.getExchangeRate());
-        r.setInfluencerUnitPrice(o.getInfluencerUnitPrice());
         r.setInfluencerCost(o.getInfluencerCost());
 
         // 敏感字段：仅 ADMIN / AUDITOR 可见
         if (canView) {
-            r.setClientRevenue(o.getClientRevenue());
+            r.setClientPrice(o.getClientPrice());
             r.setRmbRevenue(o.getRmbRevenue());
 
             r.setOtherExternalCost(o.getOtherExternalCost());
