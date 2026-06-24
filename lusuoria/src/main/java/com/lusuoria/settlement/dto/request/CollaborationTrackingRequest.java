@@ -14,7 +14,7 @@ public class CollaborationTrackingRequest {
 
     // teamName / countryMarket 不在请求中传入，由后端根据 accountName 从红人库自动填充快照
 
-    @NotBlank(message = "红人ID不能为空")
+    @NotBlank(message = "红人社媒完整名字不能为空")
     private String accountName;
 
     /** 合作平台，前端多选后用换行符拼接 */

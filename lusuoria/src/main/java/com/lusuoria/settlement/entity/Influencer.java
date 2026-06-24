@@ -37,16 +37,11 @@ public class Influencer extends BaseEntity {
     private String teamName;
 
     @Column(name = "account_name", nullable = false, unique = true)
-    private String accountName;             // 红人ID（全局唯一）
+    private String accountName;             // 红人社媒完整名字（全局唯一）
 
-    /** 关联品牌方 id（直读列，不触发懒加载） */
-    @Column(name = "brand_id", insertable = false, updatable = false)
-    private Long brandId;
-
-    @JsonIgnore
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "brand_id")
-    private Brand brand;
+    /** 品牌方（多个，换行符分隔，如 "TEMU\nSHEIN"），不再是外键 */
+    @Column(name = "brands", columnDefinition = "TEXT")
+    private String brands;
 
     @Column(name = "country_market")
     private String countryMarket;           // 服务国家/市场
@@ -99,24 +94,13 @@ public class Influencer extends BaseEntity {
     @Column(name = "influencer_cost", columnDefinition = "TEXT")
     private String influencerCost;
 
-    @Column(name = "client_price", columnDefinition = "TEXT")
-    private String clientPrice;
-
     /** 视频投流成本（美金） */
     @Column(name = "ad_spend_cost", columnDefinition = "TEXT")
     private String adSpendCost;
 
-    /** 视频投流期限：1年/3年/永久 */
-    @Column(name = "ad_spend_term", length = 20)
-    private String adSpendTerm;
-
     /** 视频版权成本（美金） */
     @Column(name = "copyright_cost", columnDefinition = "TEXT")
     private String copyrightCost;
-
-    /** 视频版权期限：1年/3年/永久 */
-    @Column(name = "copyright_term", length = 20)
-    private String copyrightTerm;
 
     @Column(name = "notes", columnDefinition = "TEXT")
     private String notes;

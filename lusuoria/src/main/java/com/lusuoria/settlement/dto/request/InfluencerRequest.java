@@ -17,10 +17,11 @@ public class InfluencerRequest {
 
     private String teamName;         // 单个团队
 
-    @NotBlank(message = "红人ID不能为空")
+    @NotBlank(message = "红人社媒完整名字不能为空")
     private String accountName;
 
-    private Long   brandId;          // 关联品牌方
+    /** 品牌方列表，前端传 List，后端存换行符分隔字符串 */
+    private List<String> brands;
     private String countryMarket;    // 服务国家/市场
     private String platform;
 
@@ -46,11 +47,8 @@ public class InfluencerRequest {
 
     // 敏感字段
     private String influencerCost;   // 红人视频制作与发布成本（美金）
-    private String clientPrice;
     private String adSpendCost;      // 视频投流成本（美金）
-    private String adSpendTerm;      // 视频投流期限：1年/3年/永久
     private String copyrightCost;    // 视频版权成本（美金）
-    private String copyrightTerm;    // 视频版权期限：1年/3年/永久
 
     private String notes;
 }

@@ -17,7 +17,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 红人合作跟踪 - 业务逻辑
@@ -65,17 +67,22 @@ public class CollaborationTrackingService {
 
         // 红人必须存在于红人库
         Influencer influencer = influencerRepo.findByAccountNameAndIsDeletedFalse(req.getAccountName().trim())
-                .orElseThrow(() -> new RuntimeException("红人ID不存在于红人库：" + req.getAccountName()));
+                .orElseThrow(() -> new RuntimeException("红人社媒完整名字不存在于红人库：" + req.getAccountName()));
 
         // 团队 / 国家：拷贝快照（不随红人库变）
         tracking.setAccountName(influencer.getAccountName());
         tracking.setTeamName(influencer.getTeamName());
         tracking.setCountryMarket(influencer.getCountryMarket());
 
-        // 品牌方
+        // 品牌方：必须是该红人在红人模块里已关联的品牌方之一
         if (req.getBrandId() != null) {
             Brand brand = brandCache.findById(req.getBrandId());
             if (brand == null) throw new RuntimeException("品牌方不存在：" + req.getBrandId());
+            Set<String> influencerBrands = splitToSet(influencer.getBrands());
+            if (!influencerBrands.contains(brand.getName())) {
+                throw new RuntimeException("品牌方 [" + brand.getName() + "] 未在红人模块中关联到该红人，"
+                        + "请先在红人模块维护后再选择");
+            }
             tracking.setBrand(brand);
         } else {
             tracking.setBrand(null);
@@ -219,5 +226,15 @@ public class CollaborationTrackingService {
         if (a == null && b == null) return true;
         if (a == null || b == null) return false;
         return a.equals(b);
+    }
+
+    /** 把红人的换行/逗号分隔品牌方文本拆分成集合，用于校验跟踪记录的品牌方是否合法 */
+    private Set<String> splitToSet(String raw) {
+        Set<String> set = new HashSet<String>();
+        if (raw == null || raw.trim().isEmpty()) return set;
+        for (String s : raw.split("[,\n\r]+")) {
+            if (!s.trim().isEmpty()) set.add(s.trim());
+        }
+        return set;
     }
 }

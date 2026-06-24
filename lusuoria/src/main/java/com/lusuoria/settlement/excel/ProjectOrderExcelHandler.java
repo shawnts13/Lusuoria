@@ -60,7 +60,7 @@ public class ProjectOrderExcelHandler {
         EXPORT_COLS.add(new ColDef("项目类型",     false));
         EXPORT_COLS.add(new ColDef("品牌方",       false));
         EXPORT_COLS.add(new ColDef("红人团队",     false));
-        EXPORT_COLS.add(new ColDef("红人ID",     false));
+        EXPORT_COLS.add(new ColDef("红人社媒完整名字",     false));
         EXPORT_COLS.add(new ColDef("合作内容",     false));
         EXPORT_COLS.add(new ColDef("合作数量",     false));
         EXPORT_COLS.add(new ColDef("项目负责人",   false));
@@ -100,7 +100,7 @@ public class ProjectOrderExcelHandler {
         TEMPLATE_COLS.add(new ColDef("项目月份(必填,如202604)",             false));
         TEMPLATE_COLS.add(new ColDef("项目类型(必填,海外红人/中国红人)",     false));
         TEMPLATE_COLS.add(new ColDef("品牌方名称(必填)",                    false));
-        TEMPLATE_COLS.add(new ColDef("红人ID",                           false));
+        TEMPLATE_COLS.add(new ColDef("红人社媒完整名字",                           false));
         TEMPLATE_COLS.add(new ColDef("甲方订单号",                         false));
         TEMPLATE_COLS.add(new ColDef("合作内容",                           false));
         TEMPLATE_COLS.add(new ColDef("合作数量",                           false));
@@ -313,7 +313,9 @@ public class ProjectOrderExcelHandler {
                 String projectMonth = getByHeader(row, colIndexMap, "项目月份(必填,如202604)");
                 String typeStr      = getByHeader(row, colIndexMap, "项目类型(必填,海外红人/中国红人)");
                 String brandName    = getByHeader(row, colIndexMap, "品牌方名称(必填)");
-                String accountName  = getByHeader(row, colIndexMap, "红人ID");
+                String accountName  = getByHeader(row, colIndexMap, "红人社媒完整名字");
+                if (accountName == null || accountName.isEmpty())
+                    accountName = getByHeader(row, colIndexMap, "红人ID"); // 兼容旧模板列名
                 String clientOrderNo = getByHeader(row, colIndexMap, "甲方订单号");
                 String cooperationContent = getByHeader(row, colIndexMap, "合作内容");
 
@@ -330,7 +332,7 @@ public class ProjectOrderExcelHandler {
                 if (accountName != null && !accountName.isEmpty()) {
                     influencerId = influencerMap.get(accountName.trim());
                     if (influencerId == null) {
-                        errors.add("第" + (i + 1) + "行：红人ID [" + accountName + "] 不存在"); continue;
+                        errors.add("第" + (i + 1) + "行：红人社媒完整名字 [" + accountName + "] 不存在"); continue;
                     }
                 }
 
@@ -406,7 +408,7 @@ public class ProjectOrderExcelHandler {
         examples.put("项目月份(必填,如202604)",          "202604");
         examples.put("项目类型(必填,海外红人/中国红人)", "海外红人");
         examples.put("品牌方名称(必填)",                 "TEMU");
-        examples.put("红人ID",                        "bigdogtech");
+        examples.put("红人社媒完整名字",                        "bigdogtech");
         examples.put("甲方订单号",                      "ORD-2024-001");
         examples.put("合作内容",                        "视频拍摄");
         examples.put("合作数量",                        "5");

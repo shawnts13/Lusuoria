@@ -51,7 +51,7 @@ public class InfluencerController {
             @RequestParam(required = false) ProjectType influencerType,
             @RequestParam(required = false) String platform,
             @RequestParam(required = false) String countryMarket,
-            @RequestParam(required = false) Long brandId,
+            @RequestParam(required = false) String brandName,
             @RequestParam(required = false) String teamName,
             @RequestParam(required = false) Long followerMin,
             @RequestParam(required = false) Long followerMax,
@@ -66,7 +66,7 @@ public class InfluencerController {
                 : Sort.by(Sort.Direction.ASC,  sortBy);
         PageRequest pageable = PageRequest.of(page, size, sort);
         Page<Influencer> result = influencerRepo.findByFilters(
-                influencerType, platform, countryMarket, brandId, teamName,
+                influencerType, platform, countryMarket, brandName, teamName,
                 followerMin, followerMax, keyword, pageable);
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.success(result.map(this::maskSensitive));
@@ -164,23 +164,14 @@ public class InfluencerController {
         inf.setFollowerPerson(req.getFollowerPerson());
         inf.setNotes(req.getNotes());
 
-        // 关联品牌方
-        if (req.getBrandId() != null) {
-            Brand brand = brandCache.findById(req.getBrandId());
-            if (brand == null) throw new RuntimeException("品牌方不存在：" + req.getBrandId());
-            inf.setBrand(brand);
-        } else {
-            inf.setBrand(null);
-        }
+        // 品牌方（多选，换行符分隔存储）
+        inf.setBrands(listToStr(req.getBrands(), "\n"));
 
         // 敏感字段只有有权限的角色才能修改
         if (RoleUtil.canViewSensitiveFields()) {
             inf.setInfluencerCost(req.getInfluencerCost());
-            inf.setClientPrice(req.getClientPrice());
             inf.setAdSpendCost(req.getAdSpendCost());
-            inf.setAdSpendTerm(req.getAdSpendTerm());
             inf.setCopyrightCost(req.getCopyrightCost());
-            inf.setCopyrightTerm(req.getCopyrightTerm());
         }
 
         Influencer saved = influencerRepo.save(inf);
@@ -203,11 +194,8 @@ public class InfluencerController {
         Influencer copy = new Influencer();
         BeanUtils.copyProperties(inf, copy);
         copy.setInfluencerCost(null);
-        copy.setClientPrice(null);
         copy.setAdSpendCost(null);
-        copy.setAdSpendTerm(null);
         copy.setCopyrightCost(null);
-        copy.setCopyrightTerm(null);
         return copy;
     }
 

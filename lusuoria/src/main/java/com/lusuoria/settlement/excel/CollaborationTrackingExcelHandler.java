@@ -47,7 +47,7 @@ public class CollaborationTrackingExcelHandler {
         {"品牌方",                     "0", "0"},
         {"红人团队",                   "0", "1"},  // 仅导出，模板不含（导入时系统自动填充）
         {"服务国家/市场",              "0", "1"},  // 仅导出，模板不含（导入时系统自动填充）
-        {"红人ID",                     "0", "0"},
+        {"红人社媒完整名字",           "0", "0"},
         {"合作平台",                   "0", "0"},
         {"需求内容",                   "0", "0"},
         {"视频发布链接",               "0", "0"},
@@ -143,7 +143,7 @@ public class CollaborationTrackingExcelHandler {
         // 示例行
         Map<String, String> ex = new HashMap<String, String>();
         ex.put("品牌方", "TEMU");
-        ex.put("红人ID", "bigdogtech");
+        ex.put("红人社媒完整名字", "bigdogtech");
         ex.put("合作平台", "Instagram\nTikTok");
         ex.put("需求内容", "1 IG+TT");
         ex.put("视频发布链接", "https://instagram.com/p/xxx");
@@ -199,17 +199,18 @@ public class CollaborationTrackingExcelHandler {
             if (row == null || isRowEmpty(row)) continue;
             processedCount++;
             try {
-                // 红人ID（兼容"达人名称"列名）
+                // 红人社媒完整名字（兼容旧列名"红人ID"和"达人名称"）
                 String accountName = firstNonNull(
+                        getStr(row, colMap, "红人社媒完整名字"),
                         getStr(row, colMap, "红人ID"),
                         getStr(row, colMap, "达人名称"),
                         getStr(row, colMap, "达人"));
                 if (accountName == null || accountName.isEmpty()) {
-                    errors.add("第" + (i + 1) + "行：红人ID为空，跳过"); continue;
+                    errors.add("第" + (i + 1) + "行：红人社媒完整名字为空，跳过"); continue;
                 }
                 Influencer influencer = influencerMap.get(accountName.trim());
                 if (influencer == null) {
-                    errors.add("第" + (i + 1) + "行：红人ID [" + accountName + "] 不在红人库，跳过"); continue;
+                    errors.add("第" + (i + 1) + "行：红人社媒完整名字 [" + accountName + "] 不在红人库，跳过"); continue;
                 }
 
                 CollaborationTracking t = new CollaborationTracking();
@@ -219,11 +220,21 @@ public class CollaborationTrackingExcelHandler {
                 t.setTeamName(influencer.getTeamName());
                 t.setCountryMarket(influencer.getCountryMarket());
 
-                // 品牌方
+                // 品牌方：必须是该红人在红人模块里已关联的品牌方之一，否则报错跳过
                 String brandName = getStr(row, colMap, "品牌方");
                 if (brandName != null && !brandName.isEmpty()) {
+                    Set<String> influencerBrands = splitToSet(influencer.getBrands());
+                    if (!influencerBrands.contains(brandName.trim())) {
+                        errors.add("第" + (i + 1) + "行：品牌方 [" + brandName + "] 未在红人模块中关联到红人 ["
+                                + accountName + "]，请先在红人模块维护该红人的品牌方后再重新导入");
+                        continue;
+                    }
                     Brand brand = brandCache.findByName(brandName.trim());
-                    if (brand != null) t.setBrand(brand);
+                    if (brand == null) {
+                        errors.add("第" + (i + 1) + "行：品牌方 [" + brandName + "] 不存在，请检查品牌方管理模块");
+                        continue;
+                    }
+                    t.setBrand(brand);
                 }
 
                 // 合作平台：优先取"合作平台"列，没有则从"合作资源"/"需求内容"智能提取
@@ -386,6 +397,16 @@ public class CollaborationTrackingExcelHandler {
             case NUMERIC: return String.valueOf((long) cell.getNumericCellValue());
             default:      return null;
         }
+    }
+
+    /** 把换行/逗号分隔的文本拆分成 trim 后的字符串集合（红人品牌方校验用） */
+    private Set<String> splitToSet(String raw) {
+        Set<String> set = new HashSet<String>();
+        if (raw == null || raw.trim().isEmpty()) return set;
+        for (String s : raw.split("[,\n\r]+")) {
+            if (!s.trim().isEmpty()) set.add(s.trim());
+        }
+        return set;
     }
 
     private String firstNonNull(String... vals) {

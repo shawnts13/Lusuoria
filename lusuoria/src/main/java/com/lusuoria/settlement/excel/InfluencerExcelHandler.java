@@ -63,7 +63,7 @@ public class InfluencerExcelHandler {
         cols.add(new String[]{"品牌方",              "0"});
         cols.add(new String[]{"红人团队",            "0"});
         cols.add(new String[]{"红人类型",            "0"});
-        cols.add(new String[]{"红人ID",              "0"});
+        cols.add(new String[]{"红人社媒完整名字",    "0"});
         cols.add(new String[]{"服务国家/市场",       "0"});
         cols.add(new String[]{"平台",                "0"});
         cols.add(new String[]{"主页链接",            "0"});
@@ -73,11 +73,8 @@ public class InfluencerExcelHandler {
         cols.add(new String[]{"跟进人",              "0"});
         cols.add(new String[]{"备注",                "0"});
         cols.add(new String[]{"红人视频制作与发布成本（美金）", "1"});
-        cols.add(new String[]{"客户合作价格（美金）",          "1"});
         cols.add(new String[]{"视频投流成本（美金）",          "1"});
-        cols.add(new String[]{"视频投流期限",                  "1"});
         cols.add(new String[]{"视频版权成本（美金）",          "1"});
-        cols.add(new String[]{"视频版权期限",                  "1"});
         cols.add(new String[]{"合作案例链接",        "0"});
         cols.add(new String[]{"红人邮箱",            "0"});
         cols.add(new String[]{"红人电话",            "0"});
@@ -102,11 +99,10 @@ public class InfluencerExcelHandler {
             Row row = sheet.createRow(i + 1);
             int c = 0;
 
-            Brand brand = brandCache.findById(inf.getBrandId());
-            setCellStr(row, c++, brand != null ? brand.getName() : "", wrap);  // 品牌方
+            setCellStr(row, c++, inf.getBrands(),        wrap);                 // 品牌方（多个换行）
             setCellStr(row, c++, inf.getTeamName(),      wrap);                 // 红人团队
             setCellStr(row, c++, inf.getInfluencerType() != null ? inf.getInfluencerType().getLabel() : "", wrap); // 红人类型
-            setCellStr(row, c++, inf.getAccountName(),   wrap);                 // 红人ID
+            setCellStr(row, c++, inf.getAccountName(),   wrap);                 // 红人社媒完整名字
             setCellStr(row, c++, inf.getCountryMarket(), wrap);                 // 服务国家/市场
             setCellStr(row, c++, inf.getPlatform(),      wrap);                 // 平台
             setCellStr(row, c++, inf.getLinks(),         wrap);                 // 主页链接
@@ -117,11 +113,8 @@ public class InfluencerExcelHandler {
             setCellStr(row, c++, inf.getNotes(), wrap);                         // 备注
             if (canViewSensitive) {
                 setCellStrColored(row, c++, inf.getInfluencerCost(), wrap, red);  // 红人视频制作与发布成本
-                setCellStrColored(row, c++, inf.getClientPrice(),    wrap, red);  // 客户合作价格
                 setCellStrColored(row, c++, inf.getAdSpendCost(),    wrap, red);  // 视频投流成本
-                setCellStr(row, c++, inf.getAdSpendTerm(),           wrap);        // 视频投流期限
                 setCellStrColored(row, c++, inf.getCopyrightCost(),  wrap, red);  // 视频版权成本
-                setCellStr(row, c++, inf.getCopyrightTerm(),         wrap);        // 视频版权期限
             }
             setCellStr(row, c++, inf.getCasesLinks(),    wrap);                 // 合作案例链接
             setCellStr(row, c++, inf.getEmail(),         wrap);                 // 红人邮箱
@@ -157,22 +150,15 @@ public class InfluencerExcelHandler {
         for (int i = 0; i < InfluencerOptions.COUNTRIES.length; i++) {
             hide.createRow(i).createCell(0).setCellValue(InfluencerOptions.COUNTRIES[i]);
         }
-        // 品牌方列表写入隐藏 sheet（列 B）
-        List<Brand> brands = brandCache.getAll();
-        for (int i = 0; i < brands.size(); i++) {
-            Row r = hide.getRow(i);
-            if (r == null) r = hide.createRow(i);
-            r.createCell(1).setCellValue(brands.get(i).getName());
-        }
 
         XSSFCellStyle hdrN = headerStyle(wb, false);
         XSSFCellStyle hdrS = headerStyle(wb, true);
 
         List<String[]> cols = new ArrayList<String[]>();
-        cols.add(new String[]{"品牌方",                   "0"});
+        cols.add(new String[]{"品牌方(多个用换行分隔)",   "0"});
         cols.add(new String[]{"红人团队",                 "0"});
         cols.add(new String[]{"红人类型(必填)",           "0"});
-        cols.add(new String[]{"红人ID(必填)",              "0"});
+        cols.add(new String[]{"红人社媒完整名字(必填)",   "0"});
         cols.add(new String[]{"服务国家/市场",            "0"});
         cols.add(new String[]{"平台(多个用换行分隔)",     "0"});
         cols.add(new String[]{"主页链接(多条用换行分隔)", "0"});
@@ -182,11 +168,8 @@ public class InfluencerExcelHandler {
         cols.add(new String[]{"跟进人",                   "0"});
         cols.add(new String[]{"备注",                     "0"});
         cols.add(new String[]{"红人视频制作与发布成本（美金）", "1"});
-        cols.add(new String[]{"客户合作价格（美金）",          "1"});
         cols.add(new String[]{"视频投流成本（美金）",          "1"});
-        cols.add(new String[]{"视频投流期限",                  "1"});
         cols.add(new String[]{"视频版权成本（美金）",          "1"});
-        cols.add(new String[]{"视频版权期限",                  "1"});
         cols.add(new String[]{"合作案例链接(多条用换行分隔)", "0"});
         cols.add(new String[]{"红人邮箱",                 "0"});
         cols.add(new String[]{"红人电话",                 "0"});
@@ -217,23 +200,17 @@ public class InfluencerExcelHandler {
                 .filter(s -> !s.isEmpty()).toArray(String[]::new);
         addDropdown(sheet, dv, colIdxMap, "建联情况", contactStatuses);
         addDropdown(sheet, dv, colIdxMap, "付款周期",       InfluencerOptions.PAYMENT_CYCLES);
-        addDropdown(sheet, dv, colIdxMap, "视频投流期限",   InfluencerOptions.TERMS);
-        addDropdown(sheet, dv, colIdxMap, "视频版权期限",   InfluencerOptions.TERMS);
         addFormulaDropdown(sheet, dv, colIdxMap, "服务国家/市场",
                 "_lists!$A$1:$A$" + InfluencerOptions.COUNTRIES.length);
-        // 品牌方：只有有品牌方数据时才添加下拉，否则跳过避免非法范围
-        if (!brands.isEmpty()) {
-            addFormulaDropdown(sheet, dv, colIdxMap, "品牌方",
-                    "_lists!$B$1:$B$" + brands.size());
-        }
+        // 品牌方改为多选（换行/逗号分隔），不再用单选下拉
 
         // 示例行
         Row ex = sheet.createRow(1);
         Map<String, String> examples = new LinkedHashMap<String, String>();
         examples.put("红人类型(必填)",           "海外红人");
         examples.put("红人团队",                 "游琳团队");
-        examples.put("红人ID(必填)",              "bigdogtech");
-        examples.put("品牌方",                   "TEMU");
+        examples.put("红人社媒完整名字(必填)",    "bigdogtech");
+        examples.put("品牌方(多个用换行分隔)",   "TEMU");
         examples.put("服务国家/市场",            "美国");
         examples.put("平台",                     "TikTok");
         examples.put("所属领域(多个用换行分隔)", "科技");
@@ -250,11 +227,8 @@ public class InfluencerExcelHandler {
         examples.put("付款周期",                 "30天");
         examples.put("跟进人",                   "Charlene");
         examples.put("红人视频制作与发布成本（美金）", "500");
-        examples.put("客户合作价格（美金）",           "价格待定，预计1000-1500");
         examples.put("视频投流成本（美金）",           "200");
-        examples.put("视频投流期限",                   "1年");
         examples.put("视频版权成本（美金）",           "300");
-        examples.put("视频版权期限",                   "永久");
         examples.put("备注",                           "示例数据，填完后请删除");
         for (Map.Entry<String, Integer> entry : colIdxMap.entrySet()) {
             String val = examples.get(entry.getKey());
@@ -288,9 +262,7 @@ public class InfluencerExcelHandler {
         for (int i = 1; i <= totalRows; i++) {
             Row row = sheet.getRow(i);
             if (row == null || isRowEmpty(row)) continue;
-            String accountName = getStr(row, colMap, "红人ID(必填)");
-            if (accountName == null || accountName.isEmpty())
-                accountName = getStr(row, colMap, "红人ID");
+            String accountName = readAccountName(row, colMap);
             if (accountName != null && !accountName.isEmpty()) {
                 accountRowMap.computeIfAbsent(accountName.trim(),
                         k -> new java.util.ArrayList<Integer>()).add(i + 1);
@@ -300,7 +272,7 @@ public class InfluencerExcelHandler {
         for (Map.Entry<String, List<Integer>> entry : accountRowMap.entrySet()) {
             if (entry.getValue().size() > 1) {
                 duplicateAccounts.add(entry.getKey());
-                errors.add("红人ID [" + entry.getKey() + "] 在 Excel 中重复出现，位于第 "
+                errors.add("红人社媒完整名字 [" + entry.getKey() + "] 在 Excel 中重复出现，位于第 "
                         + entry.getValue().toString() + " 行，请删除重复行后重新导入，本次已跳过重复行");
             }
         }
@@ -312,10 +284,6 @@ public class InfluencerExcelHandler {
         Map<String, Influencer> existingMap = new HashMap<String, Influencer>();
         influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc()
                 .forEach(inf -> existingMap.put(inf.getAccountName().trim(), inf));
-
-        // 品牌方：name -> Brand
-        Map<String, Brand> brandMap = new HashMap<String, Brand>();
-        brandCache.getAll().forEach(b -> brandMap.put(b.getName().trim(), b));
 
         // 收集所有需要新建/更新的 Influencer，最后批量 save
         List<Influencer> toSave = new ArrayList<Influencer>();
@@ -329,11 +297,9 @@ public class InfluencerExcelHandler {
             processedCount++;
             try {
                 // 兼容导出列名和模板列名
-                String accountName = getStr(row, colMap, "红人ID(必填)");
-                if (accountName == null || accountName.isEmpty())
-                    accountName = getStr(row, colMap, "红人ID");
+                String accountName = readAccountName(row, colMap);
                 if (accountName == null || accountName.isEmpty()) {
-                    errors.add("第" + (i + 1) + "行：红人ID不能为空"); continue;
+                    errors.add("第" + (i + 1) + "行：红人社媒完整名字不能为空"); continue;
                 }
 
                 String typeStr = getStr(row, colMap, "红人类型(必填)");
@@ -367,14 +333,15 @@ public class InfluencerExcelHandler {
                     inf.setTeamName(teamName.trim());
                 }
 
-                // 品牌方
-                String brandName = getStr(row, colMap, "品牌方");
-                if (hasValue(brandName)) {
-                    Brand brand = brandMap.get(brandName.trim());
-                    if (brand == null) {
-                        errors.add("第" + (i + 1) + "行：品牌方 [" + brandName + "] 不存在"); continue;
+                // 品牌方（多选，换行/逗号分隔，存为换行分隔文本）
+                String brandRaw = getStr(row, colMap, "品牌方(多个用换行分隔)");
+                if (brandRaw == null) brandRaw = getStr(row, colMap, "品牌方");
+                if (hasValue(brandRaw)) {
+                    java.util.LinkedHashSet<String> brandSet = new java.util.LinkedHashSet<String>();
+                    for (String b : brandRaw.split("[,\n\r]+")) {
+                        if (!b.trim().isEmpty()) brandSet.add(b.trim());
                     }
-                    inf.setBrand(brand);
+                    if (!brandSet.isEmpty()) inf.setBrands(String.join("\n", brandSet));
                 }
 
                 setIfPresent(inf::setCountryMarket, getStr(row, colMap, "服务国家/市场"));
@@ -466,11 +433,8 @@ public class InfluencerExcelHandler {
                     String oldCost = getStr(row, colMap, "红人视频制作与发布成本（美金）");
                     if (!hasValue(oldCost)) oldCost = getStr(row, colMap, "红人成本（美金）"); // 兼容旧模板列名
                     setIfPresent(inf::setInfluencerCost, oldCost);
-                    setIfPresent(inf::setClientPrice,    getStr(row, colMap, "客户合作价格（美金）"));
                     setIfPresent(inf::setAdSpendCost,    getStr(row, colMap, "视频投流成本（美金）"));
-                    setIfPresent(inf::setAdSpendTerm,    getStr(row, colMap, "视频投流期限"));
                     setIfPresent(inf::setCopyrightCost,  getStr(row, colMap, "视频版权成本（美金）"));
-                    setIfPresent(inf::setCopyrightTerm,  getStr(row, colMap, "视频版权期限"));
                 }
 
                 if (isNew) {
@@ -487,11 +451,8 @@ public class InfluencerExcelHandler {
                 }
 
             } catch (Exception e) {
-                log.error("红人导入第{}行失败，accountName={}，原因：{}",
-                        (i + 1),
-                        getStr(sheet.getRow(i), colMap, "红人ID(必填)") != null
-                                ? getStr(sheet.getRow(i), colMap, "红人ID(必填)")
-                                : getStr(sheet.getRow(i), colMap, "红人ID"),
+                log.error("红人导入第{}行失败，红人={}，原因：{}",
+                        (i + 1), readAccountName(sheet.getRow(i), colMap),
                         e.getMessage(), e);
                 errors.add("第" + (i + 1) + "行导入失败：" + e.getMessage());
             }
@@ -618,7 +579,7 @@ public class InfluencerExcelHandler {
         return !eq(original.getInfluencerType() != null ? original.getInfluencerType().name() : null,
                    updated.getInfluencerType()   != null ? updated.getInfluencerType().name()   : null)
             || !eq(original.getTeamName(),       updated.getTeamName())
-            || !eqLong(original.getBrandId(),         updated.getBrandId())
+            || !eq(original.getBrands(),         updated.getBrands())
             || !eq(original.getCountryMarket(),  updated.getCountryMarket())
             || !eq(original.getPlatform(),       updated.getPlatform())
             || !eq(original.getDomains(),        updated.getDomains())
@@ -634,11 +595,8 @@ public class InfluencerExcelHandler {
             || !eq(original.getFollowerPerson(), updated.getFollowerPerson())
             || !eq(original.getNotes(),          updated.getNotes())
             || !eq(original.getInfluencerCost(), updated.getInfluencerCost())
-            || !eq(original.getClientPrice(),    updated.getClientPrice())
             || !eq(original.getAdSpendCost(),    updated.getAdSpendCost())
-            || !eq(original.getAdSpendTerm(),    updated.getAdSpendTerm())
-            || !eq(original.getCopyrightCost(),  updated.getCopyrightCost())
-            || !eq(original.getCopyrightTerm(),  updated.getCopyrightTerm());
+            || !eq(original.getCopyrightCost(),  updated.getCopyrightCost());
     }
 
     private boolean eq(String a, String b) {
@@ -656,6 +614,18 @@ public class InfluencerExcelHandler {
     /** Excel 单元格有实际内容（非null、非空、非纯空格） */
     private boolean hasValue(String s) {
         return s != null && !s.trim().isEmpty();
+    }
+
+    /** 读取红人社媒完整名字，兼容新旧列名 */
+    private String readAccountName(Row row, Map<String, Integer> colMap) {
+        String[] candidates = {
+            "红人社媒完整名字(必填)", "红人社媒完整名字", "红人ID(必填)", "红人ID"
+        };
+        for (String h : candidates) {
+            String v = getStr(row, colMap, h);
+            if (v != null && !v.isEmpty()) return v;
+        }
+        return null;
     }
 
     /** 只有有值时才调用 setter，空白不覆盖原值 */
