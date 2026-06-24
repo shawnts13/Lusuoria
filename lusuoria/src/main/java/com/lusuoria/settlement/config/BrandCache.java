@@ -37,6 +37,16 @@ public class BrandCache {
         return idMap.get(id);
     }
 
+    /** 按名称查找（Excel 导入用），名称匹配去除首尾空格 */
+    public Brand findByName(String name) {
+        if (name == null || name.trim().isEmpty()) return null;
+        String trimmed = name.trim();
+        for (Brand b : idMap.values()) {
+            if (trimmed.equals(b.getName())) return b;
+        }
+        return null;
+    }
+
     public List<Brand> getAll() {
         return new java.util.ArrayList<Brand>(idMap.values());
     }

@@ -45,6 +45,12 @@ public class OptionConfigController {
                 InfluencerOptions.COUNTRIES,
                 InfluencerOptions.COUNTRIES));
 
+        // 红人合作跟踪 - 进度
+        result.put("collab_progress", toOptions(
+                new String[]{"PENDING_DRAFT", "PENDING_PUBLISH", "PENDING_REVISION",
+                             "PUBLISHED_UNSETTLED", "DELAYED", "SETTLED"},
+                new String[]{"待草稿", "待发布", "待修改", "已发布（未结算）", "暂时延期", "已结算"}));
+
         return ApiResponse.success(result);
     }
 

@@ -20,7 +20,16 @@ public interface ProjectOrderRepository extends JpaRepository<ProjectOrder, Long
 
     Optional<ProjectOrder> findByInternalProjectNoAndIsDeletedFalse(String internalProjectNo);
 
+    /** 检查内部项目编号是否已存在（含软删除，因唯一约束覆盖全表） */
+    boolean existsByInternalProjectNo(String internalProjectNo);
+
     Optional<ProjectOrder> findByIdAndIsDeletedFalse(Long id);
+
+    /** 按甲方订单号查询未删除的项目订单（合作跟踪联动用） */
+    List<ProjectOrder> findByClientOrderNoAndIsDeletedFalse(String clientOrderNo);
+
+    /** 是否存在指定甲方订单号的未删除项目订单（防止重复生成） */
+    boolean existsByClientOrderNoAndIsDeletedFalse(String clientOrderNo);
 
     /**
      * 导入去重：根据「甲方订单号 + 品牌方 + 项目月份」判断是否已存在
