@@ -85,12 +85,21 @@ public interface ProjectOrderRepository extends JpaRepository<ProjectOrder, Long
             @Param("keyword") String keyword,
             Pageable pageable);
 
-    @EntityGraph(attributePaths = {"influencer"})
+    @EntityGraph(attributePaths = {"influencer", "brand", "projectManager"})
     @Query("SELECT p FROM ProjectOrder p " +
            "WHERE p.isDeleted = false " +
            "AND p.projectMonth = :month " +
            "ORDER BY p.brand.name ASC, p.internalProjectNo ASC")
     List<ProjectOrder> findByProjectMonth(@Param("month") String month);
+
+    /** 数据看板用：按月份范围（闭区间，字符串比较，格式 yyyyMM 可直接比较）查询 */
+    @EntityGraph(attributePaths = {"influencer", "brand", "projectManager"})
+    @Query("SELECT p FROM ProjectOrder p " +
+           "WHERE p.isDeleted = false " +
+           "AND p.projectMonth >= :startMonth AND p.projectMonth <= :endMonth")
+    List<ProjectOrder> findByProjectMonthBetween(
+            @Param("startMonth") String startMonth,
+            @Param("endMonth") String endMonth);
 
     @Query("SELECT COUNT(p) FROM ProjectOrder p " +
            "WHERE p.isDeleted = false " +

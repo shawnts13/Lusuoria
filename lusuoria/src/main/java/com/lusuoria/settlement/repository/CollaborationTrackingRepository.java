@@ -57,4 +57,11 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("clientOrderId") String clientOrderId,
             @Param("clientPaymentBatch") String clientPaymentBatch,
             Pageable pageable);
+
+    /**
+     * 数据看板用：取出全部未删除记录，月份归属（发布月份，若无则归创建月份）
+     * 的精确判断在 Service 层用 Java 完成，避免不同数据库方言下日期函数写法
+     * 不一致、以及"跨月范围+按月归属"组合逻辑在 SQL 里难以正确表达的问题。
+     */
+    List<CollaborationTracking> findByIsDeletedFalse();
 }
