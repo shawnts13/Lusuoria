@@ -49,7 +49,7 @@ public class CollaborationTrackingExcelHandler {
         {"服务国家/市场",              "0", "1"},  // 仅导出，模板不含（导入时系统自动填充）
         {"红人社媒完整名字",           "0", "0"},
         {"合作平台",                   "0", "0"},
-        {"需求内容",                   "0", "0"},
+        {"需求内容(具体产品名)",       "0", "0"},
         {"视频发布链接",               "0", "0"},
         {"发布时间",                   "0", "0"},
         {"进度",                       "0", "0"},
@@ -145,7 +145,7 @@ public class CollaborationTrackingExcelHandler {
         ex.put("品牌方", "TEMU");
         ex.put("红人社媒完整名字", "bigdogtech");
         ex.put("合作平台", "Instagram\nTikTok");
-        ex.put("需求内容", "1 IG+TT");
+        ex.put("需求内容(具体产品名)", "手持游戏机");
         ex.put("视频发布链接", "https://instagram.com/p/xxx");
         ex.put("发布时间", "2026-04-09");
         ex.put("进度", "已发布（未结算）");
@@ -240,6 +240,7 @@ public class CollaborationTrackingExcelHandler {
                 // 合作平台：优先取"合作平台"列，没有则从"合作资源"/"需求内容"智能提取
                 String platformRaw = getStr(row, colMap, "合作平台");
                 String demandRaw = firstNonNull(
+                        getStr(row, colMap, "需求内容(具体产品名)"),
                         getStr(row, colMap, "需求内容"),
                         getStr(row, colMap, "合作资源"));
                 String platform = (platformRaw != null && !platformRaw.isEmpty())
