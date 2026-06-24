@@ -8,6 +8,10 @@ import com.lusuoria.settlement.repository.ExchangeRateCacheRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
@@ -71,7 +75,18 @@ public class ExchangeRateService {
         String url = API_BASE + dateStr + "?base=USD&symbols=CNY";
 
         try {
-            String responseBody = restTemplate.getForObject(url, String.class);
+            HttpHeaders headers = new HttpHeaders();
+            // Frankfurter API 部署在 Cloudflare 后面，无 User-Agent 的请求容易被
+            // Cloudflare 当作机器人流量拦截（错误码 1010），这里模拟正常浏览器请求头
+            headers.set("User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+            headers.set("Accept", "application/json");
+            HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
+
+            ResponseEntity<String> response = restTemplate.exchange(
+                    url, HttpMethod.GET, requestEntity, String.class);
+            String responseBody = response.getBody();
             JsonNode root = objectMapper.readTree(responseBody);
 
             JsonNode cnyNode = root.path("rates").path("CNY");
