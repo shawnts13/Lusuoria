@@ -68,6 +68,8 @@ public class DashboardStatsService {
 
         BigDecimal totalClientPrice = BigDecimal.ZERO;
         BigDecimal totalInfluencerCost = BigDecimal.ZERO;
+        BigDecimal totalOtherCost = BigDecimal.ZERO;
+        BigDecimal totalExecCost = BigDecimal.ZERO;
         BigDecimal totalGrossProfit = BigDecimal.ZERO;
         BigDecimal totalDistributable = BigDecimal.ZERO;
         BigDecimal totalCommission = BigDecimal.ZERO;
@@ -77,6 +79,8 @@ public class DashboardStatsService {
             Computed c = compute(o);
             totalClientPrice    = totalClientPrice.add(c.clientPrice);
             totalInfluencerCost = totalInfluencerCost.add(c.influencerCost);
+            totalOtherCost      = totalOtherCost.add(c.otherExternalCost);
+            totalExecCost       = totalExecCost.add(c.internalExecutionCost);
             totalGrossProfit    = totalGrossProfit.add(c.grossProfit);
             totalDistributable  = totalDistributable.add(c.distributableProfit);
             totalCommission     = totalCommission.add(c.commissionAmount);
@@ -88,6 +92,8 @@ public class DashboardStatsService {
                 .videoProjectCount(videoCount)
                 .totalClientPrice(convert(totalClientPrice, rate, toRmb))
                 .totalInfluencerCost(convert(totalInfluencerCost, rate, toRmb))
+                .totalOtherExternalCost(convert(totalOtherCost, rate, toRmb))
+                .totalInternalExecutionCost(convert(totalExecCost, rate, toRmb))
                 .totalGrossProfit(convert(totalGrossProfit, rate, toRmb))
                 .totalDistributableProfit(convert(totalDistributable, rate, toRmb))
                 .totalCommissionAmount(convert(totalCommission, rate, toRmb))
@@ -293,6 +299,8 @@ public class DashboardStatsService {
         Computed c = new Computed();
         c.clientPrice = clientPrice;
         c.influencerCost = influencerCost;
+        c.otherExternalCost = otherCost;
+        c.internalExecutionCost = execCost;
         c.grossProfit = grossProfit;
         c.distributableProfit = distributable;
         c.commissionAmount = commission;
@@ -303,6 +311,8 @@ public class DashboardStatsService {
     private static class Computed {
         BigDecimal clientPrice;
         BigDecimal influencerCost;
+        BigDecimal otherExternalCost;
+        BigDecimal internalExecutionCost;
         BigDecimal grossProfit;
         BigDecimal distributableProfit;
         BigDecimal commissionAmount;

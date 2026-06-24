@@ -28,6 +28,12 @@ public class DashboardSummaryResponse {
     /** 红人成本合计 */
     private BigDecimal totalInfluencerCost;
 
+    /** 其他外部成本合计 */
+    private BigDecimal totalOtherExternalCost;
+
+    /** 内部执行人力成本合计 */
+    private BigDecimal totalInternalExecutionCost;
+
     /** 项目毛利合计 = 客户合作价格 - 红人成本 - 其他外部成本 */
     private BigDecimal totalGrossProfit;
 

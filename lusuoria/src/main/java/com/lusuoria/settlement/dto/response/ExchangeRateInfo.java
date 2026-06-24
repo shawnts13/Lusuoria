@@ -27,4 +27,7 @@ public class ExchangeRateInfo {
 
     /** 数据来源链接，前端点击后新开 tab 跳转 */
     private String sourceUrl;
+
+    /** true 表示外部汇率接口请求失败，当前展示的是默认兜底汇率（非真实当日汇率） */
+    private Boolean isFallback;
 }
