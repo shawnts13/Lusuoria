@@ -42,21 +42,27 @@ public class CollaborationTrackingExcelHandler {
     @Autowired private CollaborationTrackingService trackingService;
 
     /** 导出/模板列顺序 */
+    // 列定义：[列名, 是否敏感(1=是), 是否仅导出(1=模板不含)]
     private static final String[][] COLUMNS = {
-        {"品牌方",                     "0"},
-        {"红人团队",                   "0"},
-        {"服务国家/市场",              "0"},
-        {"红人ID",                     "0"},
-        {"合作平台",                   "0"},
-        {"需求内容",                   "0"},
-        {"视频发布链接",               "0"},
-        {"发布时间",                   "0"},
-        {"进度",                       "0"},
-        {"客户方的项目订单",           "0"},
-        {"客户方付款批次",             "0"},
-        {"红人视频制作与发布成本（美金）", "1"},
-        {"客户合作价格（美金）",       "1"},
+        {"品牌方",                     "0", "0"},
+        {"红人团队",                   "0", "1"},  // 仅导出，模板不含（导入时系统自动填充）
+        {"服务国家/市场",              "0", "1"},  // 仅导出，模板不含（导入时系统自动填充）
+        {"红人ID",                     "0", "0"},
+        {"合作平台",                   "0", "0"},
+        {"需求内容",                   "0", "0"},
+        {"视频发布链接",               "0", "0"},
+        {"发布时间",                   "0", "0"},
+        {"进度",                       "0", "0"},
+        {"客户方的项目订单",           "0", "0"},
+        {"客户方付款批次",             "0", "0"},
+        {"红人视频制作与发布成本（美金）", "1", "0"},
+        {"客户合作价格（美金）",       "1", "0"},
     };
+
+    /** 该列是否仅用于导出（模板跳过） */
+    private boolean isExportOnly(String[] col) {
+        return col.length > 2 && "1".equals(col[2]);
+    }
 
     private static final String[] PROGRESS_LABELS = {
         "待草稿", "待发布", "待修改", "已发布（未结算）", "暂时延期", "已结算"
@@ -121,6 +127,7 @@ public class CollaborationTrackingExcelHandler {
         Map<String, Integer> colIdxMap = new HashMap<String, Integer>();
         int hc = 0;
         for (String[] col : COLUMNS) {
+            if (isExportOnly(col)) continue;   // 仅导出列，模板跳过
             if ("1".equals(col[1]) && !canViewSensitive) continue;
             Cell cell = header.createCell(hc);
             cell.setCellValue(col[0]);
