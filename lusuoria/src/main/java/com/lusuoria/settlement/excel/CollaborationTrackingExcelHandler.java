@@ -8,6 +8,7 @@ import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
+import com.lusuoria.settlement.repository.InfluencerBrandRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.service.impl.CollaborationTrackingService;
 import org.apache.poi.ss.usermodel.*;
@@ -40,6 +41,7 @@ public class CollaborationTrackingExcelHandler {
 
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private InfluencerRepository influencerRepo;
+    @Autowired private InfluencerBrandRepository influencerBrandRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private CollaborationTrackingService trackingService;
@@ -232,15 +234,14 @@ public class CollaborationTrackingExcelHandler {
                 // 品牌方：必须是该红人在红人模块里已关联的品牌方之一，否则报错跳过
                 String brandName = getStr(row, colMap, "品牌方");
                 if (brandName != null && !brandName.isEmpty()) {
-                    Set<String> influencerBrands = splitToSet(influencer.getBrands());
-                    if (!influencerBrands.contains(brandName.trim())) {
-                        errors.add("第" + (i + 1) + "行：品牌方 [" + brandName + "] 未在红人模块中关联到红人 ["
-                                + accountName + "]，请先在红人模块维护该红人的品牌方后再重新导入");
-                        continue;
-                    }
                     Brand brand = brandCache.findByName(brandName.trim());
                     if (brand == null) {
                         errors.add("第" + (i + 1) + "行：品牌方 [" + brandName + "] 不存在，请检查品牌方管理模块");
+                        continue;
+                    }
+                    if (!influencerBrandRepo.existsByInfluencerIdAndBrandId(influencer.getId(), brand.getId())) {
+                        errors.add("第" + (i + 1) + "行：品牌方 [" + brandName + "] 未在红人模块中关联到红人 ["
+                                + accountName + "]，请先在红人模块维护该红人的品牌方后再重新导入");
                         continue;
                     }
                     t.setBrand(brand);
@@ -418,16 +419,6 @@ public class CollaborationTrackingExcelHandler {
             case NUMERIC: return String.valueOf((long) cell.getNumericCellValue());
             default:      return null;
         }
-    }
-
-    /** 把换行/逗号分隔的文本拆分成 trim 后的字符串集合（红人品牌方校验用） */
-    private Set<String> splitToSet(String raw) {
-        Set<String> set = new HashSet<String>();
-        if (raw == null || raw.trim().isEmpty()) return set;
-        for (String s : raw.split("[,\n\r]+")) {
-            if (!s.trim().isEmpty()) set.add(s.trim());
-        }
-        return set;
     }
 
     /**

@@ -9,6 +9,7 @@ import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.ProjectOrder;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
+import com.lusuoria.settlement.repository.InfluencerBrandRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.ProjectOrderRepository;
 import com.lusuoria.settlement.util.ProjectNoGenerator;
@@ -20,9 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * 红人合作跟踪 - 业务逻辑
@@ -40,6 +39,7 @@ public class CollaborationTrackingService {
 
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private InfluencerRepository influencerRepo;
+    @Autowired private InfluencerBrandRepository influencerBrandRepo;
     @Autowired private ProjectOrderRepository projectOrderRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
@@ -84,8 +84,7 @@ public class CollaborationTrackingService {
         if (req.getBrandId() != null) {
             Brand brand = brandCache.findById(req.getBrandId());
             if (brand == null) throw new RuntimeException("品牌方不存在：" + req.getBrandId());
-            Set<String> influencerBrands = splitToSet(influencer.getBrands());
-            if (!influencerBrands.contains(brand.getName())) {
+            if (!influencerBrandRepo.existsByInfluencerIdAndBrandId(influencer.getId(), req.getBrandId())) {
                 throw new RuntimeException("品牌方 [" + brand.getName() + "] 未在红人模块中关联到该红人，"
                         + "请先在红人模块维护后再选择");
             }
@@ -257,15 +256,5 @@ public class CollaborationTrackingService {
         if (a == null && b == null) return true;
         if (a == null || b == null) return false;
         return a.equals(b);
-    }
-
-    /** 把红人的换行/逗号分隔品牌方文本拆分成集合，用于校验跟踪记录的品牌方是否合法 */
-    private Set<String> splitToSet(String raw) {
-        Set<String> set = new HashSet<String>();
-        if (raw == null || raw.trim().isEmpty()) return set;
-        for (String s : raw.split("[,\n\r]+")) {
-            if (!s.trim().isEmpty()) set.add(s.trim());
-        }
-        return set;
     }
 }

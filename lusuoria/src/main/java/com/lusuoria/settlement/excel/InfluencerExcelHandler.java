@@ -10,8 +10,10 @@ import com.lusuoria.settlement.config.InfluencerOptions;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
+import com.lusuoria.settlement.entity.InfluencerBrand;
 import com.lusuoria.settlement.enums.InfluencerContactStatus;
 import com.lusuoria.settlement.enums.ProjectType;
+import com.lusuoria.settlement.repository.InfluencerBrandRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddressList;
@@ -32,6 +34,7 @@ public class InfluencerExcelHandler {
     private static final Logger log = LoggerFactory.getLogger(InfluencerExcelHandler.class);
 
     @Autowired private InfluencerRepository influencerRepo;
+    @Autowired private InfluencerBrandRepository influencerBrandRepo;
     @Autowired private BrandCache    brandCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private DomainCache   domainCache;
@@ -94,12 +97,15 @@ public class InfluencerExcelHandler {
         }
         for (int i = 0; i < colIdx; i++) sheet.setColumnWidth(i, 20 * 256);
 
+        // 预加载所有红人的品牌方关联（避免循环内逐条查询）
+        Map<Long, String> brandNamesMap = loadBrandNamesByInfluencer(influencers);
+
         for (int i = 0; i < influencers.size(); i++) {
             Influencer inf = influencers.get(i);
             Row row = sheet.createRow(i + 1);
             int c = 0;
 
-            setCellStr(row, c++, inf.getBrands(),        wrap);                 // 品牌方（多个换行）
+            setCellStr(row, c++, brandNamesMap.get(inf.getId()), wrap);          // 品牌方（多个换行）
             setCellStr(row, c++, inf.getTeamName(),      wrap);                 // 红人团队
             setCellStr(row, c++, inf.getInfluencerType() != null ? inf.getInfluencerType().getLabel() : "", wrap); // 红人类型
             setCellStr(row, c++, inf.getAccountName(),   wrap);                 // 红人社媒完整名字
@@ -130,6 +136,26 @@ public class InfluencerExcelHandler {
         sheet.createFreezePane(0, 1);
         wb.write(response.getOutputStream());
         wb.close();
+    }
+
+    /** 批量查询红人关联的品牌方名称，返回 influencerId -> "品牌1\n品牌2" 的映射 */
+    private Map<Long, String> loadBrandNamesByInfluencer(List<Influencer> influencers) {
+        Map<Long, String> result = new HashMap<Long, String>();
+        if (influencers == null || influencers.isEmpty()) return result;
+        List<Long> ids = new ArrayList<Long>();
+        for (Influencer inf : influencers) if (inf.getId() != null) ids.add(inf.getId());
+        if (ids.isEmpty()) return result;
+
+        Map<Long, List<String>> namesByInfluencer = new HashMap<Long, List<String>>();
+        for (InfluencerBrand rel : influencerBrandRepo.findByInfluencerIdIn(ids)) {
+            Brand b = brandCache.findById(rel.getBrandId());
+            if (b == null) continue;
+            namesByInfluencer.computeIfAbsent(rel.getInfluencerId(), k -> new ArrayList<String>()).add(b.getName());
+        }
+        for (Map.Entry<Long, List<String>> entry : namesByInfluencer.entrySet()) {
+            result.put(entry.getKey(), String.join("\n", entry.getValue()));
+        }
+        return result;
     }
 
     // ===================================================================
@@ -287,6 +313,9 @@ public class InfluencerExcelHandler {
 
         // 收集所有需要新建/更新的 Influencer，最后批量 save
         List<Influencer> toSave = new ArrayList<Influencer>();
+        // 收集每个红人本次导入解析出的品牌方名称（accountName -> 品牌名集合），
+        // 导入结束后统一解析成 id 并写入中间表（红人此时还没有 id，不能在循环内直接写）
+        Map<String, Set<String>> pendingBrandNames = new HashMap<String, Set<String>>();
         // 收集本次导入中出现的新团队和新领域，导入后统一刷新缓存
         Set<String> newTeams   = new HashSet<String>();
         Set<String> newDomains = new HashSet<String>();
@@ -333,15 +362,29 @@ public class InfluencerExcelHandler {
                     inf.setTeamName(teamName.trim());
                 }
 
-                // 品牌方（多选，换行/逗号分隔，存为换行分隔文本）
+                // 品牌方（多选，换行/逗号分隔）：必须是品牌方管理里已存在的名称，
+                // 解析的名称先记录下来，导入循环结束、所有红人都有 id 后再统一写入中间表
                 String brandRaw = getStr(row, colMap, "品牌方(多个用换行分隔)");
                 if (brandRaw == null) brandRaw = getStr(row, colMap, "品牌方");
                 if (hasValue(brandRaw)) {
-                    java.util.LinkedHashSet<String> brandSet = new java.util.LinkedHashSet<String>();
+                    Set<String> brandSet = new java.util.LinkedHashSet<String>();
+                    List<String> notFound = new ArrayList<String>();
                     for (String b : brandRaw.split("[,\n\r]+")) {
-                        if (!b.trim().isEmpty()) brandSet.add(b.trim());
+                        String name = b.trim();
+                        if (name.isEmpty()) continue;
+                        if (brandCache.findByName(name) == null) {
+                            notFound.add(name);
+                        } else {
+                            brandSet.add(name);
+                        }
                     }
-                    if (!brandSet.isEmpty()) inf.setBrands(String.join("\n", brandSet));
+                    if (!notFound.isEmpty()) {
+                        errors.add("第" + (i + 1) + "行：品牌方 " + notFound
+                                + " 不存在，请先在品牌方管理模块创建后再导入，该行其余品牌方已正常关联");
+                    }
+                    if (!brandSet.isEmpty()) {
+                        pendingBrandNames.put(accountName.trim(), brandSet);
+                    }
                 }
 
                 setIfPresent(inf::setCountryMarket, getStr(row, colMap, "服务国家/市场"));
@@ -462,6 +505,28 @@ public class InfluencerExcelHandler {
         // 批量写库（只写有变化的记录）
         influencerRepo.saveAll(toSave);
 
+        // 品牌方关联：所有红人此时都已有 id，按 accountName 重新查一遍解析出 id 并写入中间表
+        // （只处理本次 Excel 里明确给了品牌方列的红人，没填品牌方列的红人维持原有关联不变）
+        if (!pendingBrandNames.isEmpty()) {
+            Map<String, Influencer> savedMap = new HashMap<String, Influencer>();
+            influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc()
+                    .forEach(inf -> savedMap.put(inf.getAccountName().trim(), inf));
+            for (Map.Entry<String, Set<String>> entry : pendingBrandNames.entrySet()) {
+                Influencer inf = savedMap.get(entry.getKey());
+                if (inf == null) continue;
+                influencerBrandRepo.deleteByInfluencerId(inf.getId());
+                for (String brandName : entry.getValue()) {
+                    Brand brand = brandCache.findByName(brandName);
+                    if (brand == null) continue; // 已在导入循环中报过错，这里跳过
+                    InfluencerBrand rel = new InfluencerBrand();
+                    rel.setInfluencerId(inf.getId());
+                    rel.setBrandId(brand.getId());
+                    rel.setIsDeleted(false);
+                    influencerBrandRepo.save(rel);
+                }
+            }
+        }
+
         // 统一注册新团队和新领域
         for (String t : newTeams)   teamCache.getOrCreate(t);
         for (String d : newDomains) domainCache.getOrCreate(d);
@@ -579,7 +644,6 @@ public class InfluencerExcelHandler {
         return !eq(original.getInfluencerType() != null ? original.getInfluencerType().name() : null,
                    updated.getInfluencerType()   != null ? updated.getInfluencerType().name()   : null)
             || !eq(original.getTeamName(),       updated.getTeamName())
-            || !eq(original.getBrands(),         updated.getBrands())
             || !eq(original.getCountryMarket(),  updated.getCountryMarket())
             || !eq(original.getPlatform(),       updated.getPlatform())
             || !eq(original.getDomains(),        updated.getDomains())

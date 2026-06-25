@@ -9,8 +9,10 @@ import com.lusuoria.settlement.dto.request.InfluencerRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.Influencer;
+import com.lusuoria.settlement.entity.InfluencerBrand;
 import com.lusuoria.settlement.enums.ProjectType;
 import com.lusuoria.settlement.excel.InfluencerExcelHandler;
+import com.lusuoria.settlement.repository.InfluencerBrandRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.ProjectOrderRepository;
 import com.lusuoria.settlement.util.RoleUtil;
@@ -26,8 +28,7 @@ import org.springframework.web.multipart.MultipartFile;
 import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
 import java.io.IOException;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @RestController
@@ -35,6 +36,7 @@ import java.util.stream.Collectors;
 public class InfluencerController {
 
     @Autowired private InfluencerRepository influencerRepo;
+    @Autowired private InfluencerBrandRepository influencerBrandRepo;
     @Autowired private InfluencerExcelHandler excelHandler;
     @Autowired private ProjectOrderRepository projectOrderRepo;
     @Autowired private BrandCache brandCache;
@@ -51,7 +53,7 @@ public class InfluencerController {
             @RequestParam(required = false) ProjectType influencerType,
             @RequestParam(required = false) String platform,
             @RequestParam(required = false) String countryMarket,
-            @RequestParam(required = false) String brandName,
+            @RequestParam(required = false) Long brandId,
             @RequestParam(required = false) String teamName,
             @RequestParam(required = false) Long followerMin,
             @RequestParam(required = false) Long followerMax,
@@ -66,8 +68,9 @@ public class InfluencerController {
                 : Sort.by(Sort.Direction.ASC,  sortBy);
         PageRequest pageable = PageRequest.of(page, size, sort);
         Page<Influencer> result = influencerRepo.findByFilters(
-                influencerType, platform, countryMarket, brandName, teamName,
+                influencerType, platform, countryMarket, brandId, teamName,
                 followerMin, followerMax, keyword, pageable);
+        attachBrands(result.getContent());
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.success(result.map(this::maskSensitive));
         }
@@ -77,6 +80,7 @@ public class InfluencerController {
     @GetMapping("/simple")
     public ApiResponse<List<Influencer>> simpleList() {
         List<Influencer> list = influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc();
+        attachBrands(list);
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.success(list.stream().map(this::maskSensitive).collect(Collectors.toList()));
         }
@@ -87,6 +91,7 @@ public class InfluencerController {
     public ApiResponse<Influencer> getById(@PathVariable Long id) {
         Influencer inf = influencerRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("红人不存在"));
+        attachBrands(Collections.singletonList(inf));
         if (!RoleUtil.canViewSensitiveFields()) return ApiResponse.success(maskSensitive(inf));
         return ApiResponse.success(inf);
     }
@@ -103,6 +108,7 @@ public class InfluencerController {
         List<Influencer> list = influencerType != null
                 ? influencerRepo.findByInfluencerTypeAndIsDeletedFalse(influencerType)
                 : influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc();
+        attachBrands(list);
         excelHandler.export(list, RoleUtil.canViewSensitiveFields(), response);
     }
 
@@ -164,9 +170,6 @@ public class InfluencerController {
         inf.setFollowerPerson(req.getFollowerPerson());
         inf.setNotes(req.getNotes());
 
-        // 品牌方（多选，换行符分隔存储）
-        inf.setBrands(listToStr(req.getBrands(), "\n"));
-
         // 敏感字段只有有权限的角色才能修改
         if (RoleUtil.canViewSensitiveFields()) {
             inf.setInfluencerCost(req.getInfluencerCost());
@@ -175,7 +178,24 @@ public class InfluencerController {
         }
 
         Influencer saved = influencerRepo.save(inf);
+
+        // 品牌方关联：先清空旧的，再按本次提交的 id 列表重新写入中间表
+        influencerBrandRepo.deleteByInfluencerId(saved.getId());
+        if (req.getBrandIds() != null) {
+            for (Long brandId : req.getBrandIds()) {
+                if (brandId == null) continue;
+                Brand brand = brandCache.findById(brandId);
+                if (brand == null) throw new RuntimeException("品牌方不存在：" + brandId);
+                InfluencerBrand rel = new InfluencerBrand();
+                rel.setInfluencerId(saved.getId());
+                rel.setBrandId(brandId);
+                rel.setIsDeleted(false);
+                influencerBrandRepo.save(rel);
+            }
+        }
+
         domainSyncService.sync();
+        attachBrands(Collections.singletonList(saved));
         return ApiResponse.success(saved);
     }
 
@@ -188,6 +208,27 @@ public class InfluencerController {
         influencerRepo.save(inf);
         domainSyncService.sync();
         return ApiResponse.success();
+    }
+
+    /** 批量给一批红人填充关联的品牌方 id/名称（避免逐条 N+1 查询） */
+    private void attachBrands(List<Influencer> list) {
+        if (list == null || list.isEmpty()) return;
+        List<Long> ids = list.stream().map(Influencer::getId).collect(Collectors.toList());
+        List<InfluencerBrand> rels = influencerBrandRepo.findByInfluencerIdIn(ids);
+        Map<Long, List<Long>> byInfluencer = new HashMap<Long, List<Long>>();
+        for (InfluencerBrand rel : rels) {
+            byInfluencer.computeIfAbsent(rel.getInfluencerId(), k -> new ArrayList<Long>()).add(rel.getBrandId());
+        }
+        for (Influencer inf : list) {
+            List<Long> brandIds = byInfluencer.getOrDefault(inf.getId(), Collections.emptyList());
+            inf.setBrandIds(brandIds);
+            List<String> names = new ArrayList<String>();
+            for (Long bid : brandIds) {
+                Brand b = brandCache.findById(bid);
+                if (b != null) names.add(b.getName());
+            }
+            inf.setBrandNames(names);
+        }
     }
 
     private Influencer maskSensitive(Influencer inf) {

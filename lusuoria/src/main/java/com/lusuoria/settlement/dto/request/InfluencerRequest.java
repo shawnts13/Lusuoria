@@ -20,8 +20,8 @@ public class InfluencerRequest {
     @NotBlank(message = "红人社媒完整名字不能为空")
     private String accountName;
 
-    /** 品牌方列表，前端传 List，后端存换行符分隔字符串 */
-    private List<String> brands;
+    /** 品牌方 id 列表（多选，关联 InfluencerBrand 中间表） */
+    private List<Long> brandIds;
     private String countryMarket;    // 服务国家/市场
     private String platform;
 

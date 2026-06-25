@@ -39,10 +39,6 @@ public class Influencer extends BaseEntity {
     @Column(name = "account_name", nullable = false, unique = true)
     private String accountName;             // 红人社媒完整名字（全局唯一）
 
-    /** 品牌方（多个，换行符分隔，如 "TEMU\nSHEIN"），不再是外键 */
-    @Column(name = "brands", columnDefinition = "TEXT")
-    private String brands;
-
     @Column(name = "country_market")
     private String countryMarket;           // 服务国家/市场
 
@@ -104,4 +100,13 @@ public class Influencer extends BaseEntity {
 
     @Column(name = "notes", columnDefinition = "TEXT")
     private String notes;
+
+    // ===== 非持久化字段：关联的品牌方信息，由 Controller 查询中间表后手动填充 =====
+    /** 关联的品牌方 id 列表（不持久化，仅用于 API 响应） */
+    @Transient
+    private java.util.List<Long> brandIds;
+
+    /** 关联的品牌方名称列表（不持久化，仅用于 API 响应展示） */
+    @Transient
+    private java.util.List<String> brandNames;
 }
