@@ -52,6 +52,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) CollaborationProgress progress,
             @RequestParam(required = false) String clientOrderId,
             @RequestParam(required = false) String clientPaymentBatch,
+            @RequestParam(required = false) Long projectManagerId,
             @RequestParam(defaultValue = "id") String sortBy,
             @RequestParam(defaultValue = "desc") String sortDir,
             @RequestParam(defaultValue = "0")  int page,
@@ -63,7 +64,7 @@ public class CollaborationTrackingController {
         PageRequest pageable = PageRequest.of(page, size, sort);
         Page<CollaborationTracking> result = trackingRepo.findByFilters(
                 brandId, teamName, countryMarket, accountName, platform,
-                progress, clientOrderId, clientPaymentBatch, pageable);
+                progress, clientOrderId, clientPaymentBatch, projectManagerId, pageable);
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.success(result.map(this::maskSensitive));
         }
@@ -110,12 +111,13 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) CollaborationProgress progress,
             @RequestParam(required = false) String clientOrderId,
             @RequestParam(required = false) String clientPaymentBatch,
+            @RequestParam(required = false) Long projectManagerId,
             HttpServletResponse response) throws IOException {
         // 导出按当前筛选条件，取全部（不分页）
         PageRequest all = PageRequest.of(0, Integer.MAX_VALUE, Sort.by(Sort.Direction.DESC, "id"));
         List<CollaborationTracking> list = trackingRepo.findByFilters(
                 brandId, teamName, countryMarket, accountName, platform,
-                progress, clientOrderId, clientPaymentBatch, all).getContent();
+                progress, clientOrderId, clientPaymentBatch, projectManagerId, all).getContent();
         excelHandler.export(list, RoleUtil.canViewSensitiveFields(), response);
     }
 

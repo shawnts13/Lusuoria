@@ -6,9 +6,10 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.util.Date;
 
 /**
- * 数据看板右上角展示的汇率信息
+ * 数据看板 / 项目订单使用的汇率信息（人工维护）
  */
 @Data
 @Builder
@@ -16,18 +17,17 @@ import java.math.BigDecimal;
 @AllArgsConstructor
 public class ExchangeRateInfo {
 
-    /** 看板查看的月份，格式 202606 */
+    /** 业务月份，格式 202606 */
     private String yearMonth;
-
-    /** 实际取数日期，格式 yyyy-MM-dd（上月最后一个工作日，或最近的交易日） */
-    private String rateDate;
 
     /** 1 美元 = 多少人民币 */
     private BigDecimal usdToCny;
 
-    /** 数据来源链接，前端点击后新开 tab 跳转 */
-    private String sourceUrl;
+    /** true 表示该月份还没有管理员维护汇率，usdToCny 为 null */
+    private Boolean isMissing;
 
-    /** true 表示外部汇率接口请求失败，当前展示的是默认兜底汇率（非真实当日汇率） */
-    private Boolean isFallback;
+    /** 最后修改人 */
+    private String updatedBy;
+
+    private Date lastUpdatedAt;
 }

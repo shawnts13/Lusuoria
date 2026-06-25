@@ -1,8 +1,10 @@
 package com.lusuoria.settlement.excel;
 
 import com.lusuoria.settlement.config.BrandCache;
+import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
+import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
@@ -39,6 +41,7 @@ public class CollaborationTrackingExcelHandler {
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private BrandCache brandCache;
+    @Autowired private EmployeeCache employeeCache;
     @Autowired private CollaborationTrackingService trackingService;
 
     /** 导出/模板列顺序 */
@@ -53,6 +56,7 @@ public class CollaborationTrackingExcelHandler {
         {"视频发布链接",               "0", "0"},
         {"发布时间",                   "0", "0"},
         {"进度",                       "0", "0"},
+        {"项目负责人",                 "0", "0"},
         {"客户方的项目订单",           "0", "0"},
         {"客户方付款批次",             "0", "0"},
         {"红人视频制作与发布成本（美金）", "1", "0"},
@@ -103,6 +107,7 @@ public class CollaborationTrackingExcelHandler {
             setCellStr(row, c++, t.getPublishLink(),   wrap);
             setCellStr(row, c++, t.getPublishDate() != null ? df.format(t.getPublishDate()) : "", wrap);
             setCellStr(row, c++, t.getProgress() != null ? t.getProgress().getLabel() : "", wrap);
+            setCellStr(row, c++, t.getProjectManager() != null ? t.getProjectManager().getName() : "", wrap);
             setCellStr(row, c++, t.getClientOrderId(),     wrap);
             setCellStr(row, c++, t.getClientPaymentBatch(), wrap);
             if (canViewSensitive) {
@@ -149,6 +154,7 @@ public class CollaborationTrackingExcelHandler {
         ex.put("视频发布链接", "https://instagram.com/p/xxx");
         ex.put("发布时间", "2026-04-09");
         ex.put("进度", "已发布（未结算）");
+        ex.put("项目负责人", "梁珈绫 Charlene");
         ex.put("客户方的项目订单", "6004980428");
         ex.put("客户方付款批次", "已加入未结算列表");
         ex.put("红人视频制作与发布成本（美金）", "550");
@@ -185,6 +191,9 @@ public class CollaborationTrackingExcelHandler {
         for (Influencer inf : influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc()) {
             influencerMap.put(inf.getAccountName(), inf);
         }
+
+        // 预加载员工列表，供"项目负责人"列模糊匹配
+        List<Employee> allEmployees = employeeCache.getAll();
 
         int processedCount = 0, successCount = 0, skipCount = 0, projectOrderCreated = 0;
         SimpleDateFormat[] dateFormats = {
@@ -274,6 +283,17 @@ public class CollaborationTrackingExcelHandler {
                 t.setClientPaymentBatch(firstNonNull(
                         getStr(row, colMap, "客户方付款批次"),
                         getStr(row, colMap, "客户付款批次")));
+
+                // 项目负责人：中文名/英文名模糊匹配（如系统里"梁珈绫 Charlene"，填任一段均可）
+                String managerRaw = getStr(row, colMap, "项目负责人");
+                if (managerRaw != null && !managerRaw.trim().isEmpty()) {
+                    Employee manager = matchEmployeeFuzzy(managerRaw, allEmployees);
+                    if (manager == null) {
+                        errors.add("第" + (i + 1) + "行：项目负责人 [" + managerRaw + "] 未匹配到任何员工，跳过该字段");
+                    } else {
+                        t.setProjectManager(manager);
+                    }
+                }
 
                 // 敏感字段
                 if (canViewSensitive) {
@@ -408,6 +428,42 @@ public class CollaborationTrackingExcelHandler {
             if (!s.trim().isEmpty()) set.add(s.trim());
         }
         return set;
+    }
+
+    /**
+     * 按"项目负责人"列文本模糊匹配员工：
+     *   - 支持中文名或英文名单独填写（如系统里是"梁珈绫 Charlene"，填"梁珈绫"或"Charlene"均可匹配）
+     *   - 若文本完全等于某员工姓名（如直接填"梁珈绫 Charlene"），直接精确匹配
+     *   - 若按子串匹配到多个员工（重名歧义），抛出异常要求填写完整姓名
+     *   - 匹配不到任何员工，返回 null（不报错，调用方决定如何处理空负责人）
+     */
+    private Employee matchEmployeeFuzzy(String raw, List<Employee> allEmployees) {
+        if (raw == null || raw.trim().isEmpty()) return null;
+        String input = raw.trim();
+
+        // 1. 精确匹配（性能最优，且行为最可预期）
+        for (Employee e : allEmployees) {
+            if (input.equalsIgnoreCase(e.getName().trim())) return e;
+        }
+
+        // 2. 模糊匹配：员工姓名整体包含 input，或 input 是姓名里的某一段（按空格拆分后逐段比较）
+        List<Employee> matches = new ArrayList<Employee>();
+        for (Employee e : allEmployees) {
+            String name = e.getName().trim();
+            if (name.equalsIgnoreCase(input)) { matches.add(e); continue; }
+            for (String part : name.split("\\s+")) {
+                if (part.equalsIgnoreCase(input)) { matches.add(e); break; }
+            }
+        }
+
+        if (matches.size() == 1) return matches.get(0);
+        if (matches.size() > 1) {
+            StringBuilder names = new StringBuilder();
+            for (Employee e : matches) names.append(e.getName()).append("；");
+            throw new RuntimeException("项目负责人 [" + input + "] 匹配到多个员工（"
+                    + names + "），请填写完整姓名以消除歧义");
+        }
+        return null; // 没匹配到
     }
 
     private String firstNonNull(String... vals) {

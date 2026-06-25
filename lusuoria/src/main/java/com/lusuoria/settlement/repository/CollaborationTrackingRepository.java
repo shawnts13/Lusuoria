@@ -46,7 +46,8 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
            "AND (:progress IS NULL OR c.progress = :progress) " +
            "AND (:clientOrderId IS NULL OR c.clientOrderId LIKE %:clientOrderId%) " +
-           "AND (:clientPaymentBatch IS NULL OR c.clientPaymentBatch LIKE %:clientPaymentBatch%)")
+           "AND (:clientPaymentBatch IS NULL OR c.clientPaymentBatch LIKE %:clientPaymentBatch%) " +
+           "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId)")
     Page<CollaborationTracking> findByFilters(
             @Param("brandId") Long brandId,
             @Param("teamName") String teamName,
@@ -56,6 +57,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("progress") CollaborationProgress progress,
             @Param("clientOrderId") String clientOrderId,
             @Param("clientPaymentBatch") String clientPaymentBatch,
+            @Param("projectManagerId") Long projectManagerId,
             Pageable pageable);
 
     /**

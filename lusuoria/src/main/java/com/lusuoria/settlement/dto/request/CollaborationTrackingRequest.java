@@ -32,6 +32,9 @@ public class CollaborationTrackingRequest {
 
     private String clientPaymentBatch;
 
+    /** 项目负责人（员工 id） */
+    private Long projectManagerId;
+
     // 敏感字段
     private String influencerCost;
     private String clientPrice;

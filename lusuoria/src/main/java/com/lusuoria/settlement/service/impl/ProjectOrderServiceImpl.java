@@ -82,7 +82,11 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         }
 
         order.setClientPrice(req.getClientPrice());
-        order.setExchangeRate(req.getExchangeRate());
+        // 汇率仅 ADMIN 可修改：非 ADMIN 提交的 exchangeRate 会被忽略，
+        // 保留数据库原值（新建场景下非 ADMIN 提交的汇率也不会生效，字段为空）
+        if (RoleUtil.canEditExchangeRate()) {
+            order.setExchangeRate(req.getExchangeRate());
+        }
         order.setInfluencerCost(req.getInfluencerCost());
         order.setOtherExternalCost(req.getOtherExternalCost());
         order.setInternalExecutionCost(req.getInternalExecutionCost());

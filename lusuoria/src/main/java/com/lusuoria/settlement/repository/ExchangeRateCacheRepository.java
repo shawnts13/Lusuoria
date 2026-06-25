@@ -4,10 +4,13 @@ import com.lusuoria.settlement.entity.ExchangeRateCache;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 
 @Repository
 public interface ExchangeRateCacheRepository extends JpaRepository<ExchangeRateCache, Long> {
 
     Optional<ExchangeRateCache> findByYearMonth(String yearMonth);
+
+    List<ExchangeRateCache> findAllByOrderByYearMonthDesc();
 }

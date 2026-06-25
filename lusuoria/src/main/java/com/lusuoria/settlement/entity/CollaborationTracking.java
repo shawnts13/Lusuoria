@@ -76,6 +76,15 @@ public class CollaborationTracking extends BaseEntity {
     @Column(name = "client_payment_batch")
     private String clientPaymentBatch;
 
+    /** 项目负责人（员工，生成项目订单时自动带过去） */
+    @Column(name = "project_manager_id", insertable = false, updatable = false)
+    private Long projectManagerId;
+
+    @JsonIgnore
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "project_manager_id")
+    private Employee projectManager;
+
     /**
      * 本跟踪记录已生成的项目订单 id（防止重复生成）。
      * 为空表示还未生成过项目订单。

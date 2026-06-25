@@ -1,9 +1,11 @@
 package com.lusuoria.settlement.service.impl;
 
 import com.lusuoria.settlement.config.BrandCache;
+import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.dto.request.CollaborationTrackingRequest;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
+import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.ProjectOrder;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
@@ -39,7 +41,9 @@ public class CollaborationTrackingService {
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private ProjectOrderRepository projectOrderRepo;
     @Autowired private BrandCache brandCache;
+    @Autowired private EmployeeCache employeeCache;
     @Autowired private ProjectNoGenerator projectNoGenerator;
+    @Autowired private ExchangeRateService exchangeRateService;
 
     /** 自定义异常：表示需要前端二次确认订单ID变更 */
     public static class OrderIdChangeConfirmRequired extends RuntimeException {
@@ -94,6 +98,15 @@ public class CollaborationTrackingService {
         tracking.setPublishDate(req.getPublishDate());
         tracking.setProgress(req.getProgress());
         tracking.setClientPaymentBatch(req.getClientPaymentBatch());
+
+        // 项目负责人
+        if (req.getProjectManagerId() != null) {
+            Employee manager = employeeCache.findById(req.getProjectManagerId());
+            if (manager == null) throw new RuntimeException("项目负责人不存在：" + req.getProjectManagerId());
+            tracking.setProjectManager(manager);
+        } else {
+            tracking.setProjectManager(null);
+        }
 
         if (RoleUtil.canViewSensitiveFields()) {
             tracking.setInfluencerCost(req.getInfluencerCost());
@@ -181,6 +194,18 @@ public class CollaborationTrackingService {
         order.setBrand(t.getBrand());
         order.setInfluencer(influencer);
         order.setCooperationContent(t.getDemandContent());
+
+        // 项目负责人 + 提成比例（从员工管理里该员工的默认提成比例带入）
+        if (t.getProjectManager() != null) {
+            order.setProjectManager(t.getProjectManager());
+            order.setCommissionRate(t.getProjectManager().getDefaultCommissionRate());
+        }
+
+        // 汇率：按"上个月最后一个工作日"的中国银行/Frankfurter 汇率（与数据看板逻辑一致）
+        // 有发布日期：用发布日期所在月份；没有发布日期：用当前日期所在月份
+        Date rateBaseDate = t.getPublishDate() != null ? t.getPublishDate() : new Date();
+        String rateMonth = new SimpleDateFormat("yyyyMM").format(rateBaseDate);
+        order.setExchangeRate(exchangeRateService.getRateForMonth(rateMonth).getUsdToCny());
 
         // 金额：把跟踪记录的成本/客户价带到项目订单（解析成数字，解析失败则留空）
         order.setClientPrice(parseAmount(t.getClientPrice()));
