@@ -12,6 +12,7 @@ import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.ProjectOrderRepository;
 import com.lusuoria.settlement.util.ProjectNoGenerator;
+import com.lusuoria.settlement.util.ProfitCalculator;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -43,6 +44,7 @@ public class CollaborationTrackingService {
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private ProjectNoGenerator projectNoGenerator;
+    @Autowired private ProfitCalculator profitCalculator;
     @Autowired private ExchangeRateService exchangeRateService;
 
     /** 自定义异常：表示需要前端二次确认订单ID变更 */
@@ -221,6 +223,10 @@ public class CollaborationTrackingService {
             count++;
         } while (projectOrderRepo.existsByInternalProjectNo(projectNo));
         order.setInternalProjectNo(projectNo);
+
+        // 计算毛利/可分配利润/提成/公司利润（之前漏调用，导致列表显示"—"，
+        // 编辑弹窗才显示正常是因为前端实时算了一遍，但数据库里其实是空的）
+        profitCalculator.calculate(order);
 
         ProjectOrder savedOrder = projectOrderRepo.save(order);
         return savedOrder.getId();

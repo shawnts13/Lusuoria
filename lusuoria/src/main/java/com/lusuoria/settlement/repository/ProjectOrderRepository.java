@@ -18,6 +18,9 @@ import java.util.Optional;
 @Repository
 public interface ProjectOrderRepository extends JpaRepository<ProjectOrder, Long> {
 
+    /** 批量重算用：取出所有未删除的订单 */
+    List<ProjectOrder> findByIsDeletedFalse();
+
     Optional<ProjectOrder> findByInternalProjectNoAndIsDeletedFalse(String internalProjectNo);
 
     /** 检查内部项目编号是否已存在（含软删除，因唯一约束覆盖全表） */
