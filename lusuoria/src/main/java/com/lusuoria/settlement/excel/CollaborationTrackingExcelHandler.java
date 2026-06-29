@@ -109,7 +109,8 @@ public class CollaborationTrackingExcelHandler {
             setCellStr(row, c++, t.getPublishLink(),   wrap);
             setCellStr(row, c++, t.getPublishDate() != null ? df.format(t.getPublishDate()) : "", wrap);
             setCellStr(row, c++, t.getProgress() != null ? t.getProgress().getLabel() : "", wrap);
-            setCellStr(row, c++, t.getProjectManager() != null ? t.getProjectManager().getName() : "", wrap);
+            Employee manager = employeeCache.findById(t.getProjectManagerId());
+            setCellStr(row, c++, manager != null ? manager.getName() : "", wrap);
             setCellStr(row, c++, t.getClientOrderId(),     wrap);
             setCellStr(row, c++, t.getClientPaymentBatch(), wrap);
             if (canViewSensitive) {
