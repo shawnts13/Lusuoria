@@ -42,6 +42,7 @@ public class SecurityConfig {
     private String allowedOrigins;
 
     @Autowired private JwtUtil jwtUtil;
+    @Autowired private JwtAuthEntryPoint jwtAuthEntryPoint;
 
     @Bean
     public PasswordEncoder passwordEncoder() {
@@ -60,6 +61,7 @@ public class SecurityConfig {
                 .cors().configurationSource(corsConfigurationSource()).and()
                 .csrf().disable()
                 .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS).and()
+                .exceptionHandling().authenticationEntryPoint(jwtAuthEntryPoint).and()
                 .authorizeRequests()
                 .antMatchers("/api/auth/**", "/actuator/health").permitAll() // 合并放行路径
                 .antMatchers(HttpMethod.OPTIONS, "/**").permitAll()
