@@ -47,6 +47,8 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
            "AND (:progress IS NULL OR c.progress = :progress) " +
            "AND (:videoType IS NULL OR c.videoType = :videoType) " +
+           "AND (:videoMonthStart IS NULL OR c.publishDate >= :videoMonthStart) " +
+           "AND (:videoMonthEnd IS NULL OR c.publishDate < :videoMonthEnd) " +
            "AND (:clientOrderId IS NULL OR c.clientOrderId LIKE %:clientOrderId%) " +
            "AND (:clientPaymentBatch IS NULL OR c.clientPaymentBatch LIKE %:clientPaymentBatch%) " +
            "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId)")
@@ -58,6 +60,8 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("platform") String platform,
             @Param("progress") CollaborationProgress progress,
             @Param("videoType") VideoType videoType,
+            @Param("videoMonthStart") Date videoMonthStart,
+            @Param("videoMonthEnd") Date videoMonthEnd,
             @Param("clientOrderId") String clientOrderId,
             @Param("clientPaymentBatch") String clientPaymentBatch,
             @Param("projectManagerId") Long projectManagerId,

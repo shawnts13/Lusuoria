@@ -22,6 +22,9 @@ import org.springframework.web.multipart.MultipartFile;
 import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
 import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
+import java.util.Date;
 import java.util.List;
 
 /**
@@ -52,6 +55,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) String platform,
             @RequestParam(required = false) CollaborationProgress progress,
             @RequestParam(required = false) VideoType videoType,
+            @RequestParam(required = false) String videoMonth,
             @RequestParam(required = false) String clientOrderId,
             @RequestParam(required = false) String clientPaymentBatch,
             @RequestParam(required = false) Long projectManagerId,
@@ -64,9 +68,11 @@ public class CollaborationTrackingController {
                 ? Sort.by(Sort.Direction.ASC, sortBy)
                 : Sort.by(Sort.Direction.DESC, sortBy);
         PageRequest pageable = PageRequest.of(page, size, sort);
+        Date[] videoMonthRange = monthRange(videoMonth);
         Page<CollaborationTracking> result = trackingRepo.findByFilters(
                 brandId, teamName, countryMarket, accountName, platform,
-                progress, videoType, clientOrderId, clientPaymentBatch, projectManagerId, pageable);
+                progress, videoType, videoMonthRange[0], videoMonthRange[1],
+                clientOrderId, clientPaymentBatch, projectManagerId, pageable);
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.success(result.map(this::maskSensitive));
         }
@@ -112,15 +118,18 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) String platform,
             @RequestParam(required = false) CollaborationProgress progress,
             @RequestParam(required = false) VideoType videoType,
+            @RequestParam(required = false) String videoMonth,
             @RequestParam(required = false) String clientOrderId,
             @RequestParam(required = false) String clientPaymentBatch,
             @RequestParam(required = false) Long projectManagerId,
             HttpServletResponse response) throws IOException {
         // 导出按当前筛选条件，取全部（不分页）
         PageRequest all = PageRequest.of(0, Integer.MAX_VALUE, Sort.by(Sort.Direction.DESC, "id"));
+        Date[] videoMonthRange = monthRange(videoMonth);
         List<CollaborationTracking> list = trackingRepo.findByFilters(
                 brandId, teamName, countryMarket, accountName, platform,
-                progress, videoType, clientOrderId, clientPaymentBatch, projectManagerId, all).getContent();
+                progress, videoType, videoMonthRange[0], videoMonthRange[1],
+                clientOrderId, clientPaymentBatch, projectManagerId, all).getContent();
         excelHandler.export(list, RoleUtil.canViewSensitiveFields(), response);
     }
 
@@ -141,5 +150,32 @@ public class CollaborationTrackingController {
         copy.setInfluencerCost(null);
         copy.setClientPrice(null);
         return copy;
+    }
+
+    /**
+     * 把 yyyyMM 格式的月份字符串转换成 [该月第一天, 下月第一天) 的日期区间，
+     * 用于按"发布时间"月份筛选（避免用数据库方言相关的日期函数，直接用区间比较）。
+     * 传空/格式错误时返回 [null, null]，表示不过滤。
+     */
+    private Date[] monthRange(String yyyyMM) {
+        if (yyyyMM == null || yyyyMM.trim().isEmpty()) return new Date[]{null, null};
+        try {
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyyMM");
+            sdf.setLenient(false);
+            Date monthStart = sdf.parse(yyyyMM.trim());
+            Calendar cal = Calendar.getInstance();
+            cal.setTime(monthStart);
+            cal.set(Calendar.DAY_OF_MONTH, 1);
+            cal.set(Calendar.HOUR_OF_DAY, 0);
+            cal.set(Calendar.MINUTE, 0);
+            cal.set(Calendar.SECOND, 0);
+            cal.set(Calendar.MILLISECOND, 0);
+            Date start = cal.getTime();
+            cal.add(Calendar.MONTH, 1);
+            Date end = cal.getTime();
+            return new Date[]{start, end};
+        } catch (Exception e) {
+            return new Date[]{null, null};
+        }
     }
 }

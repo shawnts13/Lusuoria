@@ -6,20 +6,16 @@ import com.lusuoria.settlement.dto.response.DashboardDrilldownResponse;
 import com.lusuoria.settlement.dto.response.DashboardSummaryResponse;
 import com.lusuoria.settlement.dto.response.ExchangeRateInfo;
 import com.lusuoria.settlement.entity.Brand;
-import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.ProjectOrder;
 import com.lusuoria.settlement.enums.ProjectType;
-import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
-import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.ProjectOrderRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -47,8 +43,6 @@ public class DashboardStatsService {
     private static final int SCALE = 2;
 
     @Autowired private ProjectOrderRepository projectOrderRepo;
-    @Autowired private CollaborationTrackingRepository trackingRepo;
-    @Autowired private InfluencerRepository influencerRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private ExchangeRateService exchangeRateService;
@@ -64,7 +58,7 @@ public class DashboardStatsService {
         BigDecimal rate = rateInfo.getUsdToCny();
 
         List<ProjectOrder> orders = projectOrderRepo.findByProjectMonth(yearMonth);
-        long videoCount = countVideosForMonth(yearMonth);
+        long videoCount = orders.size();
 
         BigDecimal totalClientPrice = BigDecimal.ZERO;
         BigDecimal totalInfluencerCost = BigDecimal.ZERO;
@@ -106,19 +100,13 @@ public class DashboardStatsService {
     // ============ 下钻：视频项目数量（按品牌方 + 红人类型） ============
 
     public DashboardDrilldownResponse drilldownVideoCount(String startMonth, String endMonth) {
-        List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
-        Map<String, Influencer> influencerMap = loadInfluencerMap();
+        List<ProjectOrder> orders = projectOrderRepo.findByProjectMonthBetween(startMonth, endMonth);
 
-        // key: 品牌名 + "|" + 红人类型标签
+        // key: 品牌名 + "|" + 项目类型标签
         Map<String, Long> grouped = new LinkedHashMap<>();
-        for (CollaborationTracking t : all) {
-            String month = resolveMonth(t);
-            if (month.compareTo(startMonth) < 0 || month.compareTo(endMonth) > 0) continue;
-
-            String brandName = brandNameOf(t.getBrandId());
-            Influencer inf = influencerMap.get(t.getAccountName());
-            String typeLabel = inf != null && inf.getInfluencerType() != null
-                    ? inf.getInfluencerType().getLabel() : "未知类型";
+        for (ProjectOrder o : orders) {
+            String brandName = brandNameOf(o.getBrandId());
+            String typeLabel = o.getProjectType() != null ? o.getProjectType().getLabel() : "未知类型";
             String key = brandName + "|" + typeLabel;
             grouped.merge(key, 1L, Long::sum);
         }
@@ -319,30 +307,7 @@ public class DashboardStatsService {
         BigDecimal companyProfit;
     }
 
-    /** 统计某月视频数量（来自合作跟踪表，月份归属：发布月份，无则归创建月份） */
-    private long countVideosForMonth(String yearMonth) {
-        List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
-        long count = 0;
-        for (CollaborationTracking t : all) {
-            if (resolveMonth(t).equals(yearMonth)) count++;
-        }
-        return count;
-    }
 
-    private static final SimpleDateFormat MONTH_FMT = new SimpleDateFormat("yyyyMM");
-
-    /** 解析一条合作跟踪记录归属的月份：有发布时间用发布时间，否则用创建时间 */
-    private String resolveMonth(CollaborationTracking t) {
-        Date d = t.getPublishDate() != null ? t.getPublishDate() : t.getCreatedAt();
-        synchronized (MONTH_FMT) {
-            return MONTH_FMT.format(d);
-        }
-    }
-
-    private Map<String, Influencer> loadInfluencerMap() {
-        return influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc().stream()
-                .collect(Collectors.toMap(Influencer::getAccountName, i -> i, (a, b) -> a));
-    }
 
     private String brandNameOf(Long brandId) {
         if (brandId == null) return "未指定品牌";
