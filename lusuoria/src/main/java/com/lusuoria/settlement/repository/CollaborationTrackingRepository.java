@@ -38,6 +38,15 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("publishDate") Date publishDate,
             @Param("excludeId") Long excludeId);
 
+    /**
+     * "项目视频月份"筛选：用 to_char 把 publishDate 转成 'YYYYMM' 字符串再比较，
+     * 不用 Date 类型参数做区间比较。
+     * 原因：Date 类型参数在这条动态筛选查询里（配合 Supabase 连接池）会触发
+     * "could not determine data type of parameter"（SQLState 42P18），
+     * 无论传不传值都会报错。改成字符串比较后，videoMonth 参数跟这条查询里
+     * 其他正常工作的字符串筛选字段（teamName/accountName等）是完全一样的类型，
+     * 不会再有参数类型歧义问题（跟 ProjectOrder.projectMonth 直接存字符串是同一个思路）。
+     */
     @Query("SELECT c FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false " +
            "AND (:brandId IS NULL OR c.brandId = :brandId) " +
@@ -47,8 +56,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
            "AND (:progress IS NULL OR c.progress = :progress) " +
            "AND (:videoType IS NULL OR c.videoType = :videoType) " +
-           "AND (:videoMonthStart IS NULL OR c.publishDate >= CAST(:videoMonthStart AS date)) " +
-           "AND (:videoMonthEnd IS NULL OR c.publishDate < CAST(:videoMonthEnd AS date)) " +
+           "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth) " +
            "AND (:clientOrderId IS NULL OR c.clientOrderId LIKE %:clientOrderId%) " +
            "AND (:clientPaymentBatch IS NULL OR c.clientPaymentBatch LIKE %:clientPaymentBatch%) " +
            "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId)")
@@ -60,8 +68,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("platform") String platform,
             @Param("progress") CollaborationProgress progress,
             @Param("videoType") VideoType videoType,
-            @Param("videoMonthStart") Date videoMonthStart,
-            @Param("videoMonthEnd") Date videoMonthEnd,
+            @Param("videoMonth") String videoMonth,
             @Param("clientOrderId") String clientOrderId,
             @Param("clientPaymentBatch") String clientPaymentBatch,
             @Param("projectManagerId") Long projectManagerId,
