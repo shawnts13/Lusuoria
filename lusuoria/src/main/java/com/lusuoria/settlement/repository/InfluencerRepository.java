@@ -17,6 +17,14 @@ public interface InfluencerRepository extends JpaRepository<Influencer, Long> {
 
     List<Influencer> findByIsDeletedFalseOrderByAccountNameAsc();
 
+    /**
+     * 精简投影：只查下拉框需要的4个字段，不加载 notes/contacts/links/成本等大字段。
+     * 供 /api/influencers/simple 使用，供项目订单/合作跟踪/打款等模块的红人选择下拉框使用。
+     */
+    @Query("SELECT i.id, i.accountName, i.teamName, i.countryMarket FROM Influencer i " +
+           "WHERE i.isDeleted = false ORDER BY i.accountName ASC")
+    List<Object[]> findSimpleProjections();
+
     Optional<Influencer> findByIdAndIsDeletedFalse(Long id);
 
     Optional<Influencer> findByAccountNameAndIsDeletedFalse(String accountName);

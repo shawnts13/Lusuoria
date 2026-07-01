@@ -4,9 +4,11 @@ import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.config.DomainCache;
 import com.lusuoria.settlement.config.DomainSyncService;
 import com.lusuoria.settlement.config.EmployeeCache;
+import com.lusuoria.settlement.config.InfluencerCache;
 import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.dto.request.InfluencerRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
+import com.lusuoria.settlement.dto.response.InfluencerSimpleResponse;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.InfluencerBrand;
@@ -43,6 +45,7 @@ public class InfluencerController {
     @Autowired private EmployeeCache employeeCache;
     @Autowired private DomainCache domainCache;
     @Autowired private InfluencerTeamCache teamCache;
+    @Autowired private InfluencerCache influencerCache;
     @Autowired private DomainSyncService domainSyncService;
 
     // Google Drive 合同上传页面地址（后续在此配置）
@@ -78,13 +81,8 @@ public class InfluencerController {
     }
 
     @GetMapping("/simple")
-    public ApiResponse<List<Influencer>> simpleList() {
-        List<Influencer> list = influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc();
-        attachBrands(list);
-        if (!RoleUtil.canViewSensitiveFields()) {
-            return ApiResponse.success(list.stream().map(this::maskSensitive).collect(Collectors.toList()));
-        }
-        return ApiResponse.success(list);
+    public ApiResponse<List<InfluencerSimpleResponse>> simpleList() {
+        return ApiResponse.success(influencerCache.getAll());
     }
 
     @GetMapping("/{id}")
@@ -126,6 +124,7 @@ public class InfluencerController {
             return ApiResponse.error(400, "只支持 .xlsx 或 .xls 格式");
         List<String> result = excelHandler.importData(file, RoleUtil.canViewSensitiveFields());
         domainSyncService.sync();
+        influencerCache.refresh();
         return ApiResponse.success(result);
     }
 
@@ -195,6 +194,7 @@ public class InfluencerController {
         }
 
         domainSyncService.sync();
+        influencerCache.refresh();
         attachBrands(Collections.singletonList(saved));
         return ApiResponse.success(saved);
     }
@@ -207,6 +207,7 @@ public class InfluencerController {
         inf.setIsDeleted(true);
         influencerRepo.save(inf);
         domainSyncService.sync();
+        influencerCache.refresh();
         return ApiResponse.success();
     }
 
