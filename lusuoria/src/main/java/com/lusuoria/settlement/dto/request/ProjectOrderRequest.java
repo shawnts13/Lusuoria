@@ -3,6 +3,7 @@ package com.lusuoria.settlement.dto.request;
 import com.lusuoria.settlement.enums.ClientStatus;
 import com.lusuoria.settlement.enums.InternalSettlementStatus;
 import com.lusuoria.settlement.enums.ProjectType;
+import com.lusuoria.settlement.enums.VideoType;
 import lombok.Data;
 
 import javax.validation.constraints.NotBlank;
@@ -31,6 +32,9 @@ public class ProjectOrderRequest {
     private String clientOrderNo;
     private String cooperationContent;
     private Boolean isOwnResource;
+
+    /** 项目视频类型：实拍新视频 / AI新素材 / 旧素材重发（联动生成时取自红人合作跟踪） */
+    private VideoType videoType;
 
     // 收入
     /** 客户合作价格（美金），参与利润计算 */

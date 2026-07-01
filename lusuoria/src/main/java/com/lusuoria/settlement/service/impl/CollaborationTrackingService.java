@@ -98,6 +98,7 @@ public class CollaborationTrackingService {
         tracking.setPublishLink(emptyToNull(req.getPublishLink()));
         tracking.setPublishDate(req.getPublishDate());
         tracking.setProgress(req.getProgress());
+        tracking.setVideoType(req.getVideoType());
         tracking.setClientPaymentBatch(req.getClientPaymentBatch());
 
         // 项目负责人
@@ -195,6 +196,7 @@ public class CollaborationTrackingService {
         order.setBrand(t.getBrand());
         order.setInfluencer(influencer);
         order.setCooperationContent(t.getDemandContent());
+        order.setVideoType(t.getVideoType());
 
         // 项目负责人 + 提成比例（从员工管理里该员工的默认提成比例带入）
         if (t.getProjectManager() != null) {

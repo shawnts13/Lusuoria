@@ -9,6 +9,7 @@ import com.lusuoria.settlement.entity.*;
 import com.lusuoria.settlement.enums.ClientStatus;
 import com.lusuoria.settlement.enums.InternalSettlementStatus;
 import com.lusuoria.settlement.enums.ProjectType;
+import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.excel.ProjectOrderExcelHandler;
 import com.lusuoria.settlement.repository.*;
 import com.lusuoria.settlement.service.ProjectOrderService;
@@ -58,6 +59,7 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         order.setClientOrderNo(req.getClientOrderNo());
         order.setCooperationContent(req.getCooperationContent());
         order.setIsOwnResource(Boolean.TRUE.equals(req.getIsOwnResource()));
+        order.setVideoType(req.getVideoType());
 
         Brand brand = brandRepo.findByIdAndIsDeletedFalse(req.getBrandId())
                 .orElseThrow(() -> new RuntimeException("品牌方不存在：" + req.getBrandId()));
@@ -123,10 +125,11 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
     @Transactional(readOnly = true)
     public Page<ProjectOrderResponse> list(Long brandId, String projectMonth, ProjectType projectType,
                                            ClientStatus clientStatus, InternalSettlementStatus internalStatus,
+                                           VideoType videoType,
                                            Long influencerId, String accountName, Long projectManagerId,
                                            String keyword, Pageable pageable) {
         return projectOrderRepo
-                .findByFilters(brandId, projectMonth, projectType, clientStatus, internalStatus,
+                .findByFilters(brandId, projectMonth, projectType, clientStatus, internalStatus, videoType,
                         influencerId, accountName, projectManagerId, keyword, pageable)
                 .map(this::toResponse);
     }
@@ -263,6 +266,8 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         r.setProjectTypeLabel(o.getProjectType() != null ? o.getProjectType().getLabel() : null);
         r.setCooperationContent(o.getCooperationContent());
         r.setIsOwnResource(o.getIsOwnResource());
+        r.setVideoType(o.getVideoType());
+        r.setVideoTypeLabel(o.getVideoType() != null ? o.getVideoType().getLabel() : null);
 
         // brand 和 projectManager 走缓存，influencer 由 @EntityGraph 提前 JOIN 进来
         Brand brand = brandCache.findById(o.getBrandId());

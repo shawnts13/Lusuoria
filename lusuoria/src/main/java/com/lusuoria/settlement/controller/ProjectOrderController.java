@@ -7,6 +7,7 @@ import com.lusuoria.settlement.dto.response.ProjectOrderResponse;
 import com.lusuoria.settlement.enums.ClientStatus;
 import com.lusuoria.settlement.enums.InternalSettlementStatus;
 import com.lusuoria.settlement.enums.ProjectType;
+import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.excel.ProjectOrderExcelHandler;
 import com.lusuoria.settlement.service.ProjectOrderService;
 import com.lusuoria.settlement.util.RoleUtil;
@@ -37,6 +38,7 @@ public class ProjectOrderController {
             @RequestParam(required = false) ProjectType projectType,
             @RequestParam(required = false) ClientStatus clientStatus,
             @RequestParam(required = false) InternalSettlementStatus internalStatus,
+            @RequestParam(required = false) VideoType videoType,
             @RequestParam(required = false) Long influencerId,
             @RequestParam(required = false) String accountName,
             @RequestParam(required = false) Long projectManagerId,
@@ -45,7 +47,7 @@ public class ProjectOrderController {
             @RequestParam(defaultValue = "20") int size) {
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return ApiResponse.success(projectOrderService.list(
-                brandId, projectMonth, projectType, clientStatus, internalStatus,
+                brandId, projectMonth, projectType, clientStatus, internalStatus, videoType,
                 influencerId, accountName, projectManagerId, keyword, pageable));
     }
 

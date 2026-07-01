@@ -7,6 +7,7 @@ import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.enums.CollaborationProgress;
+import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
@@ -58,6 +59,7 @@ public class CollaborationTrackingExcelHandler {
         {"视频发布链接",               "0", "0"},
         {"发布时间",                   "0", "0"},
         {"进度",                       "0", "0"},
+        {"项目视频类型",               "0", "0"},
         {"项目负责人",                 "0", "0"},
         {"客户方的项目订单",           "0", "0"},
         {"客户方付款批次",             "0", "0"},
@@ -72,6 +74,10 @@ public class CollaborationTrackingExcelHandler {
 
     private static final String[] PROGRESS_LABELS = {
         "待草稿", "待发布", "待修改", "已发布（未结算）", "暂时延期", "已结算"
+    };
+
+    private static final String[] VIDEO_TYPE_LABELS = {
+        "实拍新视频", "AI新素材", "旧素材重发"
     };
 
     // ============ 导出 ============
@@ -109,6 +115,7 @@ public class CollaborationTrackingExcelHandler {
             setCellStr(row, c++, t.getPublishLink(),   wrap);
             setCellStr(row, c++, t.getPublishDate() != null ? df.format(t.getPublishDate()) : "", wrap);
             setCellStr(row, c++, t.getProgress() != null ? t.getProgress().getLabel() : "", wrap);
+            setCellStr(row, c++, t.getVideoType() != null ? t.getVideoType().getLabel() : "", wrap);
             Employee manager = employeeCache.findById(t.getProjectManagerId());
             setCellStr(row, c++, manager != null ? manager.getName() : "", wrap);
             setCellStr(row, c++, t.getClientOrderId(),     wrap);
@@ -147,6 +154,7 @@ public class CollaborationTrackingExcelHandler {
         // 进度下拉
         DataValidationHelper dv = sheet.getDataValidationHelper();
         addDropdown(sheet, dv, colIdxMap, "进度", PROGRESS_LABELS);
+        addDropdown(sheet, dv, colIdxMap, "项目视频类型", VIDEO_TYPE_LABELS);
 
         // 示例行
         Map<String, String> ex = new HashMap<String, String>();
@@ -157,6 +165,7 @@ public class CollaborationTrackingExcelHandler {
         ex.put("视频发布链接", "https://instagram.com/p/xxx");
         ex.put("发布时间", "2026-04-09");
         ex.put("进度", "已发布（未结算）");
+        ex.put("项目视频类型", "实拍新视频");
         ex.put("项目负责人", "梁珈绫 Charlene");
         ex.put("客户方的项目订单", "6004980428");
         ex.put("客户方付款批次", "已加入未结算列表");
@@ -274,6 +283,10 @@ public class CollaborationTrackingExcelHandler {
                 // 进度
                 String progressStr = getStr(row, colMap, "进度");
                 t.setProgress(parseProgress(progressStr));
+
+                // 项目视频类型
+                String videoTypeStr = getStr(row, colMap, "项目视频类型");
+                t.setVideoType(VideoType.fromLabel(videoTypeStr));
 
                 // 客户方的项目订单（兼容"客户系统的订单ID"）
                 t.setClientOrderId(emptyToNull(firstNonNull(

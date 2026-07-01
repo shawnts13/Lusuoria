@@ -5,6 +5,7 @@ import com.lusuoria.settlement.entity.ProjectOrder;
 import com.lusuoria.settlement.enums.ClientStatus;
 import com.lusuoria.settlement.enums.InternalSettlementStatus;
 import com.lusuoria.settlement.enums.ProjectType;
+import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.BrandRepository;
 import com.lusuoria.settlement.repository.EmployeeRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
@@ -57,6 +58,7 @@ public class ProjectOrderExcelHandler {
         EXPORT_COLS.add(new ColDef("项目月份",         false));
         EXPORT_COLS.add(new ColDef("品牌方",           false));
         EXPORT_COLS.add(new ColDef("项目类型",         false));
+        EXPORT_COLS.add(new ColDef("项目视频类型",     false));
         EXPORT_COLS.add(new ColDef("红人社媒完整名字", false));
         EXPORT_COLS.add(new ColDef("项目负责人",       false));
         EXPORT_COLS.add(new ColDef("甲方状态",         false));
@@ -94,6 +96,7 @@ public class ProjectOrderExcelHandler {
     static {
         TEMPLATE_COLS.add(new ColDef("项目月份(必填,如202604)",             false));
         TEMPLATE_COLS.add(new ColDef("项目类型(必填,海外红人/中国红人)",     false));
+        TEMPLATE_COLS.add(new ColDef("项目视频类型(实拍新视频/AI新素材/旧素材重发)", false));
         TEMPLATE_COLS.add(new ColDef("品牌方名称(必填)",                    false));
         TEMPLATE_COLS.add(new ColDef("红人社媒完整名字",                    false));
         TEMPLATE_COLS.add(new ColDef("甲方订单号",                         false));
@@ -154,6 +157,7 @@ public class ProjectOrderExcelHandler {
             setCellStr(row, c++, o.getProjectMonth(), normal);
             setCellStr(row, c++, o.getBrand() != null ? o.getBrand().getName() : "", normal);
             setCellStr(row, c++, o.getProjectType() != null ? o.getProjectType().getLabel() : "", normal);
+            setCellStr(row, c++, o.getVideoType() != null ? o.getVideoType().getLabel() : "", normal);
             setCellStr(row, c++, o.getInfluencer() != null ? o.getInfluencer().getAccountName() : "", normal);
             setCellStr(row, c++, o.getProjectManager() != null ? o.getProjectManager().getName() : "", normal);
             setCellStr(row, c++, o.getClientStatus() != null ? o.getClientStatus().getLabel() : "", normal);
@@ -233,6 +237,14 @@ public class ProjectOrderExcelHandler {
         DataValidation typeValidation = dvHelper.createValidation(typeConstraint, typeRange);
         typeValidation.setShowErrorBox(true);
         sheet.addValidationData(typeValidation);
+
+        // 项目视频类型下拉（始终在第3列，index=2）
+        CellRangeAddressList videoTypeRange = new CellRangeAddressList(1, 1000, 2, 2);
+        DataValidationConstraint videoTypeConstraint =
+                dvHelper.createExplicitListConstraint(new String[]{"实拍新视频", "AI新素材", "旧素材重发"});
+        DataValidation videoTypeValidation = dvHelper.createValidation(videoTypeConstraint, videoTypeRange);
+        videoTypeValidation.setShowErrorBox(true);
+        sheet.addValidationData(videoTypeValidation);
 
         // 示例行（动态填写，只填该角色有权限的列）
         Row example = sheet.createRow(1);
@@ -350,6 +362,8 @@ public class ProjectOrderExcelHandler {
                 req.setProjectMonth(projectMonth);
                 req.setProjectType("海外红人".equals(typeStr)
                         ? ProjectType.OVERSEAS_INFLUENCER : ProjectType.CHINA_INFLUENCER);
+                req.setVideoType(VideoType.fromLabel(
+                        getByHeader(row, colIndexMap, "项目视频类型(实拍新视频/AI新素材/旧素材重发)")));
                 req.setBrandId(brandId);
                 req.setInfluencerId(influencerId);
                 req.setClientOrderNo(clientOrderNo);
@@ -394,6 +408,7 @@ public class ProjectOrderExcelHandler {
         Map<String, String> examples = new HashMap<String, String>();
         examples.put("项目月份(必填,如202604)",          "202604");
         examples.put("项目类型(必填,海外红人/中国红人)", "海外红人");
+        examples.put("项目视频类型(实拍新视频/AI新素材/旧素材重发)", "实拍新视频");
         examples.put("品牌方名称(必填)",                 "TEMU");
         examples.put("红人社媒完整名字",                 "bigdogtech");
         examples.put("甲方订单号",                      "ORD-2024-001");

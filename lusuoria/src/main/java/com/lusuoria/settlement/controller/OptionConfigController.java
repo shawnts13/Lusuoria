@@ -51,6 +51,11 @@ public class OptionConfigController {
                              "PUBLISHED_UNSETTLED", "DELAYED", "SETTLED"},
                 new String[]{"待草稿", "待发布", "待修改", "已发布（未结算）", "暂时延期", "已结算"}));
 
+        // 项目视频类型
+        result.put("video_type", toOptions(
+                new String[]{"REAL_SHOT_NEW", "AI_NEW_MATERIAL", "OLD_MATERIAL_REPOST"},
+                new String[]{"实拍新视频", "AI新素材", "旧素材重发"}));
+
         return ApiResponse.success(result);
     }
 

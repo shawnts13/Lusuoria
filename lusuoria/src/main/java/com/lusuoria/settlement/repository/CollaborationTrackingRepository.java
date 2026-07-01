@@ -2,6 +2,7 @@ package com.lusuoria.settlement.repository;
 
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.enums.CollaborationProgress;
+import com.lusuoria.settlement.enums.VideoType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -45,6 +46,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:accountName IS NULL OR c.accountName LIKE %:accountName%) " +
            "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
            "AND (:progress IS NULL OR c.progress = :progress) " +
+           "AND (:videoType IS NULL OR c.videoType = :videoType) " +
            "AND (:clientOrderId IS NULL OR c.clientOrderId LIKE %:clientOrderId%) " +
            "AND (:clientPaymentBatch IS NULL OR c.clientPaymentBatch LIKE %:clientPaymentBatch%) " +
            "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId)")
@@ -55,6 +57,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("accountName") String accountName,
             @Param("platform") String platform,
             @Param("progress") CollaborationProgress progress,
+            @Param("videoType") VideoType videoType,
             @Param("clientOrderId") String clientOrderId,
             @Param("clientPaymentBatch") String clientPaymentBatch,
             @Param("projectManagerId") Long projectManagerId,

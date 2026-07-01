@@ -6,6 +6,7 @@ import com.lusuoria.settlement.dto.response.ProjectOrderResponse;
 import com.lusuoria.settlement.enums.ClientStatus;
 import com.lusuoria.settlement.enums.InternalSettlementStatus;
 import com.lusuoria.settlement.enums.ProjectType;
+import com.lusuoria.settlement.enums.VideoType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.web.multipart.MultipartFile;
@@ -22,6 +23,7 @@ public interface ProjectOrderService {
 
     Page<ProjectOrderResponse> list(Long brandId, String projectMonth, ProjectType projectType,
                                     ClientStatus clientStatus, InternalSettlementStatus internalStatus,
+                                    VideoType videoType,
                                     Long influencerId, String accountName, Long projectManagerId,
                                     String keyword, Pageable pageable);
 

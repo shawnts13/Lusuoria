@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.dto.request;
 
 import com.lusuoria.settlement.enums.CollaborationProgress;
+import com.lusuoria.settlement.enums.VideoType;
 import lombok.Data;
 
 import javax.validation.constraints.NotBlank;
@@ -27,6 +28,9 @@ public class CollaborationTrackingRequest {
     private Date publishDate;
 
     private CollaborationProgress progress;
+
+    /** 项目视频类型：实拍新视频 / AI新素材 / 旧素材重发 */
+    private VideoType videoType;
 
     private String clientOrderId;
 

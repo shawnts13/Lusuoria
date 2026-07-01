@@ -5,6 +5,7 @@ import com.lusuoria.settlement.dto.request.CollaborationTrackingRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.enums.CollaborationProgress;
+import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.excel.CollaborationTrackingExcelHandler;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.service.impl.CollaborationTrackingService;
@@ -50,6 +51,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) String accountName,
             @RequestParam(required = false) String platform,
             @RequestParam(required = false) CollaborationProgress progress,
+            @RequestParam(required = false) VideoType videoType,
             @RequestParam(required = false) String clientOrderId,
             @RequestParam(required = false) String clientPaymentBatch,
             @RequestParam(required = false) Long projectManagerId,
@@ -64,7 +66,7 @@ public class CollaborationTrackingController {
         PageRequest pageable = PageRequest.of(page, size, sort);
         Page<CollaborationTracking> result = trackingRepo.findByFilters(
                 brandId, teamName, countryMarket, accountName, platform,
-                progress, clientOrderId, clientPaymentBatch, projectManagerId, pageable);
+                progress, videoType, clientOrderId, clientPaymentBatch, projectManagerId, pageable);
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.success(result.map(this::maskSensitive));
         }
@@ -109,6 +111,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) String accountName,
             @RequestParam(required = false) String platform,
             @RequestParam(required = false) CollaborationProgress progress,
+            @RequestParam(required = false) VideoType videoType,
             @RequestParam(required = false) String clientOrderId,
             @RequestParam(required = false) String clientPaymentBatch,
             @RequestParam(required = false) Long projectManagerId,
@@ -117,7 +120,7 @@ public class CollaborationTrackingController {
         PageRequest all = PageRequest.of(0, Integer.MAX_VALUE, Sort.by(Sort.Direction.DESC, "id"));
         List<CollaborationTracking> list = trackingRepo.findByFilters(
                 brandId, teamName, countryMarket, accountName, platform,
-                progress, clientOrderId, clientPaymentBatch, projectManagerId, all).getContent();
+                progress, videoType, clientOrderId, clientPaymentBatch, projectManagerId, all).getContent();
         excelHandler.export(list, RoleUtil.canViewSensitiveFields(), response);
     }
 

@@ -3,6 +3,7 @@ package com.lusuoria.settlement.entity;
 import com.lusuoria.settlement.enums.ClientStatus;
 import com.lusuoria.settlement.enums.InternalSettlementStatus;
 import com.lusuoria.settlement.enums.ProjectType;
+import com.lusuoria.settlement.enums.VideoType;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.*;
 
@@ -39,6 +40,15 @@ public class ProjectOrder extends BaseEntity {
 
     @Column(name = "cooperation_content", length = 200)
     private String cooperationContent;
+
+    /**
+     * 项目视频类型：实拍新视频 / AI新素材 / 旧素材重发。
+     * 由「红人合作跟踪」联动生成项目订单时自动带过来（取跟踪记录里的值）；
+     * 手工新建的项目订单（无关联跟踪记录）也可直接选择。
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "video_type")
+    private VideoType videoType;
 
     @Column(name = "is_own_resource")
     private Boolean isOwnResource = false; // 自带资源/供应商项目（影响提成比例）

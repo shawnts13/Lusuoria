@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.entity;
 
 import com.lusuoria.settlement.enums.CollaborationProgress;
+import com.lusuoria.settlement.enums.VideoType;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.*;
 
@@ -67,6 +68,11 @@ public class CollaborationTracking extends BaseEntity {
     @Enumerated(EnumType.STRING)
     @Column(name = "progress")
     private CollaborationProgress progress;
+
+    /** 项目视频类型：实拍新视频 / AI新素材 / 旧素材重发 */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "video_type")
+    private VideoType videoType;
 
     /** 客户方的项目订单（即客户系统订单ID，前期可能为空） */
     @Column(name = "client_order_id")

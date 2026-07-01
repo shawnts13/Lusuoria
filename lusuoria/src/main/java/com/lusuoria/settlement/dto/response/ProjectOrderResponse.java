@@ -3,6 +3,7 @@ package com.lusuoria.settlement.dto.response;
 import com.lusuoria.settlement.enums.ClientStatus;
 import com.lusuoria.settlement.enums.InternalSettlementStatus;
 import com.lusuoria.settlement.enums.ProjectType;
+import com.lusuoria.settlement.enums.VideoType;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -28,6 +29,10 @@ public class ProjectOrderResponse {
     private String projectTypeLabel;
     private String cooperationContent;
     private Boolean isOwnResource;
+
+    /** 项目视频类型：实拍新视频 / AI新素材 / 旧素材重发 */
+    private VideoType videoType;
+    private String videoTypeLabel;
 
     // 关联
     private Long brandId;
