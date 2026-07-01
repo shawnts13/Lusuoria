@@ -10,7 +10,10 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import javax.validation.Valid;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @RestController
@@ -41,6 +44,11 @@ public class EmployeeController {
         return ApiResponse.success(employee);
     }
 
+    // 角色分组：不同角色只能维护各自适用的薪资字段，避免脏数据
+    private static final Set<String> COMMISSION_ROLES = new HashSet<String>(Arrays.asList("项目负责人", "管理层"));
+    private static final Set<String> FIXED_SALARY_ROLES = new HashSet<String>(Arrays.asList("财务", "IT后勤"));
+    private static final String EXECUTOR_ROLE = "执行人员";
+
     @PostMapping
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<Employee> save(@Valid @RequestBody EmployeeRequest req) {
@@ -57,12 +65,47 @@ public class EmployeeController {
         // email 为空字符串时存 null，避免违反唯一约束（PostgreSQL 空字符串不等于 null）
         String email = req.getEmail();
         employee.setEmail(email != null && !email.trim().isEmpty() ? email.trim() : null);
-        employee.setDefaultCommissionRate(req.getDefaultCommissionRate());
+
+        // 薪资字段按角色分组维护，非本角色适用的字段一律清空，防止脏数据残留
+        String role = req.getRole();
+        if (COMMISSION_ROLES.contains(role)) {
+            employee.setDefaultCommissionRate(req.getDefaultCommissionRate());
+            employee.setFixedMonthlySalary(null);
+            clearExecutorRates(employee);
+        } else if (FIXED_SALARY_ROLES.contains(role)) {
+            employee.setFixedMonthlySalary(req.getFixedMonthlySalary());
+            employee.setDefaultCommissionRate(null);
+            clearExecutorRates(employee);
+        } else if (EXECUTOR_ROLE.equals(role)) {
+            employee.setRateRealShotNew(req.getRateRealShotNew());
+            employee.setRateAiNewMaterial(req.getRateAiNewMaterial());
+            employee.setRateOldMaterialTier1(req.getRateOldMaterialTier1());
+            employee.setRateOldMaterialTier2(req.getRateOldMaterialTier2());
+            employee.setRateOldMaterialTier3(req.getRateOldMaterialTier3());
+            employee.setOldMaterialMonthlyCap(req.getOldMaterialMonthlyCap());
+            employee.setDefaultCommissionRate(null);
+            employee.setFixedMonthlySalary(null);
+        } else {
+            // 其他角色（如"法务"，薪资规则待补充）：暂不维护任何薪资字段
+            employee.setDefaultCommissionRate(null);
+            employee.setFixedMonthlySalary(null);
+            clearExecutorRates(employee);
+        }
+
         employee.setNotes(req.getNotes());
 
         Employee saved = employeeRepo.save(employee);
         employeeCache.refresh();
         return ApiResponse.success(saved);
+    }
+
+    private void clearExecutorRates(Employee employee) {
+        employee.setRateRealShotNew(null);
+        employee.setRateAiNewMaterial(null);
+        employee.setRateOldMaterialTier1(null);
+        employee.setRateOldMaterialTier2(null);
+        employee.setRateOldMaterialTier3(null);
+        employee.setOldMaterialMonthlyCap(null);
     }
 
     @DeleteMapping("/{id}")

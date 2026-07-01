@@ -56,6 +56,11 @@ public class OptionConfigController {
                 new String[]{"REAL_SHOT_NEW", "AI_NEW_MATERIAL", "OLD_MATERIAL_REPOST"},
                 new String[]{"实拍新视频", "AI新素材", "旧素材重发"}));
 
+        // 员工角色
+        result.put("employee_role", toOptions(
+                new String[]{"项目负责人", "执行人员", "管理层", "财务", "法务", "IT后勤"},
+                new String[]{"项目负责人", "执行人员", "管理层", "财务", "法务", "IT后勤"}));
+
         return ApiResponse.success(result);
     }
 
