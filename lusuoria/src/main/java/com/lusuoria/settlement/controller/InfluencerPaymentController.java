@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.controller;
 
 import com.lusuoria.settlement.dto.request.InfluencerPaymentRequest;
+import com.lusuoria.settlement.dto.request.InfluencerPaymentStatusRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.InfluencerPayment;
 import com.lusuoria.settlement.entity.Influencer;
@@ -126,5 +127,19 @@ public class InfluencerPaymentController {
         payment.setIsDeleted(true);
         paymentRepo.save(payment);
         return ApiResponse.success();
+    }
+
+    /**
+     * 状态流转：只修改打款状态，不接收、也不会改动其他任何字段。
+     * 配合前端专门的"状态流转"弹窗使用，防止编辑状态时误改其他内容。
+     */
+    @PatchMapping("/{id}/status")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    public ApiResponse<InfluencerPayment> updateStatus(
+            @PathVariable Long id, @RequestBody InfluencerPaymentStatusRequest req) {
+        InfluencerPayment payment = paymentRepo.findByIdAndIsDeletedFalse(id)
+                .orElseThrow(() -> new RuntimeException("结款记录不存在"));
+        payment.setPaymentStatus(req.getPaymentStatus());
+        return ApiResponse.success(paymentRepo.save(payment));
     }
 }

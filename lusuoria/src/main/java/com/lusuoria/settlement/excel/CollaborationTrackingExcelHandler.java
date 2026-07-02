@@ -12,6 +12,7 @@ import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.service.impl.CollaborationTrackingService;
+import com.lusuoria.settlement.util.ProjectNoAllocator;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddressList;
 import org.apache.poi.xssf.usermodel.*;
@@ -46,6 +47,7 @@ public class CollaborationTrackingExcelHandler {
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private CollaborationTrackingService trackingService;
+    @Autowired private ProjectNoAllocator projectNoAllocator;
 
     /** 导出/模板列顺序 */
     // 列定义：[列名, 是否敏感(1=是), 是否仅导出(1=模板不含)]
@@ -321,6 +323,11 @@ public class CollaborationTrackingExcelHandler {
                             getStr(row, colMap, "客户合作价格$"),
                             getStr(row, colMap, "客户合作价格")));
                 }
+
+                // 内部项目编号：Excel 导入的每一行都是新建记录，跟手工新建一样，导入时立即生成
+                String importBrandName = t.getBrand() != null ? t.getBrand().getName() : null;
+                String importMonth = new SimpleDateFormat("yyyyMM").format(new Date());
+                t.setInternalProjectNo(projectNoAllocator.allocate(importBrandName, importMonth, t.getAccountName()));
 
                 // 保存跟踪记录
                 CollaborationTracking savedTracking = trackingRepo.save(t);

@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.controller;
 
 import com.lusuoria.settlement.dto.request.ProjectOrderRequest;
+import com.lusuoria.settlement.dto.request.ProjectOrderStatusRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.dto.response.MonthlySummaryResponse;
 import com.lusuoria.settlement.dto.response.ProjectOrderResponse;
@@ -8,28 +9,23 @@ import com.lusuoria.settlement.enums.ClientStatus;
 import com.lusuoria.settlement.enums.InternalSettlementStatus;
 import com.lusuoria.settlement.enums.ProjectType;
 import com.lusuoria.settlement.enums.VideoType;
-import com.lusuoria.settlement.excel.ProjectOrderExcelHandler;
 import com.lusuoria.settlement.service.ProjectOrderService;
-import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
 
 import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
 import java.io.IOException;
-import java.util.List;
 
 @RestController
 @RequestMapping("/api/projects")
 public class ProjectOrderController {
 
     @Autowired private ProjectOrderService projectOrderService;
-    @Autowired private ProjectOrderExcelHandler excelHandler;
 
     @GetMapping
     public ApiResponse<Page<ProjectOrderResponse>> list(
@@ -68,16 +64,6 @@ public class ProjectOrderController {
         projectOrderService.exportExcel(projectMonth, response);
     }
 
-    /**
-     * 下载导入模板：按当前角色决定模板是否包含敏感列
-     * ADMIN / AUDITOR → 含完整列（包含收入/利润/提成）
-     * STAFF / GUEST   → 仅包含非敏感列
-     */
-    @GetMapping("/import/template")
-    public void downloadTemplate(HttpServletResponse response) throws IOException {
-        excelHandler.downloadTemplate(RoleUtil.canViewSensitiveFields(), response);
-    }
-
     @PostMapping
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<ProjectOrderResponse> save(@Valid @RequestBody ProjectOrderRequest req) {
@@ -103,13 +89,15 @@ public class ProjectOrderController {
         return ApiResponse.success(projectOrderService.reject(id));
     }
 
-    @PostMapping("/import/excel")
+    /**
+     * 状态流转：只修改甲方状态 + 内部状态，不接收、也不会改动其他任何字段。
+     * 配合前端专门的"状态流转"弹窗使用，防止编辑状态时误改其他内容。
+     */
+    @PatchMapping("/{id}/status")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
-    public ApiResponse<List<String>> importExcel(@RequestParam("file") MultipartFile file) throws IOException {
-        if (file.isEmpty()) return ApiResponse.error(400, "请选择要上传的文件");
-        String fn = file.getOriginalFilename();
-        if (fn == null || (!fn.endsWith(".xlsx") && !fn.endsWith(".xls")))
-            return ApiResponse.error(400, "只支持 .xlsx 或 .xls 格式");
-        return ApiResponse.success(projectOrderService.importExcel(file));
+    public ApiResponse<ProjectOrderResponse> updateStatus(
+            @PathVariable Long id, @RequestBody ProjectOrderStatusRequest req) {
+        return ApiResponse.success(
+                projectOrderService.updateStatus(id, req.getClientStatus(), req.getInternalStatus()));
     }
 }

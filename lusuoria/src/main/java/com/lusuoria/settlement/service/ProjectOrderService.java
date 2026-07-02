@@ -9,11 +9,9 @@ import com.lusuoria.settlement.enums.ProjectType;
 import com.lusuoria.settlement.enums.VideoType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.web.multipart.MultipartFile;
 
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.util.List;
 
 public interface ProjectOrderService {
 
@@ -37,7 +35,11 @@ public interface ProjectOrderService {
     /** 老板驳回：PENDING_APPROVAL -> CALCULATED */
     ProjectOrderResponse reject(Long id);
 
-    void exportExcel(String projectMonth, HttpServletResponse response) throws IOException;
+    /**
+     * 状态流转：只修改甲方状态 + 内部状态，不接收、也不会改动其他任何字段。
+     * 配合前端专门的"状态流转"弹窗使用。
+     */
+    ProjectOrderResponse updateStatus(Long id, ClientStatus clientStatus, InternalSettlementStatus internalStatus);
 
-    List<String> importExcel(MultipartFile file) throws IOException;
+    void exportExcel(String projectMonth, HttpServletResponse response) throws IOException;
 }

@@ -12,7 +12,7 @@ import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.ProjectOrderRepository;
-import com.lusuoria.settlement.util.ProjectNoGenerator;
+import com.lusuoria.settlement.util.ProjectNoAllocator;
 import com.lusuoria.settlement.util.ProfitCalculator;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -43,7 +43,7 @@ public class CollaborationTrackingService {
     @Autowired private ProjectOrderRepository projectOrderRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
-    @Autowired private ProjectNoGenerator projectNoGenerator;
+    @Autowired private ProjectNoAllocator projectNoAllocator;
     @Autowired private ProfitCalculator profitCalculator;
     @Autowired private ExchangeRateService exchangeRateService;
 
@@ -100,6 +100,15 @@ public class CollaborationTrackingService {
         tracking.setProgress(req.getProgress());
         tracking.setVideoType(req.getVideoType());
         tracking.setClientPaymentBatch(req.getClientPaymentBatch());
+
+        // 内部项目编号：仅新建时生成一次，前端不可编辑，此后永久不变
+        // （月份固定用"创建时间当月"，不随后续填写的发布时间变化）
+        if (req.getId() == null) {
+            String brandName = tracking.getBrand() != null ? tracking.getBrand().getName() : null;
+            String createMonth = new SimpleDateFormat("yyyyMM").format(new Date());
+            tracking.setInternalProjectNo(
+                    projectNoAllocator.allocate(brandName, createMonth, tracking.getAccountName()));
+        }
 
         // 项目负责人
         if (req.getProjectManagerId() != null) {
@@ -214,16 +223,8 @@ public class CollaborationTrackingService {
         order.setClientPrice(parseAmount(t.getClientPrice()));
         order.setInfluencerCost(parseAmount(t.getInfluencerCost()));
 
-        // 项目编号：复用现有 ProjectNoGenerator（品牌-月份-红人ID-序号）
-        // 批量生成时同一(品牌+月份+红人)可能撞号，这里循环递增直到编号唯一
-        long count = projectOrderRepo.countByBrandAndMonth(t.getBrand().getId(), projectMonth);
-        String projectNo;
-        do {
-            projectNo = projectNoGenerator.generate(
-                    t.getBrand().getName(), projectMonth, influencer.getAccountName(), count);
-            count++;
-        } while (projectOrderRepo.existsByInternalProjectNo(projectNo));
-        order.setInternalProjectNo(projectNo);
+        // 项目编号：直接复用跟踪记录已生成的编号（跟踪记录新建时就已经分配好了）
+        order.setInternalProjectNo(t.getInternalProjectNo());
 
         // 计算毛利/可分配利润/提成/公司利润（之前漏调用，导致列表显示"—"，
         // 编辑弹窗才显示正常是因为前端实时算了一遍，但数据库里其实是空的）
@@ -237,7 +238,16 @@ public class CollaborationTrackingService {
     private void softDeleteProjectOrderById(Long orderId) {
         if (orderId == null) return;
         projectOrderRepo.findByIdAndIsDeletedFalse(orderId)
-                .ifPresent(o -> { o.setIsDeleted(true); projectOrderRepo.save(o); });
+                .ifPresent(o -> {
+                    o.setIsDeleted(true);
+                    // 让出内部项目编号：这个编号来自跟踪记录，跟踪记录的编号永久不变，
+                    // 如果客户方订单号又改了、需要重新生成项目订单，新订单会想用同一个编号，
+                    // 但这条旧订单还物理存在（软删除），不让号会撞数据库唯一约束
+                    if (o.getInternalProjectNo() != null) {
+                        o.setInternalProjectNo(o.getInternalProjectNo() + "-DEL" + o.getId());
+                    }
+                    projectOrderRepo.save(o);
+                });
     }
 
     /** 把金额文本解析成 BigDecimal，非数字（如"价格待定"）返回 null */

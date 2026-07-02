@@ -21,6 +21,13 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
 
     List<CollaborationTracking> findByIsDeletedFalseOrderByAccountNameAsc();
 
+    boolean existsByInternalProjectNo(String internalProjectNo);
+
+    /** 内部项目编号分配用：统计某"品牌-月份-账号-"前缀已用了多少个（作为序号起点估算） */
+    @Query("SELECT COUNT(c) FROM CollaborationTracking c " +
+           "WHERE c.isDeleted = false AND c.internalProjectNo LIKE :prefixPattern")
+    long countByInternalProjectNoPrefix(@Param("prefixPattern") String prefixPattern);
+
     /**
      * 去重判断：同一红人 + 同一发布链接 + 同一发布日期 视为重复。
      * 仅当 publishLink 与 publishDate 均非空时才有意义（调用方负责判断）。

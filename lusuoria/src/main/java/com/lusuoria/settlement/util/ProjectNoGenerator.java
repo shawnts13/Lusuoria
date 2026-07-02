@@ -17,6 +17,13 @@ public class ProjectNoGenerator {
         return brand + "-" + projectMonth + "-" + account + "-" + seq;
     }
 
+    /** 编号前缀（不含序号），用于统计"这个品牌+月份+账号"下已经用了多少个编号 */
+    public String buildPrefix(String brandName, String projectMonth, String accountName) {
+        String brand   = sanitize(brandName).toUpperCase();
+        String account = sanitize(accountName).toLowerCase();
+        return brand + "-" + projectMonth + "-" + account + "-";
+    }
+
     private String sanitize(String input) {
         if (input == null) return "UNKNOWN";
         // 去掉空格和特殊字符，只保留字母数字

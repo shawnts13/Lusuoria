@@ -14,14 +14,12 @@ import com.lusuoria.settlement.excel.ProjectOrderExcelHandler;
 import com.lusuoria.settlement.repository.*;
 import com.lusuoria.settlement.service.ProjectOrderService;
 import com.lusuoria.settlement.util.ProfitCalculator;
-import com.lusuoria.settlement.util.ProjectNoGenerator;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.multipart.MultipartFile;
 
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
@@ -40,19 +38,19 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private ProfitCalculator profitCalculator;
-    @Autowired private ProjectNoGenerator projectNoGenerator;
     @Autowired private ProjectOrderExcelHandler excelHandler;
 
     @Override
     public ProjectOrderResponse save(ProjectOrderRequest req) {
-        ProjectOrder order;
-        if (req.getId() != null) {
-            order = projectOrderRepo.findByIdAndIsDeletedFalse(req.getId())
-                    .orElseThrow(() -> new RuntimeException("项目订单不存在：" + req.getId()));
-        } else {
-            order = new ProjectOrder();
-            order.setIsDeleted(false);
+        // 项目订单只能由"红人合作跟踪"联动生成（填了"客户方的项目订单"后系统自动新建），
+        // 不支持通过这个接口直接新建，避免两边各自生成、内部项目编号不一致
+        if (req.getId() == null) {
+            throw new RuntimeException("项目订单不支持直接新建，请通过「红人合作跟踪」模块填写"
+                    + "「客户方的项目订单」后由系统自动生成");
         }
+
+        ProjectOrder order = projectOrderRepo.findByIdAndIsDeletedFalse(req.getId())
+                .orElseThrow(() -> new RuntimeException("项目订单不存在：" + req.getId()));
 
         order.setProjectMonth(req.getProjectMonth());
         order.setProjectType(req.getProjectType());
@@ -102,14 +100,6 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         order.setNotes(req.getNotes());
 
         profitCalculator.calculate(order);
-
-        if (req.getId() == null) {
-            String accountName = order.getInfluencer() != null
-                    ? order.getInfluencer().getAccountName() : "general";
-            long count = projectOrderRepo.countByBrandAndMonth(brand.getId(), req.getProjectMonth());
-            order.setInternalProjectNo(
-                    projectNoGenerator.generate(brand.getName(), req.getProjectMonth(), accountName, count));
-        }
 
         return toResponse(projectOrderRepo.save(order));
     }
@@ -235,6 +225,15 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
     }
 
     @Override
+    public ProjectOrderResponse updateStatus(Long id, ClientStatus clientStatus, InternalSettlementStatus internalStatus) {
+        ProjectOrder order = projectOrderRepo.findByIdAndIsDeletedFalse(id)
+                .orElseThrow(() -> new RuntimeException("项目订单不存在：" + id));
+        order.setClientStatus(clientStatus);
+        order.setInternalStatus(internalStatus);
+        return toResponse(projectOrderRepo.save(order));
+    }
+
+    @Override
     public void exportExcel(String projectMonth, HttpServletResponse response) throws IOException {
         List<ProjectOrder> orders;
         if (projectMonth != null && !projectMonth.isEmpty()) {
@@ -246,11 +245,6 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         }
         // 传入当前角色是否可见敏感字段
         excelHandler.export(orders, RoleUtil.canViewSensitiveFields(), response);
-    }
-
-    @Override
-    public List<String> importExcel(MultipartFile file) throws IOException {
-        return excelHandler.importData(file, this);
     }
 
     // ===== 转换（自动根据当前角色脱敏）=====

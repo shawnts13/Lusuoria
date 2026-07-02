@@ -2,6 +2,7 @@ package com.lusuoria.settlement.controller;
 
 import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.dto.request.CollaborationTrackingRequest;
+import com.lusuoria.settlement.dto.request.CollaborationTrackingStatusRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.enums.CollaborationProgress;
@@ -103,6 +104,21 @@ public class CollaborationTrackingController {
     public ApiResponse<Void> delete(@PathVariable Long id) {
         trackingService.delete(id);
         return ApiResponse.success();
+    }
+
+    /**
+     * 状态流转：只允许修改"进度"这一个字段，不接收、也不会改动其他任何字段。
+     * 配合前端专门的"状态流转"弹窗使用，防止编辑状态时误改其他内容。
+     */
+    @PatchMapping("/{id}/status")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    public ApiResponse<CollaborationTracking> updateStatus(
+            @PathVariable Long id, @RequestBody CollaborationTrackingStatusRequest req) {
+        CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
+                .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
+        t.setProgress(req.getProgress());
+        CollaborationTracking saved = trackingRepo.save(t);
+        return ApiResponse.success(RoleUtil.canViewSensitiveFields() ? saved : maskSensitive(saved));
     }
 
     // ============ Excel ============
