@@ -113,7 +113,11 @@ public class InfluencerPaymentController {
         payment.setReconcileDate(req.getReconcileDate());
         payment.setExpectedPaymentDate(req.getExpectedPaymentDate());
         payment.setActualPaymentDate(req.getActualPaymentDate());
-        if (req.getPaymentStatus() != null) payment.setPaymentStatus(req.getPaymentStatus());
+        // 付款状态：只有新建时才从请求体取值（作为初始状态）；编辑已有记录时，
+        // 状态只能通过"状态流转"接口修改，这里忽略请求体里的 paymentStatus，保留数据库原值
+        if (req.getId() == null && req.getPaymentStatus() != null) {
+            payment.setPaymentStatus(req.getPaymentStatus());
+        }
         payment.setPaidAmount(req.getPaidAmount());
         payment.setNotes(req.getNotes());
         return ApiResponse.success(paymentRepo.save(payment));

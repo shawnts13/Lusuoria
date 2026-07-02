@@ -2,6 +2,7 @@ package com.lusuoria.settlement.excel;
 
 import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.config.EmployeeCache;
+import com.lusuoria.settlement.dto.request.CollaborationTrackingRequest;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
@@ -9,10 +10,8 @@ import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
-import com.lusuoria.settlement.repository.InfluencerBrandRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.service.impl.CollaborationTrackingService;
-import com.lusuoria.settlement.util.ProjectNoAllocator;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddressList;
 import org.apache.poi.xssf.usermodel.*;
@@ -43,11 +42,9 @@ public class CollaborationTrackingExcelHandler {
 
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private InfluencerRepository influencerRepo;
-    @Autowired private InfluencerBrandRepository influencerBrandRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private CollaborationTrackingService trackingService;
-    @Autowired private ProjectNoAllocator projectNoAllocator;
 
     /** 导出/模板列顺序 */
     // 列定义：[列名, 是否敏感(1=是), 是否仅导出(1=模板不含)]
@@ -209,7 +206,7 @@ public class CollaborationTrackingExcelHandler {
         // 预加载员工列表，供"项目负责人"列模糊匹配
         List<Employee> allEmployees = employeeCache.getAll();
 
-        int processedCount = 0, successCount = 0, skipCount = 0, projectOrderCreated = 0;
+        int processedCount = 0, createdCount = 0, updatedCount = 0, projectOrderLinked = 0;
         SimpleDateFormat[] dateFormats = {
             new SimpleDateFormat("yyyy-MM-dd"),
             new SimpleDateFormat("yyyy/MM/dd"),
@@ -236,14 +233,10 @@ public class CollaborationTrackingExcelHandler {
                     errors.add("第" + (i + 1) + "行：红人社媒完整名字 [" + accountName + "] 不在红人库，跳过"); continue;
                 }
 
-                CollaborationTracking t = new CollaborationTracking();
-                t.setIsDeleted(false);
-                t.setAccountName(influencer.getAccountName());
-                // 团队/国家快照
-                t.setTeamName(influencer.getTeamName());
-                t.setCountryMarket(influencer.getCountryMarket());
+                CollaborationTrackingRequest req = new CollaborationTrackingRequest();
+                req.setAccountName(influencer.getAccountName());
 
-                // 品牌方：必须是该红人在红人模块里已关联的品牌方之一，否则报错跳过
+                // 品牌方：这里只负责按名称查出 id，具体"是否已在红人模块关联"交给 service.save() 统一校验
                 String brandName = getStr(row, colMap, "品牌方");
                 if (brandName != null && !brandName.isEmpty()) {
                     Brand brand = brandCache.findByName(brandName.trim());
@@ -251,12 +244,7 @@ public class CollaborationTrackingExcelHandler {
                         errors.add("第" + (i + 1) + "行：品牌方 [" + brandName + "] 不存在，请检查品牌方管理模块");
                         continue;
                     }
-                    if (!influencerBrandRepo.existsByInfluencerIdAndBrandId(influencer.getId(), brand.getId())) {
-                        errors.add("第" + (i + 1) + "行：品牌方 [" + brandName + "] 未在红人模块中关联到红人 ["
-                                + accountName + "]，请先在红人模块维护该红人的品牌方后再重新导入");
-                        continue;
-                    }
-                    t.setBrand(brand);
+                    req.setBrandId(brand.getId());
                 }
 
                 // 合作平台：优先取"合作平台"列，没有则从"合作资源"/"需求内容"智能提取
@@ -268,36 +256,33 @@ public class CollaborationTrackingExcelHandler {
                 String platform = (platformRaw != null && !platformRaw.isEmpty())
                         ? normalizePlatforms(platformRaw)
                         : extractPlatforms(demandRaw);
-                t.setPlatform(platform);
-                t.setDemandContent(demandRaw);
+                req.setPlatform(platform);
+                req.setDemandContent(demandRaw);
 
                 // 发布链接（兼容多种列名）
-                t.setPublishLink(emptyToNull(firstNonNull(
+                String publishLink = emptyToNull(firstNonNull(
                         getStr(row, colMap, "视频发布链接"),
                         getStr(row, colMap, "发布链接(IG reel)"),
                         getStr(row, colMap, "发布链接"),
-                        getStr(row, colMap, "主页link"))));
+                        getStr(row, colMap, "主页link")));
+                req.setPublishLink(publishLink);
 
                 // 发布时间
                 Date publishDate = parseDate(row, colMap, dateFormats);
-                t.setPublishDate(publishDate);
+                req.setPublishDate(publishDate);
 
-                // 进度
-                String progressStr = getStr(row, colMap, "进度");
-                t.setProgress(parseProgress(progressStr));
-
-                // 项目视频类型
-                String videoTypeStr = getStr(row, colMap, "项目视频类型");
-                t.setVideoType(VideoType.fromLabel(videoTypeStr));
+                // 进度、项目视频类型：Excel 导入无论新建还是更新已有记录，都允许带状态
+                req.setProgress(parseProgress(getStr(row, colMap, "进度")));
+                req.setVideoType(VideoType.fromLabel(getStr(row, colMap, "项目视频类型")));
 
                 // 客户方的项目订单（兼容"客户系统的订单ID"）
-                t.setClientOrderId(emptyToNull(firstNonNull(
+                req.setClientOrderId(emptyToNull(firstNonNull(
                         getStr(row, colMap, "客户方的项目订单"),
                         getStr(row, colMap, "客户系统的订单ID"),
                         getStr(row, colMap, "订单ID"))));
 
                 // 客户方付款批次
-                t.setClientPaymentBatch(firstNonNull(
+                req.setClientPaymentBatch(firstNonNull(
                         getStr(row, colMap, "客户方付款批次"),
                         getStr(row, colMap, "客户付款批次")));
 
@@ -308,46 +293,42 @@ public class CollaborationTrackingExcelHandler {
                     if (manager == null) {
                         errors.add("第" + (i + 1) + "行：项目负责人 [" + managerRaw + "] 未匹配到任何员工，跳过该字段");
                     } else {
-                        t.setProjectManager(manager);
+                        req.setProjectManagerId(manager.getId());
                     }
                 }
 
                 // 敏感字段
                 if (canViewSensitive) {
-                    t.setInfluencerCost(firstNonNull(
+                    req.setInfluencerCost(firstNonNull(
                             getStr(row, colMap, "红人视频制作与发布成本（美金）"),
                             getStr(row, colMap, "红人成本$"),
                             getStr(row, colMap, "红人成本")));
-                    t.setClientPrice(firstNonNull(
+                    req.setClientPrice(firstNonNull(
                             getStr(row, colMap, "客户合作价格（美金）"),
                             getStr(row, colMap, "客户合作价格$"),
                             getStr(row, colMap, "客户合作价格")));
                 }
 
-                // 内部项目编号：Excel 导入的每一行都是新建记录，跟手工新建一样，导入时立即生成
-                String importBrandName = t.getBrand() != null ? t.getBrand().getName() : null;
-                String importMonth = new SimpleDateFormat("yyyyMM").format(new Date());
-                t.setInternalProjectNo(projectNoAllocator.allocate(importBrandName, importMonth, t.getAccountName()));
-
-                // 保存跟踪记录
-                CollaborationTracking savedTracking = trackingRepo.save(t);
-
-                // 有客户订单ID时，自动生成一条对应的项目订单（每条视频各一条）
-                if (savedTracking.getClientOrderId() != null && savedTracking.getBrand() != null) {
-                    try {
-                        Long orderPk = trackingService.createProjectOrderFromTracking(
-                                savedTracking, influencer, savedTracking.getClientOrderId());
-                        savedTracking.setGeneratedProjectOrderId(orderPk);
-                        trackingRepo.save(savedTracking);
-                        projectOrderCreated++;
-                    } catch (Exception ex) {
-                        // 项目订单生成失败不影响跟踪记录本身导入成功，仅记录提示
-                        log.error("第{}行生成项目订单失败：{}", (i + 1), ex.getMessage());
-                        errors.add("第" + (i + 1) + "行：跟踪记录已导入，但生成项目订单失败（"
-                                + ex.getMessage() + "）");
+                // ---- 查重：红人 + 发布链接 + 发布时间 完全相同 -> 更新已有记录，而不是新建 ----
+                boolean isUpdate = false;
+                if (publishLink != null && publishDate != null) {
+                    List<CollaborationTracking> dup = trackingRepo.findDuplicates(
+                            req.getAccountName(), publishLink, publishDate, null);
+                    if (!dup.isEmpty()) {
+                        req.setId(dup.get(0).getId());
+                        isUpdate = true;
                     }
                 }
-                successCount++;
+                // 批量导入没有人在旁边二次确认，订单ID变更直接放行（跟手工编辑二次确认弹窗是同一条业务规则，
+                // 只是这里没法弹窗，所以直接当作已确认处理）
+                req.setConfirmOrderIdChange(true);
+
+                // 内部项目编号：新建时 service 内部会自动生成一次；命中更新分支时 id 不为空，
+                // service 会保留数据库里原有的编号，不会重新生成——这里不需要也不应该手动处理
+                CollaborationTracking savedTracking = trackingService.save(req, true);
+
+                if (isUpdate) updatedCount++; else createdCount++;
+                if (savedTracking.getGeneratedProjectOrderId() != null) projectOrderLinked++;
             } catch (Exception e) {
                 log.error("合作跟踪导入第{}行失败：{}", (i + 1), e.getMessage(), e);
                 errors.add("第" + (i + 1) + "行导入失败：" + e.getMessage());
@@ -356,9 +337,8 @@ public class CollaborationTrackingExcelHandler {
 
         workbook.close();
 
-        skipCount = processedCount - successCount - errors.size();
-        errors.add(0, "新增 " + successCount + " 条，跳过 " + Math.max(0, skipCount)
-                + " 条，失败 " + errors.size() + " 条；自动生成项目订单 " + projectOrderCreated + " 条");
+        errors.add(0, "新增 " + createdCount + " 条，更新 " + updatedCount + " 条，失败 " + (errors.size())
+                + " 条（共处理 " + processedCount + " 行）；关联项目订单 " + projectOrderLinked + " 条");
         return errors;
     }
 

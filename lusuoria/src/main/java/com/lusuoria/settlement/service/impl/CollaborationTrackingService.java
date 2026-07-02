@@ -57,8 +57,19 @@ public class CollaborationTrackingService {
         public DuplicateTrackingException(String msg) { super(msg); }
     }
 
+    /**
+     * @param allowStatusUpdateOnEdit 编辑已有记录时是否允许同时更新"进度"。
+     *        默认（单条编辑表单）为 false —— 状态只能通过"状态流转"接口改，
+     *        编辑表单里状态字段是锁死的，防止误操作。
+     *        Excel 导入命中查重、走"更新已有记录"分支时传 true —— 允许连带把状态也更新了。
+     */
     @Transactional
     public CollaborationTracking save(CollaborationTrackingRequest req) {
+        return save(req, false);
+    }
+
+    @Transactional
+    public CollaborationTracking save(CollaborationTrackingRequest req, boolean allowStatusUpdateOnEdit) {
         CollaborationTracking tracking;
         String oldOrderId = null;
 
@@ -97,7 +108,11 @@ public class CollaborationTrackingService {
         tracking.setDemandContent(req.getDemandContent());
         tracking.setPublishLink(emptyToNull(req.getPublishLink()));
         tracking.setPublishDate(req.getPublishDate());
-        tracking.setProgress(req.getProgress());
+        // 进度：新建时，或明确允许编辑时更新状态（Excel 导入更新分支），才从请求体取值；
+        // 普通编辑表单（allowStatusUpdateOnEdit=false）忽略请求体里的 progress，保留数据库原值
+        if (req.getId() == null || allowStatusUpdateOnEdit) {
+            tracking.setProgress(req.getProgress());
+        }
         tracking.setVideoType(req.getVideoType());
         tracking.setClientPaymentBatch(req.getClientPaymentBatch());
 

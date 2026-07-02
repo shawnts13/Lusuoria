@@ -91,8 +91,9 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         order.setOtherExternalCost(req.getOtherExternalCost());
         order.setInternalExecutionCost(req.getInternalExecutionCost());
 
-        if (req.getClientStatus() != null) order.setClientStatus(req.getClientStatus());
-        if (req.getInternalStatus() != null) order.setInternalStatus(req.getInternalStatus());
+        // 甲方状态 / 内部状态：项目订单已经不支持"新建"（只能编辑已有记录），
+        // 状态只能通过"状态流转"接口（updateStatus）修改，这里的编辑接口
+        // 完全不理会请求体里的状态字段，保留数据库原值，防止误操作时顺带把状态也改了
         order.setContractSigned(req.getContractSigned());
         order.setExpectedReceiptDate(req.getExpectedReceiptDate());
         order.setActualReceiptDate(req.getActualReceiptDate());
