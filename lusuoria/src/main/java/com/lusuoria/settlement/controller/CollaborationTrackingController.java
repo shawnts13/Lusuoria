@@ -3,12 +3,16 @@ package com.lusuoria.settlement.controller;
 import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.dto.request.CollaborationTrackingRequest;
 import com.lusuoria.settlement.dto.request.CollaborationTrackingStatusRequest;
+import com.lusuoria.settlement.dto.request.DeleteRequestReasonRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.CollaborationTracking;
+import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.enums.CollaborationProgress;
+import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.excel.CollaborationTrackingExcelHandler;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
+import com.lusuoria.settlement.repository.PendingApprovalRepository;
 import com.lusuoria.settlement.service.impl.CollaborationTrackingService;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.BeanUtils;
@@ -23,26 +27,29 @@ import org.springframework.web.multipart.MultipartFile;
 import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
 import java.io.IOException;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 红人合作跟踪
  *
  * 特殊响应码：
- *   4090 - 订单ID变更需二次确认（前端弹确认框，确认后带 confirmOrderIdChange=true 重试）
+ *   4090 - 已存在关联的项目订单，不能改/清空客户方订单号（需要先删除那条项目订单）
  *   4091 - 去重命中（前端提示，不重试）
  */
 @RestController
 @RequestMapping("/api/collaboration-trackings")
 public class CollaborationTrackingController {
 
-    public static final int CODE_ORDER_ID_CONFIRM = 4090;
-    public static final int CODE_DUPLICATE        = 4091;
+    public static final int CODE_LINKED_ORDER_EXISTS = 4090;
+    public static final int CODE_DUPLICATE           = 4091;
 
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private CollaborationTrackingService trackingService;
     @Autowired private CollaborationTrackingExcelHandler excelHandler;
     @Autowired private BrandCache brandCache;
+    @Autowired private PendingApprovalRepository pendingApprovalRepo;
 
     @GetMapping
     public ApiResponse<Page<CollaborationTracking>> list(
@@ -54,6 +61,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) CollaborationProgress progress,
             @RequestParam(required = false) VideoType videoType,
             @RequestParam(required = false) String videoMonth,
+            @RequestParam(required = false) String internalProjectNo,
             @RequestParam(required = false) String clientOrderId,
             @RequestParam(required = false) String clientPaymentBatch,
             @RequestParam(required = false) Long projectManagerId,
@@ -69,8 +77,14 @@ public class CollaborationTrackingController {
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         Page<CollaborationTracking> result = trackingRepo.findByFilters(
                 brandId, teamName, countryMarket, accountName, platform,
-                progress, videoType, videoMonthParam,
+                progress, videoType, videoMonthParam, internalProjectNo,
                 clientOrderId, clientPaymentBatch, projectManagerId, pageable);
+
+        // 批量标记"当前是否有待审核的删除申请"，避免逐行查库
+        Set<Long> pendingIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(
+                PendingApprovalModule.COLLABORATION_TRACKING));
+        result.forEach(t -> t.setHasPendingDeleteRequest(pendingIds.contains(t.getId())));
+
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.success(result.map(this::maskSensitive));
         }
@@ -92,18 +106,22 @@ public class CollaborationTrackingController {
             CollaborationTracking saved = trackingService.save(req);
             CollaborationTracking out = RoleUtil.canViewSensitiveFields() ? saved : maskSensitive(saved);
             return ApiResponse.success(out);
-        } catch (CollaborationTrackingService.OrderIdChangeConfirmRequired e) {
-            return ApiResponse.error(CODE_ORDER_ID_CONFIRM, e.getMessage());
+        } catch (CollaborationTrackingService.LinkedOrderExistsException e) {
+            return ApiResponse.error(CODE_LINKED_ORDER_EXISTS, e.getMessage());
         } catch (CollaborationTrackingService.DuplicateTrackingException e) {
             return ApiResponse.error(CODE_DUPLICATE, e.getMessage());
         }
     }
 
-    @DeleteMapping("/{id}")
+    /**
+     * 发起删除申请（不直接删除）：填写删除原因后生成一条"待处理"审核事项，
+     * 由 ADMIN 在"待处理"模块同意后才真正删除。
+     */
+    @PostMapping("/{id}/delete-request")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
-    public ApiResponse<Void> delete(@PathVariable Long id) {
-        trackingService.delete(id);
-        return ApiResponse.success();
+    public ApiResponse<PendingApproval> requestDelete(
+            @PathVariable Long id, @Valid @RequestBody DeleteRequestReasonRequest req) {
+        return ApiResponse.success(trackingService.requestDelete(id, req.getReason()));
     }
 
     /**
@@ -132,6 +150,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) CollaborationProgress progress,
             @RequestParam(required = false) VideoType videoType,
             @RequestParam(required = false) String videoMonth,
+            @RequestParam(required = false) String internalProjectNo,
             @RequestParam(required = false) String clientOrderId,
             @RequestParam(required = false) String clientPaymentBatch,
             @RequestParam(required = false) Long projectManagerId,
@@ -141,7 +160,7 @@ public class CollaborationTrackingController {
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         List<CollaborationTracking> list = trackingRepo.findByFilters(
                 brandId, teamName, countryMarket, accountName, platform,
-                progress, videoType, videoMonthParam,
+                progress, videoType, videoMonthParam, internalProjectNo,
                 clientOrderId, clientPaymentBatch, projectManagerId, all).getContent();
         excelHandler.export(list, RoleUtil.canViewSensitiveFields(), response);
     }

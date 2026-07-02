@@ -3,6 +3,7 @@ package com.lusuoria.settlement.service;
 import com.lusuoria.settlement.dto.request.ProjectOrderRequest;
 import com.lusuoria.settlement.dto.response.MonthlySummaryResponse;
 import com.lusuoria.settlement.dto.response.ProjectOrderResponse;
+import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.enums.ClientStatus;
 import com.lusuoria.settlement.enums.InternalSettlementStatus;
 import com.lusuoria.settlement.enums.ProjectType;
@@ -21,11 +22,15 @@ public interface ProjectOrderService {
 
     Page<ProjectOrderResponse> list(Long brandId, String projectMonth, ProjectType projectType,
                                     ClientStatus clientStatus, InternalSettlementStatus internalStatus,
-                                    VideoType videoType,
+                                    VideoType videoType, String internalProjectNo,
                                     Long influencerId, String accountName, Long projectManagerId,
                                     String keyword, Pageable pageable);
 
-    void delete(Long id);
+    /**
+     * 发起删除申请（不直接删除）：生成一条"待处理"审核事项，
+     * 由 ADMIN 在"待处理"模块同意后才真正删除。
+     */
+    PendingApproval requestDelete(Long id, String reason);
 
     MonthlySummaryResponse getMonthlySummary(String month);
 

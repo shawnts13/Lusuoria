@@ -7,7 +7,9 @@ import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
+import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.entity.ProjectOrder;
+import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
@@ -32,7 +34,11 @@ import java.util.List;
  *  3. 订单ID联动项目订单：
  *     - 空 -> 有值：自动新增一条项目订单
  *     - 没变：不重复生成
- *     - 改了（旧值 -> 新值）：需前端 confirmOrderIdChange=true，删旧订单再建新订单
+ *     - 改成另一个值 / 清空：如果这条记录已经有关联的项目订单，直接拒绝这次修改，
+ *       提示需要先把那条项目订单删除（走审核流程）才能改。不再有"自动删旧建新"的后门，
+ *       因为那样等于绕开了项目订单的删除审核。
+ *  4. 删除：项目订单、红人合作跟踪都不再直接删除，而是生成一条"待处理"审核事项，
+ *     由 ADMIN 在"待处理"模块里同意后才真正执行删除（见 PendingApprovalService）。
  */
 @Service
 public class CollaborationTrackingService {
@@ -46,15 +52,16 @@ public class CollaborationTrackingService {
     @Autowired private ProjectNoAllocator projectNoAllocator;
     @Autowired private ProfitCalculator profitCalculator;
     @Autowired private ExchangeRateService exchangeRateService;
-
-    /** 自定义异常：表示需要前端二次确认订单ID变更 */
-    public static class OrderIdChangeConfirmRequired extends RuntimeException {
-        public OrderIdChangeConfirmRequired(String msg) { super(msg); }
-    }
+    @Autowired private PendingApprovalService pendingApprovalService;
 
     /** 自定义异常：去重命中 */
     public static class DuplicateTrackingException extends RuntimeException {
         public DuplicateTrackingException(String msg) { super(msg); }
+    }
+
+    /** 自定义异常：已有关联项目订单，不能直接改/清空订单ID */
+    public static class LinkedOrderExistsException extends RuntimeException {
+        public LinkedOrderExistsException(String msg) { super(msg); }
     }
 
     /**
@@ -159,26 +166,23 @@ public class CollaborationTrackingService {
         boolean changedToAnother  = (oldOrderId != null && newOrderId != null && !oldOrderId.equals(newOrderId));
         boolean clearedToEmpty    = (oldOrderId != null && newOrderId == null);
 
-        if (changedToAnother && !Boolean.TRUE.equals(req.getConfirmOrderIdChange())) {
-            // 需要前端二次确认
-            throw new OrderIdChangeConfirmRequired(
-                    "客户方的项目订单已从 [" + oldOrderId + "] 改为 [" + newOrderId
-                    + "]，确认后将删除本记录原先生成的项目订单并重新生成，是否继续？");
+        // 已经有关联的项目订单时，不允许改成另一个订单号、也不允许清空——
+        // 必须先把那条项目订单删掉（走删除审核流程）才能再改这个字段，
+        // 不再有"自动删旧建新"的后门（那样等于绕开了项目订单的删除审核）
+        if ((changedToAnother || clearedToEmpty) && tracking.getGeneratedProjectOrderId() != null) {
+            ProjectOrder linkedOrder = projectOrderRepo.findByIdAndIsDeletedFalse(tracking.getGeneratedProjectOrderId())
+                    .orElse(null);
+            String linkedNo = linkedOrder != null ? linkedOrder.getInternalProjectNo() : "（编号未知）";
+            throw new LinkedOrderExistsException(
+                    "已经存在内部项目编号为 " + linkedNo + " 的项目订单，请先将其删除后再修改");
         }
 
         tracking.setClientOrderId(newOrderId);
 
-        // 订单ID改了 或 被清空：删除本跟踪记录之前生成的那条项目订单
-        if ((changedToAnother || clearedToEmpty) && tracking.getGeneratedProjectOrderId() != null) {
-            softDeleteProjectOrderById(tracking.getGeneratedProjectOrderId());
-            tracking.setGeneratedProjectOrderId(null);
-        }
-
         CollaborationTracking saved = trackingRepo.save(tracking);
 
-        // 空->有值，或改成了新值：为本条记录生成一条独立的项目订单
-        // （同一订单ID允许多条项目订单——每个视频各一条，红人/金额各自独立）
-        if (fromEmptyToValue || changedToAnother) {
+        // 空->有值：为本条记录生成一条独立的项目订单
+        if (fromEmptyToValue) {
             Long newOrderPk = createProjectOrderFromTracking(saved, influencer, newOrderId);
             saved.setGeneratedProjectOrderId(newOrderPk);
             saved = trackingRepo.save(saved);
@@ -187,13 +191,18 @@ public class CollaborationTrackingService {
         return saved;
     }
 
+    /**
+     * 发起删除申请（不直接删除）。返回创建的待处理事项。
+     */
     @Transactional
-    public void delete(Long id) {
+    public PendingApproval requestDelete(Long id, String reason) {
         CollaborationTracking tracking = trackingRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
-        tracking.setIsDeleted(true);
-        trackingRepo.save(tracking);
-        // 注意：删除跟踪记录时不自动删除已生成的项目订单（订单一旦成立独立存在）
+        String summary = (tracking.getBrand() != null ? tracking.getBrand().getName() : "未知品牌")
+                + " - " + tracking.getAccountName();
+        return pendingApprovalService.requestDelete(
+                PendingApprovalModule.COLLABORATION_TRACKING, id,
+                tracking.getInternalProjectNo(), summary, reason);
     }
 
     /**
@@ -249,22 +258,6 @@ public class CollaborationTrackingService {
         return savedOrder.getId();
     }
 
-    /** 软删除指定 id 的项目订单 */
-    private void softDeleteProjectOrderById(Long orderId) {
-        if (orderId == null) return;
-        projectOrderRepo.findByIdAndIsDeletedFalse(orderId)
-                .ifPresent(o -> {
-                    o.setIsDeleted(true);
-                    // 让出内部项目编号：这个编号来自跟踪记录，跟踪记录的编号永久不变，
-                    // 如果客户方订单号又改了、需要重新生成项目订单，新订单会想用同一个编号，
-                    // 但这条旧订单还物理存在（软删除），不让号会撞数据库唯一约束
-                    if (o.getInternalProjectNo() != null) {
-                        o.setInternalProjectNo(o.getInternalProjectNo() + "-DEL" + o.getId());
-                    }
-                    projectOrderRepo.save(o);
-                });
-    }
-
     /** 把金额文本解析成 BigDecimal，非数字（如"价格待定"）返回 null */
     private java.math.BigDecimal parseAmount(String s) {
         if (s == null || s.trim().isEmpty()) return null;
@@ -277,11 +270,5 @@ public class CollaborationTrackingService {
 
     private String emptyToNull(String s) {
         return (s == null || s.trim().isEmpty()) ? null : s.trim();
-    }
-
-    private boolean equalsNullable(String a, String b) {
-        if (a == null && b == null) return true;
-        if (a == null || b == null) return false;
-        return a.equals(b);
     }
 }

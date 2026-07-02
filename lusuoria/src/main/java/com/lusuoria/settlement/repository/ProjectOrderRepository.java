@@ -73,6 +73,7 @@ public interface ProjectOrderRepository extends JpaRepository<ProjectOrder, Long
            "AND (:clientStatus IS NULL OR p.clientStatus = :clientStatus) " +
            "AND (:internalStatus IS NULL OR p.internalStatus = :internalStatus) " +
            "AND (:videoType IS NULL OR p.videoType = :videoType) " +
+           "AND (:internalProjectNo IS NULL OR p.internalProjectNo LIKE %:internalProjectNo%) " +
            "AND (:influencerId IS NULL OR p.influencer.id = :influencerId) " +
            "AND (:accountName IS NULL OR p.influencer.accountName LIKE %:accountName%) " +
            "AND (:projectManagerId IS NULL OR p.projectManager.id = :projectManagerId) " +
@@ -85,6 +86,7 @@ public interface ProjectOrderRepository extends JpaRepository<ProjectOrder, Long
             @Param("clientStatus") ClientStatus clientStatus,
             @Param("internalStatus") InternalSettlementStatus internalStatus,
             @Param("videoType") VideoType videoType,
+            @Param("internalProjectNo") String internalProjectNo,
             @Param("influencerId") Long influencerId,
             @Param("accountName") String accountName,
             @Param("projectManagerId") Long projectManagerId,

@@ -1,10 +1,12 @@
 package com.lusuoria.settlement.controller;
 
+import com.lusuoria.settlement.dto.request.DeleteRequestReasonRequest;
 import com.lusuoria.settlement.dto.request.ProjectOrderRequest;
 import com.lusuoria.settlement.dto.request.ProjectOrderStatusRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.dto.response.MonthlySummaryResponse;
 import com.lusuoria.settlement.dto.response.ProjectOrderResponse;
+import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.enums.ClientStatus;
 import com.lusuoria.settlement.enums.InternalSettlementStatus;
 import com.lusuoria.settlement.enums.ProjectType;
@@ -35,6 +37,7 @@ public class ProjectOrderController {
             @RequestParam(required = false) ClientStatus clientStatus,
             @RequestParam(required = false) InternalSettlementStatus internalStatus,
             @RequestParam(required = false) VideoType videoType,
+            @RequestParam(required = false) String internalProjectNo,
             @RequestParam(required = false) Long influencerId,
             @RequestParam(required = false) String accountName,
             @RequestParam(required = false) Long projectManagerId,
@@ -43,7 +46,7 @@ public class ProjectOrderController {
             @RequestParam(defaultValue = "20") int size) {
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return ApiResponse.success(projectOrderService.list(
-                brandId, projectMonth, projectType, clientStatus, internalStatus, videoType,
+                brandId, projectMonth, projectType, clientStatus, internalStatus, videoType, internalProjectNo,
                 influencerId, accountName, projectManagerId, keyword, pageable));
     }
 
@@ -70,11 +73,15 @@ public class ProjectOrderController {
         return ApiResponse.success(projectOrderService.save(req));
     }
 
-    @DeleteMapping("/{id}")
+    /**
+     * 发起删除申请（不直接删除）：填写删除原因后生成一条"待处理"审核事项，
+     * 由 ADMIN 在"待处理"模块同意后才真正删除。
+     */
+    @PostMapping("/{id}/delete-request")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
-    public ApiResponse<Void> delete(@PathVariable Long id) {
-        projectOrderService.delete(id);
-        return ApiResponse.success();
+    public ApiResponse<PendingApproval> requestDelete(
+            @PathVariable Long id, @Valid @RequestBody DeleteRequestReasonRequest req) {
+        return ApiResponse.success(projectOrderService.requestDelete(id, req.getReason()));
     }
 
     @PatchMapping("/{id}/approve")

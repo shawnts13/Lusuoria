@@ -319,9 +319,9 @@ public class CollaborationTrackingExcelHandler {
                         isUpdate = true;
                     }
                 }
-                // 批量导入没有人在旁边二次确认，订单ID变更直接放行（跟手工编辑二次确认弹窗是同一条业务规则，
-                // 只是这里没法弹窗，所以直接当作已确认处理）
-                req.setConfirmOrderIdChange(true);
+                // 注：如果这行数据想改一条已经有关联项目订单的记录的"客户方的项目订单"，
+                // service.save() 会直接拒绝（LinkedOrderExistsException），走到下面的 catch 里，
+                // 记一条"第X行导入失败"，不会静默覆盖或出现异常行为
 
                 // 内部项目编号：新建时 service 内部会自动生成一次；命中更新分支时 id 不为空，
                 // service 会保留数据库里原有的编号，不会重新生成——这里不需要也不应该手动处理

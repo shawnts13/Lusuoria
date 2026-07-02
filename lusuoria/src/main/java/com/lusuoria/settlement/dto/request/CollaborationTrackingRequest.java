@@ -42,10 +42,4 @@ public class CollaborationTrackingRequest {
     // 敏感字段
     private String influencerCost;
     private String clientPrice;
-
-    /**
-     * 当订单ID从一个值改为另一个值时，前端二次确认后置 true，
-     * 后端据此删除旧订单ID对应的项目订单，再用新订单ID生成新的
-     */
-    private Boolean confirmOrderIdChange = false;
 }

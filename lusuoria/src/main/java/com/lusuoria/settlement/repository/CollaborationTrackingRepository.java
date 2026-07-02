@@ -21,6 +21,9 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
 
     List<CollaborationTracking> findByIsDeletedFalseOrderByAccountNameAsc();
 
+    /** 反查：哪条跟踪记录引用了这条已生成的项目订单（项目订单被删除审核通过后，要释放这个引用） */
+    List<CollaborationTracking> findByGeneratedProjectOrderId(Long generatedProjectOrderId);
+
     boolean existsByInternalProjectNo(String internalProjectNo);
 
     /** 内部项目编号分配用：统计某"品牌-月份-账号-"前缀已用了多少个（作为序号起点估算） */
@@ -64,6 +67,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:progress IS NULL OR c.progress = :progress) " +
            "AND (:videoType IS NULL OR c.videoType = :videoType) " +
            "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth) " +
+           "AND (:internalProjectNo IS NULL OR c.internalProjectNo LIKE %:internalProjectNo%) " +
            "AND (:clientOrderId IS NULL OR c.clientOrderId LIKE %:clientOrderId%) " +
            "AND (:clientPaymentBatch IS NULL OR c.clientPaymentBatch LIKE %:clientPaymentBatch%) " +
            "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId)")
@@ -76,6 +80,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("progress") CollaborationProgress progress,
             @Param("videoType") VideoType videoType,
             @Param("videoMonth") String videoMonth,
+            @Param("internalProjectNo") String internalProjectNo,
             @Param("clientOrderId") String clientOrderId,
             @Param("clientPaymentBatch") String clientPaymentBatch,
             @Param("projectManagerId") Long projectManagerId,

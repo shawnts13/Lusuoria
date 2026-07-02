@@ -115,4 +115,11 @@ public class CollaborationTracking extends BaseEntity {
     /** 客户合作价格（美金） */
     @Column(name = "client_price", columnDefinition = "TEXT")
     private String clientPrice;
+
+    /**
+     * 当前是否有一条"待审核"的删除申请（有的话前端删除按钮要显示"审核中"）。
+     * 瞬态字段，不落库，由 Controller 在返回列表时批量查出来再赋值。
+     */
+    @Transient
+    private Boolean hasPendingDeleteRequest;
 }

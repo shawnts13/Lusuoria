@@ -8,6 +8,7 @@ import com.lusuoria.settlement.dto.response.ProjectOrderResponse;
 import com.lusuoria.settlement.entity.*;
 import com.lusuoria.settlement.enums.ClientStatus;
 import com.lusuoria.settlement.enums.InternalSettlementStatus;
+import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.enums.ProjectType;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.excel.ProjectOrderExcelHandler;
@@ -39,6 +40,7 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
     @Autowired private EmployeeCache employeeCache;
     @Autowired private ProfitCalculator profitCalculator;
     @Autowired private ProjectOrderExcelHandler excelHandler;
+    @Autowired private PendingApprovalService pendingApprovalService;
 
     @Override
     public ProjectOrderResponse save(ProjectOrderRequest req) {
@@ -116,21 +118,30 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
     @Transactional(readOnly = true)
     public Page<ProjectOrderResponse> list(Long brandId, String projectMonth, ProjectType projectType,
                                            ClientStatus clientStatus, InternalSettlementStatus internalStatus,
-                                           VideoType videoType,
+                                           VideoType videoType, String internalProjectNo,
                                            Long influencerId, String accountName, Long projectManagerId,
                                            String keyword, Pageable pageable) {
-        return projectOrderRepo
+        Page<ProjectOrderResponse> page = projectOrderRepo
                 .findByFilters(brandId, projectMonth, projectType, clientStatus, internalStatus, videoType,
-                        influencerId, accountName, projectManagerId, keyword, pageable)
+                        internalProjectNo, influencerId, accountName, projectManagerId, keyword, pageable)
                 .map(this::toResponse);
+
+        // 批量标记"当前是否有待审核的删除申请"，避免逐行查库
+        Set<Long> pendingIds = new HashSet<>(pendingApprovalService.findPendingTargetIds(
+                PendingApprovalModule.PROJECT_ORDER));
+        page.forEach(r -> r.setHasPendingDeleteRequest(pendingIds.contains(r.getId())));
+
+        return page;
     }
 
     @Override
-    public void delete(Long id) {
+    public PendingApproval requestDelete(Long id, String reason) {
         ProjectOrder order = projectOrderRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("项目订单不存在：" + id));
-        order.setIsDeleted(true);
-        projectOrderRepo.save(order);
+        String summary = (order.getBrand() != null ? order.getBrand().getName() : "未知品牌")
+                + " - " + (order.getInfluencer() != null ? order.getInfluencer().getAccountName() : "未知红人");
+        return pendingApprovalService.requestDelete(
+                PendingApprovalModule.PROJECT_ORDER, id, order.getInternalProjectNo(), summary, reason);
     }
 
     @Override

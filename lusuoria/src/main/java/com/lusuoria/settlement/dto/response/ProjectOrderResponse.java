@@ -75,4 +75,7 @@ public class ProjectOrderResponse {
     private String notes;
     private Date createdAt;
     private Date updatedAt;
+
+    /** 当前是否有一条"待审核"的删除申请（有的话前端删除按钮要显示"审核中"，不可再次发起） */
+    private Boolean hasPendingDeleteRequest;
 }
