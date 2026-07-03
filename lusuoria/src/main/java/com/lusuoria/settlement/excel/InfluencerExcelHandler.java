@@ -20,6 +20,7 @@ import org.apache.poi.ss.util.CellRangeAddressList;
 import org.apache.poi.xssf.usermodel.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import javax.servlet.http.HttpServletResponse;
@@ -268,6 +269,7 @@ public class InfluencerExcelHandler {
     // ===================================================================
     // 导入
     // ===================================================================
+    @Transactional
     public List<String> importData(MultipartFile file, boolean canViewSensitive) throws IOException {
         List<String> errors = new ArrayList<String>();
         Workbook workbook = WorkbookFactory.create(file.getInputStream());
