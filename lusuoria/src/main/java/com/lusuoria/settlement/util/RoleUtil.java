@@ -18,6 +18,16 @@ import org.springframework.security.core.context.SecurityContextHolder;
 public class RoleUtil {
 
     /**
+     * 是否可以查看"基础"财务字段（红人成本、客户合作价格、已到账金额）
+     * ADMIN / STAFF / AUDITOR 都可以，只有 GUEST 不行
+     * （更细的利润/提成字段权限见 ProjectFieldVisibility）
+     */
+    public static boolean canViewBaselineFinancials() {
+        String role = getCurrentRole();
+        return !"GUEST".equals(role);
+    }
+
+    /**
      * 是否可以查看敏感财务字段（收入、利润、提成）
      * 仅 ADMIN 和 AUDITOR 可见
      */

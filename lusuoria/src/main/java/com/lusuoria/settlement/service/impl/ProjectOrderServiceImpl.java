@@ -15,6 +15,7 @@ import com.lusuoria.settlement.excel.ProjectOrderExcelHandler;
 import com.lusuoria.settlement.repository.*;
 import com.lusuoria.settlement.service.ProjectOrderService;
 import com.lusuoria.settlement.util.ProfitCalculator;
+import com.lusuoria.settlement.util.ProjectFieldVisibility;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
@@ -41,6 +42,7 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
     @Autowired private ProfitCalculator profitCalculator;
     @Autowired private ProjectOrderExcelHandler excelHandler;
     @Autowired private PendingApprovalService pendingApprovalService;
+    @Autowired private ProjectFieldVisibility fieldVisibility;
 
     @Override
     public ProjectOrderResponse save(ProjectOrderRequest req) {
@@ -53,6 +55,9 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
 
         ProjectOrder order = projectOrderRepo.findByIdAndIsDeletedFalse(req.getId())
                 .orElseThrow(() -> new RuntimeException("项目订单不存在：" + req.getId()));
+
+        // 当前登录账号的字段可见/可编辑等级（FULL / 项目负责人 / 执行人员 / 基础），后面多处要用
+        ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
 
         order.setProjectMonth(req.getProjectMonth());
         order.setProjectType(req.getProjectType());
@@ -75,11 +80,12 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
             Employee manager = employeeRepo.findByIdAndIsDeletedFalse(req.getProjectManagerId())
                     .orElseThrow(() -> new RuntimeException("员工不存在：" + req.getProjectManagerId()));
             order.setProjectManager(manager);
-            if (req.getCommissionRate() == null && manager.getDefaultCommissionRate() != null) {
+            if (req.getCommissionRate() == null && manager.getDefaultCommissionRate() != null
+                    && ctx.isFull()) {
                 order.setCommissionRate(manager.getDefaultCommissionRate());
             }
         }
-        if (req.getCommissionRate() != null) {
+        if (req.getCommissionRate() != null && ctx.isFull()) {
             order.setCommissionRate(req.getCommissionRate());
         }
 
@@ -90,8 +96,22 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
             order.setExchangeRate(req.getExchangeRate());
         }
         order.setInfluencerCost(req.getInfluencerCost());
-        order.setOtherExternalCost(req.getOtherExternalCost());
-        order.setInternalExecutionCost(req.getInternalExecutionCost());
+
+        // 其他外部成本 / 内部执行成本：按角色 + 是否本人负责/执行 决定能不能改
+        // （不满足条件时忽略请求体里的值，保留数据库原值，不报错，简单地"改了也不生效"）
+        boolean isOwnManager = ctx.employeeId != null && order.getProjectManager() != null
+                && ctx.employeeId.equals(order.getProjectManager().getId());
+        boolean isOwnExecutor = ctx.employeeId != null && order.getExecutor() != null
+                && ctx.employeeId.equals(order.getExecutor().getId());
+
+        if (ctx.isFull() || (ctx.tier == ProjectFieldVisibility.Tier.PROJECT_MANAGER && isOwnManager)) {
+            order.setOtherExternalCost(req.getOtherExternalCost());
+        }
+        if (ctx.isFull()
+                || (ctx.tier == ProjectFieldVisibility.Tier.PROJECT_MANAGER && isOwnManager)
+                || (ctx.tier == ProjectFieldVisibility.Tier.EXECUTOR && isOwnExecutor)) {
+            order.setInternalExecutionCost(req.getInternalExecutionCost());
+        }
 
         // 甲方状态 / 内部状态：项目订单已经不支持"新建"（只能编辑已有记录），
         // 状态只能通过"状态流转"接口（updateStatus）修改，这里的编辑接口
@@ -255,19 +275,26 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
                     .filter(o -> !Boolean.TRUE.equals(o.getIsDeleted()))
                     .collect(Collectors.toList());
         }
-        // 传入当前角色是否可见敏感字段
-        excelHandler.export(orders, RoleUtil.canViewSensitiveFields(), response);
+        // 导出现在也按行区分权限了：项目负责人/执行人员导出时，不属于自己的行相关字段会显示"脱敏处理"
+        excelHandler.export(orders, fieldVisibility.resolve(), response);
     }
 
-    // ===== 转换（自动根据当前角色脱敏）=====
+    // ===== 转换（自动根据当前角色 + 是否本人负责/执行 脱敏）=====
     private ProjectOrderResponse toResponse(ProjectOrder o) {
-        boolean canView = RoleUtil.canViewSensitiveFields();
+        ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
+        boolean isOwnManager = ctx.employeeId != null && o.getProjectManagerId() != null
+                && ctx.employeeId.equals(o.getProjectManagerId());
+        boolean isOwnExecutor = ctx.employeeId != null && o.getExecutorId() != null
+                && ctx.employeeId.equals(o.getExecutorId());
+        boolean isManagerTier  = ctx.tier == ProjectFieldVisibility.Tier.PROJECT_MANAGER;
+        boolean isExecutorTier = ctx.tier == ProjectFieldVisibility.Tier.EXECUTOR;
 
         ProjectOrderResponse r = new ProjectOrderResponse();
         r.setId(o.getId());
         r.setInternalProjectNo(o.getInternalProjectNo());
         r.setClientOrderNo(o.getClientOrderNo());
         r.setProjectMonth(o.getProjectMonth());
+        r.setVideoPublishDate(o.getVideoPublishDate());
         r.setProjectType(o.getProjectType());
         r.setProjectTypeLabel(o.getProjectType() != null ? o.getProjectType().getLabel() : null);
         r.setCooperationContent(o.getCooperationContent());
@@ -291,33 +318,50 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
             r.setProjectManagerId(manager.getId());
             r.setProjectManagerName(manager.getName());
         }
+        Employee executor = employeeCache.findById(o.getExecutorId());
+        if (executor != null) {
+            r.setExecutorId(executor.getId());
+            r.setExecutorName(executor.getName());
+        }
 
-        // 非敏感成本字段（所有角色可见）
+        // ===== 红人成本/客户合作价格/已到账金额：现在是"基础字段"，GUEST 之外都能看 =====
         r.setCurrency("美元");
         r.setExchangeRate(o.getExchangeRate());
-        r.setInfluencerCost(o.getInfluencerCost());
+        boolean canSeeBaseline = ctx.tier != ProjectFieldVisibility.Tier.GUEST;
+        r.setInfluencerCost(canSeeBaseline ? o.getInfluencerCost() : null);
+        r.setClientPrice(canSeeBaseline ? o.getClientPrice() : null);
 
-        // 敏感字段：仅 ADMIN / AUDITOR 可见
-        if (canView) {
-            r.setClientPrice(o.getClientPrice());
-            r.setRmbRevenue(o.getRmbRevenue());
-
+        // ===== 其他外部成本：FULL 都能看；项目负责人仅自己负责的项目能看，其余"—"（null） =====
+        if (ctx.isFull() || (isManagerTier && isOwnManager)) {
             r.setOtherExternalCost(o.getOtherExternalCost());
-            r.setInternalExecutionCost(o.getInternalExecutionCost());
+        }
 
-            r.setGrossProfit(o.getGrossProfit());
-            r.setDistributableProfit(o.getDistributableProfit());
+        // ===== 内部执行成本：FULL 都能看；项目负责人/执行人员仅自己的项目能看，其余"—" =====
+        if (ctx.isFull() || (isManagerTier && isOwnManager) || (isExecutorTier && isOwnExecutor)) {
+            r.setInternalExecutionCost(o.getInternalExecutionCost());
+        }
+
+        // ===== 提成比例 + 提成金额：FULL 都能看/改；项目负责人仅自己负责的项目只读可见；执行人员完全不可见 =====
+        if (ctx.isFull() || (isManagerTier && isOwnManager)) {
             r.setCommissionRate(o.getCommissionRate());
             r.setCommissionAmount(o.getCommissionAmount());
+        }
+
+        // ===== 纯利润字段：可分配利润/项目毛利/公司利润，只有 FULL（ADMIN、财务、管理层）能看 =====
+        if (ctx.isFull()) {
+            r.setRmbRevenue(o.getRmbRevenue());
+            r.setGrossProfit(o.getGrossProfit());
+            r.setDistributableProfit(o.getDistributableProfit());
             r.setCompanyNetProfit(o.getCompanyNetProfit());
         }
+
         // 非敏感字段（所有角色可见）
         r.setClientStatus(o.getClientStatus());
         r.setClientStatusLabel(o.getClientStatus() != null ? o.getClientStatus().getLabel() : null);
         r.setContractSigned(o.getContractSigned());
         r.setExpectedReceiptDate(o.getExpectedReceiptDate());
         r.setActualReceiptDate(o.getActualReceiptDate());
-        r.setReceivedAmount(o.getReceivedAmount());
+        r.setReceivedAmount(canSeeBaseline ? o.getReceivedAmount() : null);
 
         r.setInternalStatus(o.getInternalStatus());
         r.setInternalStatusLabel(o.getInternalStatus() != null ? o.getInternalStatus().getLabel() : null);

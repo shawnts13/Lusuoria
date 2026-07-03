@@ -5,6 +5,7 @@ package com.lusuoria.settlement.enums;
  */
 public enum VideoType {
     REAL_SHOT_NEW("实拍新视频"),
+    REAL_SHOT_NEW_PHOTO("实拍新图片"),
     AI_NEW_MATERIAL("AI新素材"),
     OLD_MATERIAL_REPOST("旧素材重发");
 

@@ -26,6 +26,13 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
 
     boolean existsByInternalProjectNo(String internalProjectNo);
 
+    /** 采买旧视频原链接查重：归一化后的链接是否已被其他记录使用（编辑时排除自身） */
+    @Query("SELECT c FROM CollaborationTracking c " +
+           "WHERE c.isDeleted = false AND c.oldMaterialSourceLinkNormalized = :normalized " +
+           "AND (:excludeId IS NULL OR c.id <> :excludeId)")
+    List<CollaborationTracking> findByOldMaterialSourceLinkNormalized(
+            @Param("normalized") String normalized, @Param("excludeId") Long excludeId);
+
     /** 内部项目编号分配用：统计某"品牌-月份-账号-"前缀已用了多少个（作为序号起点估算） */
     @Query("SELECT COUNT(c) FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false AND c.internalProjectNo LIKE :prefixPattern")

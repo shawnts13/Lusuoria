@@ -24,13 +24,15 @@ public class ProjectOrderResponse {
     private Long id;
     private String internalProjectNo;
     private String clientOrderNo;
-    private String projectMonth;
+    private String projectMonth;          // 即"项目建立月份"
+    /** 项目视频发布时间：由关联的红人合作跟踪记录的发布时间自动同步，不可在此直接编辑 */
+    private Date videoPublishDate;
     private ProjectType projectType;
     private String projectTypeLabel;
     private String cooperationContent;
     private Boolean isOwnResource;
 
-    /** 项目视频类型：实拍新视频 / AI新素材 / 旧素材重发 */
+    /** 项目视频类型：实拍新视频 / 实拍新图片 / AI新素材 / 旧素材重发 */
     private VideoType videoType;
     private String videoTypeLabel;
 
@@ -42,6 +44,9 @@ public class ProjectOrderResponse {
     private String influencerAccount;
     private Long projectManagerId;
     private String projectManagerName;
+    /** 内部执行人员：由关联的红人合作跟踪记录同步，不可在此直接编辑 */
+    private Long executorId;
+    private String executorName;
 
     // ===== 非敏感成本字段（所有角色可见）=====
     private String currency;                 // 固定为美元展示

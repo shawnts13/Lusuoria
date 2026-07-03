@@ -59,7 +59,9 @@ public class CollaborationTrackingExcelHandler {
         {"发布时间",                   "0", "0"},
         {"进度",                       "0", "0"},
         {"项目视频类型",               "0", "0"},
+        {"采买旧视频的原链接",         "0", "0"},
         {"项目负责人",                 "0", "0"},
+        {"内部执行人员",               "0", "0"},
         {"客户方的项目订单",           "0", "0"},
         {"客户方付款批次",             "0", "0"},
         {"红人视频制作与发布成本（美金）", "1", "0"},
@@ -72,11 +74,11 @@ public class CollaborationTrackingExcelHandler {
     }
 
     private static final String[] PROGRESS_LABELS = {
-        "待草稿", "待发布", "待修改", "已发布（未结算）", "暂时延期", "已结算"
+        "待草稿", "待发布", "待修改", "已发布（未结算）", "已加入客户未结算列表", "暂时延期", "已结算"
     };
 
     private static final String[] VIDEO_TYPE_LABELS = {
-        "实拍新视频", "AI新素材", "旧素材重发"
+        "实拍新视频", "实拍新图片", "AI新素材", "旧素材重发"
     };
 
     // ============ 导出 ============
@@ -115,8 +117,11 @@ public class CollaborationTrackingExcelHandler {
             setCellStr(row, c++, t.getPublishDate() != null ? df.format(t.getPublishDate()) : "", wrap);
             setCellStr(row, c++, t.getProgress() != null ? t.getProgress().getLabel() : "", wrap);
             setCellStr(row, c++, t.getVideoType() != null ? t.getVideoType().getLabel() : "", wrap);
+            setCellStr(row, c++, t.getOldMaterialSourceLink() != null ? t.getOldMaterialSourceLink() : "", wrap);
             Employee manager = employeeCache.findById(t.getProjectManagerId());
             setCellStr(row, c++, manager != null ? manager.getName() : "", wrap);
+            Employee executor = employeeCache.findById(t.getExecutorId());
+            setCellStr(row, c++, executor != null ? executor.getName() : "", wrap);
             setCellStr(row, c++, t.getClientOrderId(),     wrap);
             setCellStr(row, c++, t.getClientPaymentBatch(), wrap);
             if (canViewSensitive) {
@@ -165,7 +170,9 @@ public class CollaborationTrackingExcelHandler {
         ex.put("发布时间", "2026-04-09");
         ex.put("进度", "已发布（未结算）");
         ex.put("项目视频类型", "实拍新视频");
+        ex.put("采买旧视频的原链接", "");  // 仅"项目视频类型"为"旧素材重发"时才填写，其余情况留空
         ex.put("项目负责人", "梁珈绫 Charlene");
+        ex.put("内部执行人员", "梁珈绫 Charlene");
         ex.put("客户方的项目订单", "6004980428");
         ex.put("客户方付款批次", "已加入未结算列表");
         ex.put("红人视频制作与发布成本（美金）", "550");
@@ -274,6 +281,7 @@ public class CollaborationTrackingExcelHandler {
                 // 进度、项目视频类型：Excel 导入无论新建还是更新已有记录，都允许带状态
                 req.setProgress(parseProgress(getStr(row, colMap, "进度")));
                 req.setVideoType(VideoType.fromLabel(getStr(row, colMap, "项目视频类型")));
+                req.setOldMaterialSourceLink(emptyToNull(getStr(row, colMap, "采买旧视频的原链接")));
 
                 // 客户方的项目订单（兼容"客户系统的订单ID"）
                 req.setClientOrderId(emptyToNull(firstNonNull(
@@ -294,6 +302,17 @@ public class CollaborationTrackingExcelHandler {
                         errors.add("第" + (i + 1) + "行：项目负责人 [" + managerRaw + "] 未匹配到任何员工，跳过该字段");
                     } else {
                         req.setProjectManagerId(manager.getId());
+                    }
+                }
+
+                // 内部执行人员：同样的模糊匹配规则
+                String executorRaw = getStr(row, colMap, "内部执行人员");
+                if (executorRaw != null && !executorRaw.trim().isEmpty()) {
+                    Employee executor = matchEmployeeFuzzy(executorRaw, allEmployees);
+                    if (executor == null) {
+                        errors.add("第" + (i + 1) + "行：内部执行人员 [" + executorRaw + "] 未匹配到任何员工，跳过该字段");
+                    } else {
+                        req.setExecutorId(executor.getId());
                     }
                 }
 

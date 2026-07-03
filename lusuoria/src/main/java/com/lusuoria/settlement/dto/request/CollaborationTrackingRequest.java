@@ -29,8 +29,11 @@ public class CollaborationTrackingRequest {
 
     private CollaborationProgress progress;
 
-    /** 项目视频类型：实拍新视频 / AI新素材 / 旧素材重发 */
+    /** 项目视频类型：实拍新视频 / 实拍新图片 / AI新素材 / 旧素材重发 */
     private VideoType videoType;
+
+    /** 采买旧视频的原链接（仅"旧素材重发"类型才涉及填写） */
+    private String oldMaterialSourceLink;
 
     private String clientOrderId;
 
@@ -38,6 +41,9 @@ public class CollaborationTrackingRequest {
 
     /** 项目负责人（员工 id） */
     private Long projectManagerId;
+
+    /** 内部执行人员 */
+    private Long executorId;
 
     // 敏感字段
     private String influencerCost;

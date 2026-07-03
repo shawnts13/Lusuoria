@@ -78,10 +78,27 @@ public class CollaborationTracking extends BaseEntity {
     @Column(name = "progress")
     private CollaborationProgress progress;
 
-    /** 项目视频类型：实拍新视频 / AI新素材 / 旧素材重发 */
+    /** 项目视频类型：实拍新视频 / 实拍新图片 / AI新素材 / 旧素材重发 */
     @Enumerated(EnumType.STRING)
     @Column(name = "video_type")
     private VideoType videoType;
+
+    /**
+     * 采买旧视频的原链接。只有"项目视频类型"为"旧素材重发"时才涉及填写，其他情况必须为空
+     * （由 CollaborationTrackingService 在保存时校验）。全表唯一，
+     * 去重时会先做归一化（去空格、统一 http/https、去 www.、去尾部斜杠、去查询参数），
+     * 避免同一视频不同链接形式被当成两个不同视频重复采买。
+     */
+    @Column(name = "old_material_source_link", columnDefinition = "TEXT")
+    private String oldMaterialSourceLink;
+
+    /**
+     * oldMaterialSourceLink 归一化后的版本，仅供后端查重用，不通过 API 暴露。
+     * 由 CollaborationTrackingService 在保存时自动计算填充。
+     */
+    @JsonIgnore
+    @Column(name = "old_material_source_link_normalized", unique = true)
+    private String oldMaterialSourceLinkNormalized;
 
     /** 客户方的项目订单（即客户系统订单ID，前期可能为空） */
     @Column(name = "client_order_id")
@@ -99,6 +116,15 @@ public class CollaborationTracking extends BaseEntity {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_manager_id")
     private Employee projectManager;
+
+    /** 内部执行人员（员工，改了会自动同步到已生成的项目订单） */
+    @Column(name = "executor_id", insertable = false, updatable = false)
+    private Long executorId;
+
+    @JsonIgnore
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "executor_id")
+    private Employee executor;
 
     /**
      * 本跟踪记录已生成的项目订单 id（防止重复生成）。

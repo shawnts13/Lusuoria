@@ -40,12 +40,13 @@ public class DashboardController {
         return ApiResponse.success(exchangeRateService.getRateForMonth(yearMonth));
     }
 
-    /** 下钻：视频项目数量，按品牌方+红人类型拆分 */
+    /** 下钻：视频项目数量，按品牌方+红人类型拆分，或按"项目视频发布时间"月份拆分（dimension: brand_type|publish_month） */
     @GetMapping("/drilldown/video-count")
     public ApiResponse<DashboardDrilldownResponse> drilldownVideoCount(
             @RequestParam String startMonth,
-            @RequestParam String endMonth) {
-        return ApiResponse.success(dashboardStatsService.drilldownVideoCount(startMonth, endMonth));
+            @RequestParam String endMonth,
+            @RequestParam(defaultValue = "brand_type") String dimension) {
+        return ApiResponse.success(dashboardStatsService.drilldownVideoCount(startMonth, endMonth, dimension));
     }
 
     /** 下钻：客户合作价格，按品牌方+红人类型拆分 */

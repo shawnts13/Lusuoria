@@ -10,6 +10,7 @@ import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.entity.ProjectOrder;
 import com.lusuoria.settlement.enums.PendingApprovalModule;
+import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
@@ -17,6 +18,7 @@ import com.lusuoria.settlement.repository.ProjectOrderRepository;
 import com.lusuoria.settlement.util.ProjectNoAllocator;
 import com.lusuoria.settlement.util.ProfitCalculator;
 import com.lusuoria.settlement.util.RoleUtil;
+import com.lusuoria.settlement.util.UrlNormalizer;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -62,6 +64,11 @@ public class CollaborationTrackingService {
     /** 自定义异常：已有关联项目订单，不能直接改/清空订单ID */
     public static class LinkedOrderExistsException extends RuntimeException {
         public LinkedOrderExistsException(String msg) { super(msg); }
+    }
+
+    /** 自定义异常：采买旧视频的原链接查重命中 */
+    public static class DuplicateOldMaterialLinkException extends RuntimeException {
+        public DuplicateOldMaterialLinkException(String msg) { super(msg); }
     }
 
     /**
@@ -123,6 +130,22 @@ public class CollaborationTrackingService {
         tracking.setVideoType(req.getVideoType());
         tracking.setClientPaymentBatch(req.getClientPaymentBatch());
 
+        // ---- 采买旧视频的原链接：只有"旧素材重发"才允许填，且全表唯一（归一化后比较） ----
+        String sourceLink = emptyToNull(req.getOldMaterialSourceLink());
+        if (sourceLink != null && req.getVideoType() != VideoType.OLD_MATERIAL_REPOST) {
+            throw new RuntimeException("只有\"项目视频类型\"为\"旧素材重发\"时才能填写\"采买旧视频的原链接\"");
+        }
+        String normalizedLink = UrlNormalizer.normalize(sourceLink);
+        if (normalizedLink != null) {
+            List<CollaborationTracking> dup = trackingRepo.findByOldMaterialSourceLinkNormalized(
+                    normalizedLink, req.getId());
+            if (!dup.isEmpty()) {
+                throw new DuplicateOldMaterialLinkException("旧素材已采买过，请确认是否重复采买");
+            }
+        }
+        tracking.setOldMaterialSourceLink(sourceLink);
+        tracking.setOldMaterialSourceLinkNormalized(normalizedLink);
+
         // 内部项目编号：仅新建时生成一次，前端不可编辑，此后永久不变
         // （月份固定用"创建时间当月"，不随后续填写的发布时间变化）
         if (req.getId() == null) {
@@ -141,7 +164,16 @@ public class CollaborationTrackingService {
             tracking.setProjectManager(null);
         }
 
-        if (RoleUtil.canViewSensitiveFields()) {
+        // 内部执行人员
+        if (req.getExecutorId() != null) {
+            Employee executor = employeeCache.findById(req.getExecutorId());
+            if (executor == null) throw new RuntimeException("内部执行人员不存在：" + req.getExecutorId());
+            tracking.setExecutor(executor);
+        } else {
+            tracking.setExecutor(null);
+        }
+
+        if (RoleUtil.canViewBaselineFinancials()) {
             tracking.setInfluencerCost(req.getInfluencerCost());
             tracking.setClientPrice(req.getClientPrice());
         }
@@ -186,9 +218,21 @@ public class CollaborationTrackingService {
             Long newOrderPk = createProjectOrderFromTracking(saved, influencer, newOrderId);
             saved.setGeneratedProjectOrderId(newOrderPk);
             saved = trackingRepo.save(saved);
+        } else if (saved.getGeneratedProjectOrderId() != null) {
+            // 已经关联了项目订单：内部执行人员、发布时间(->项目视频发布时间) 每次保存都同步过去
+            syncToLinkedOrder(saved);
         }
 
         return saved;
+    }
+
+    /** 把跟踪记录的执行人员、发布时间同步到已关联的项目订单（两边共用同一个内部项目编号） */
+    private void syncToLinkedOrder(CollaborationTracking t) {
+        projectOrderRepo.findByIdAndIsDeletedFalse(t.getGeneratedProjectOrderId()).ifPresent(order -> {
+            order.setExecutor(t.getExecutor());
+            order.setVideoPublishDate(t.getPublishDate());
+            projectOrderRepo.save(order);
+        });
     }
 
     /**
@@ -236,6 +280,10 @@ public class CollaborationTrackingService {
             order.setProjectManager(t.getProjectManager());
             order.setCommissionRate(t.getProjectManager().getDefaultCommissionRate());
         }
+
+        // 内部执行人员、项目视频发布时间：从跟踪记录带过来，以后跟踪记录改了会自动同步
+        order.setExecutor(t.getExecutor());
+        order.setVideoPublishDate(t.getPublishDate());
 
         // 汇率：按"上个月最后一个工作日"的中国银行/Frankfurter 汇率（与数据看板逻辑一致）
         // 有发布日期：用发布日期所在月份；没有发布日期：用当前日期所在月份

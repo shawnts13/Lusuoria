@@ -32,7 +32,17 @@ public class ProjectOrder extends BaseEntity {
     private String clientOrderNo;
 
     @Column(name = "project_month", nullable = false, length = 6)
-    private String projectMonth;          // 格式 202604
+    private String projectMonth;          // 格式 202604，即"项目建立月份"
+
+    /**
+     * 项目视频发布时间。由关联的"红人合作跟踪"记录的"发布时间"自动同步过来
+     * （跟踪记录改了发布时间，这里跟着更新），不可在项目订单里直接编辑。
+     * 数据看板"视频项目数量"按月统计用这个字段，而不是 projectMonth，
+     * 因为有些项目会拖到建立月份之后才真正发布。
+     */
+    @Temporal(TemporalType.DATE)
+    @Column(name = "video_publish_date")
+    private Date videoPublishDate;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "project_type", nullable = false, length = 30)
@@ -77,6 +87,15 @@ public class ProjectOrder extends BaseEntity {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_manager_id")
     private Employee projectManager;
+
+    /** 内部执行人员。由关联的"红人合作跟踪"记录同步过来，不可在项目订单里直接编辑 */
+    @Column(name = "executor_id", insertable = false, updatable = false)
+    private Long executorId;
+
+    @JsonIgnore
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "executor_id")
+    private Employee executor;
 
     // ===== 收入 =====
     /** 客户合作价格（美金），原"客户单价"，现参与利润计算 */

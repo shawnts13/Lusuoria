@@ -57,7 +57,9 @@ public class DashboardStatsService {
         ExchangeRateInfo rateInfo = exchangeRateService.getRateForMonth(yearMonth);
         BigDecimal rate = rateInfo.getUsdToCny();
 
-        List<ProjectOrder> orders = projectOrderRepo.findByProjectMonth(yearMonth);
+        // "视频项目数量"及本月汇总数据，统一按"项目视频发布时间"取（而不是"项目建立月份"），
+        // 因为利润核算是按发布时间所在月份统计的，跟旧项目拖到次月才发布的情况保持口径一致
+        List<ProjectOrder> orders = projectOrderRepo.findByVideoPublishMonth(yearMonth);
         long videoCount = orders.size();
 
         BigDecimal totalClientPrice = BigDecimal.ZERO;
@@ -99,24 +101,41 @@ public class DashboardStatsService {
 
     // ============ 下钻：视频项目数量（按品牌方 + 红人类型） ============
 
-    public DashboardDrilldownResponse drilldownVideoCount(String startMonth, String endMonth) {
-        List<ProjectOrder> orders = projectOrderRepo.findByProjectMonthBetween(startMonth, endMonth);
+    public DashboardDrilldownResponse drilldownVideoCount(String startMonth, String endMonth, String dimension) {
+        List<ProjectOrder> orders = projectOrderRepo.findByVideoPublishMonthBetween(startMonth, endMonth);
 
-        // key: 品牌名 + "|" + 项目类型标签
         Map<String, Long> grouped = new LinkedHashMap<>();
-        for (ProjectOrder o : orders) {
-            String brandName = brandNameOf(o.getBrandId());
-            String typeLabel = o.getProjectType() != null ? o.getProjectType().getLabel() : "未知类型";
-            String key = brandName + "|" + typeLabel;
-            grouped.merge(key, 1L, Long::sum);
+        String dimensionType;
+
+        if ("publish_month".equals(dimension)) {
+            // 按"项目视频发布时间"所在月份分组：用来看有多少视频是"建立月份"跟"实际发布月份"不一致
+            // （比如旧项目拖到次月甚至更久才发布）的情况多不多
+            dimensionType = "publish_month";
+            java.text.SimpleDateFormat monthFmt = new java.text.SimpleDateFormat("yyyy-MM");
+            for (ProjectOrder o : orders) {
+                String key = o.getVideoPublishDate() != null
+                        ? monthFmt.format(o.getVideoPublishDate()) : "未填写发布时间";
+                grouped.merge(key, 1L, Long::sum);
+            }
+        } else {
+            // 默认：按品牌方 + 项目类型分组
+            dimensionType = "brand_type";
+            for (ProjectOrder o : orders) {
+                String brandName = brandNameOf(o.getBrandId());
+                String typeLabel = o.getProjectType() != null ? o.getProjectType().getLabel() : "未知类型";
+                String key = brandName + "|" + typeLabel;
+                grouped.merge(key, 1L, Long::sum);
+            }
         }
 
         List<DashboardDrilldownResponse.DrilldownRow> rows = new ArrayList<>();
         for (Map.Entry<String, Long> e : grouped.entrySet()) {
-            String[] parts = e.getKey().split("\\|", 2);
+            String label = "brand_type".equals(dimensionType)
+                    ? String.join(" - ", e.getKey().split("\\|", 2))
+                    : e.getKey();
             rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
-                    .dimensionLabel(parts[0] + " - " + parts[1])
-                    .dimensionType("brand_type")
+                    .dimensionLabel(label)
+                    .dimensionType(dimensionType)
                     .videoCount(e.getValue())
                     .build());
         }

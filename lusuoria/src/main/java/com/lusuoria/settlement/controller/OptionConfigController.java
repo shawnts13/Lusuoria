@@ -48,13 +48,13 @@ public class OptionConfigController {
         // 红人合作跟踪 - 进度
         result.put("collab_progress", toOptions(
                 new String[]{"PENDING_DRAFT", "PENDING_PUBLISH", "PENDING_REVISION",
-                             "PUBLISHED_UNSETTLED", "DELAYED", "SETTLED"},
-                new String[]{"待草稿", "待发布", "待修改", "已发布（未结算）", "暂时延期", "已结算"}));
+                             "PUBLISHED_UNSETTLED", "JOINED_CLIENT_UNSETTLED_LIST", "DELAYED", "SETTLED"},
+                new String[]{"待草稿", "待发布", "待修改", "已发布（未结算）", "已加入客户未结算列表", "暂时延期", "已结算"}));
 
         // 项目视频类型
         result.put("video_type", toOptions(
-                new String[]{"REAL_SHOT_NEW", "AI_NEW_MATERIAL", "OLD_MATERIAL_REPOST"},
-                new String[]{"实拍新视频", "AI新素材", "旧素材重发"}));
+                new String[]{"REAL_SHOT_NEW", "REAL_SHOT_NEW_PHOTO", "AI_NEW_MATERIAL", "OLD_MATERIAL_REPOST"},
+                new String[]{"实拍新视频", "实拍新图片", "AI新素材", "旧素材重发"}));
 
         // 员工角色
         result.put("employee_role", toOptions(

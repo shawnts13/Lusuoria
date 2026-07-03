@@ -8,6 +8,7 @@ public enum CollaborationProgress {
     PENDING_PUBLISH("待发布"),
     PENDING_REVISION("待修改"),
     PUBLISHED_UNSETTLED("已发布（未结算）"),
+    JOINED_CLIENT_UNSETTLED_LIST("已加入客户未结算列表"),
     DELAYED("暂时延期"),
     SETTLED("已结算");
 
