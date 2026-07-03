@@ -74,7 +74,7 @@ public class InfluencerController {
                 influencerType, platform, countryMarket, brandId, teamName,
                 followerMin, followerMax, keyword, pageable);
         attachBrands(result.getContent());
-        if (!RoleUtil.canViewSensitiveFields()) {
+        if (!RoleUtil.canViewBaselineFinancials()) {
             return ApiResponse.success(result.map(this::maskSensitive));
         }
         return ApiResponse.success(result);
@@ -90,7 +90,7 @@ public class InfluencerController {
         Influencer inf = influencerRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("红人不存在"));
         attachBrands(Collections.singletonList(inf));
-        if (!RoleUtil.canViewSensitiveFields()) return ApiResponse.success(maskSensitive(inf));
+        if (!RoleUtil.canViewBaselineFinancials()) return ApiResponse.success(maskSensitive(inf));
         return ApiResponse.success(inf);
     }
 
@@ -107,12 +107,12 @@ public class InfluencerController {
                 ? influencerRepo.findByInfluencerTypeAndIsDeletedFalse(influencerType)
                 : influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc();
         attachBrands(list);
-        excelHandler.export(list, RoleUtil.canViewSensitiveFields(), response);
+        excelHandler.export(list, RoleUtil.canViewBaselineFinancials(), response);
     }
 
     @GetMapping("/import/template")
     public void downloadTemplate(HttpServletResponse response) throws IOException {
-        excelHandler.downloadTemplate(RoleUtil.canViewSensitiveFields(), response);
+        excelHandler.downloadTemplate(RoleUtil.canViewBaselineFinancials(), response);
     }
 
     @PostMapping("/import/excel")
@@ -122,7 +122,7 @@ public class InfluencerController {
         String fn = file.getOriginalFilename();
         if (fn == null || (!fn.endsWith(".xlsx") && !fn.endsWith(".xls")))
             return ApiResponse.error(400, "只支持 .xlsx 或 .xls 格式");
-        List<String> result = excelHandler.importData(file, RoleUtil.canViewSensitiveFields());
+        List<String> result = excelHandler.importData(file, RoleUtil.canViewBaselineFinancials());
         domainSyncService.sync();
         influencerCache.refresh();
         return ApiResponse.success(result);
@@ -170,7 +170,7 @@ public class InfluencerController {
         inf.setNotes(req.getNotes());
 
         // 敏感字段只有有权限的角色才能修改
-        if (RoleUtil.canViewSensitiveFields()) {
+        if (RoleUtil.canViewBaselineFinancials()) {
             inf.setInfluencerCost(req.getInfluencerCost());
             inf.setAdSpendCost(req.getAdSpendCost());
             inf.setCopyrightCost(req.getCopyrightCost());
