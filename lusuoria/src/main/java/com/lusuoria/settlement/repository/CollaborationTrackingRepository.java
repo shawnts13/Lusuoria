@@ -19,8 +19,6 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
 
     Optional<CollaborationTracking> findByIdAndIsDeletedFalse(Long id);
 
-    List<CollaborationTracking> findByIsDeletedFalseOrderByAccountNameAsc();
-
     /** 反查：哪条跟踪记录引用了这条已生成的项目订单（项目订单被删除审核通过后，要释放这个引用） */
     List<CollaborationTracking> findByGeneratedProjectOrderId(Long generatedProjectOrderId);
 
@@ -39,18 +37,19 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     long countByInternalProjectNoPrefix(@Param("prefixPattern") String prefixPattern);
 
     /**
-     * 去重判断：同一红人 + 同一发布链接 + 同一发布日期 视为重复。
+     * 去重判断：同一红人（按 id，不再按名字文本比较——红人改名不影响判重）
+     * + 同一发布链接 + 同一发布日期 视为重复。
      * 仅当 publishLink 与 publishDate 均非空时才有意义（调用方负责判断）。
      * 排除自身 id（编辑时不和自己比）。
      */
     @Query("SELECT c FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false " +
-           "AND c.accountName = :accountName " +
+           "AND c.influencerId = :influencerId " +
            "AND c.publishLink = :publishLink " +
            "AND c.publishDate = :publishDate " +
            "AND (:excludeId IS NULL OR c.id <> :excludeId)")
     List<CollaborationTracking> findDuplicates(
-            @Param("accountName") String accountName,
+            @Param("influencerId") Long influencerId,
             @Param("publishLink") String publishLink,
             @Param("publishDate") Date publishDate,
             @Param("excludeId") Long excludeId);
@@ -61,15 +60,18 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      * 原因：Date 类型参数在这条动态筛选查询里（配合 Supabase 连接池）会触发
      * "could not determine data type of parameter"（SQLState 42P18），
      * 无论传不传值都会报错。改成字符串比较后，videoMonth 参数跟这条查询里
-     * 其他正常工作的字符串筛选字段（teamName/accountName等）是完全一样的类型，
+     * 其他正常工作的字符串筛选字段（teamName等）是完全一样的类型，
      * 不会再有参数类型歧义问题（跟 ProjectOrder.projectMonth 直接存字符串是同一个思路）。
+     *
+     * accountName 筛选走 c.influencer.accountName（通过关联的红人记录做模糊匹配，
+     * 不再是本表自己的字段，改名后筛选结果始终反映红人当前的最新名字）。
      */
     @Query("SELECT c FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false " +
            "AND (:brandId IS NULL OR c.brandId = :brandId) " +
            "AND (:teamName IS NULL OR c.teamName LIKE %:teamName%) " +
            "AND (:countryMarket IS NULL OR c.countryMarket = :countryMarket) " +
-           "AND (:accountName IS NULL OR c.accountName LIKE %:accountName%) " +
+           "AND (:accountName IS NULL OR c.influencer.accountName LIKE %:accountName%) " +
            "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
            "AND (:progress IS NULL OR c.progress = :progress) " +
            "AND (:videoType IS NULL OR c.videoType = :videoType) " +

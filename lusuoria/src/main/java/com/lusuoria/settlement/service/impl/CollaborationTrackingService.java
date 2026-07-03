@@ -32,7 +32,7 @@ import java.util.List;
  *
  * 关键逻辑：
  *  1. 保存时从红人库拷贝 teamName / countryMarket 快照
- *  2. 去重：accountName + publishLink + publishDate 三者完全相同视为重复（链接和日期均空时不去重）
+ *  2. 去重：influencerId + publishLink + publishDate 三者完全相同视为重复（链接和日期均空时不去重）
  *  3. 订单ID联动项目订单：
  *     - 空 -> 有值：自动新增一条项目订单
  *     - 没变：不重复生成
@@ -96,12 +96,12 @@ public class CollaborationTrackingService {
             tracking.setIsDeleted(false);
         }
 
-        // 红人必须存在于红人库
-        Influencer influencer = influencerRepo.findByAccountNameAndIsDeletedFalse(req.getAccountName().trim())
-                .orElseThrow(() -> new RuntimeException("红人社媒完整名字不存在于红人库：" + req.getAccountName()));
+        // 红人必须存在于红人库（按 id 关联，不再按名字文本查找——红人改名不受影响）
+        Influencer influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getInfluencerId())
+                .orElseThrow(() -> new RuntimeException("红人不存在：" + req.getInfluencerId()));
 
         // 团队 / 国家：拷贝快照（不随红人库变）
-        tracking.setAccountName(influencer.getAccountName());
+        tracking.setInfluencer(influencer);
         tracking.setTeamName(influencer.getTeamName());
         tracking.setCountryMarket(influencer.getCountryMarket());
 
@@ -152,7 +152,7 @@ public class CollaborationTrackingService {
             String brandName = tracking.getBrand() != null ? tracking.getBrand().getName() : null;
             String createMonth = new SimpleDateFormat("yyyyMM").format(new Date());
             tracking.setInternalProjectNo(
-                    projectNoAllocator.allocate(brandName, createMonth, tracking.getAccountName()));
+                    projectNoAllocator.allocate(brandName, createMonth, influencer.getAccountName()));
         }
 
         // 项目负责人
@@ -183,11 +183,11 @@ public class CollaborationTrackingService {
         // ---- 去重判断（仅当链接和日期都非空时）----
         if (tracking.getPublishLink() != null && tracking.getPublishDate() != null) {
             List<CollaborationTracking> dups = trackingRepo.findDuplicates(
-                    tracking.getAccountName(), tracking.getPublishLink(),
+                    influencer.getId(), tracking.getPublishLink(),
                     tracking.getPublishDate(), req.getId());
             if (!dups.isEmpty()) {
                 throw new DuplicateTrackingException(
-                        "已存在相同记录：红人 [" + tracking.getAccountName()
+                        "已存在相同记录：红人 [" + influencer.getAccountName()
                         + "] 在 " + new SimpleDateFormat("yyyy-MM-dd").format(tracking.getPublishDate())
                         + " 发布的该链接已录入，无法重复添加");
             }
@@ -243,7 +243,7 @@ public class CollaborationTrackingService {
         CollaborationTracking tracking = trackingRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
         String summary = (tracking.getBrand() != null ? tracking.getBrand().getName() : "未知品牌")
-                + " - " + tracking.getAccountName();
+                + " - " + (tracking.getInfluencer() != null ? tracking.getInfluencer().getAccountName() : "未知红人");
         return pendingApprovalService.requestDelete(
                 PendingApprovalModule.COLLABORATION_TRACKING, id,
                 tracking.getInternalProjectNo(), summary, reason);

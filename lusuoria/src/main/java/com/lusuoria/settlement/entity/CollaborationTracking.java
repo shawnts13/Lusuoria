@@ -14,7 +14,7 @@ import java.util.Date;
  * 记录每次视频合作从洽谈到结算的全过程。
  * teamName / countryMarket 为保存时从红人库拷贝的快照，不随红人库变化。
  *
- * 去重键：accountName + publishLink + publishDate（三者完全相同视为重复）
+ * 去重键：influencerId + publishLink + publishDate（三者完全相同视为重复）
  * 当 publishLink 和 publishDate 都为空时不参与去重。
  */
 @Entity
@@ -52,9 +52,19 @@ public class CollaborationTracking extends BaseEntity {
     @Column(name = "country_market")
     private String countryMarket;
 
-    /** 红人ID（达人名称，必须是红人库里存在的） */
-    @Column(name = "account_name", nullable = false)
-    private String accountName;
+    /**
+     * 关联红人 id（真正的外键）。
+     * 之前这里直接存红人的"社媒完整名字"文本，红人一旦改名，
+     * 已有的跟踪记录就变成了孤儿（找不到人、没法再编辑）。改成存 id 以后，
+     * 红人改名完全不受影响，页面上展示的名字始终是当前最新的名字。
+     */
+    @Column(name = "influencer_id", insertable = false, updatable = false)
+    private Long influencerId;
+
+    @JsonIgnore
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "influencer_id", nullable = false)
+    private Influencer influencer;
 
     /** 合作平台（多个，换行符分隔，如 "Instagram\nTikTok"） */
     @Column(name = "platform", columnDefinition = "TEXT")
@@ -133,7 +143,7 @@ public class CollaborationTracking extends BaseEntity {
     @Column(name = "generated_project_order_id")
     private Long generatedProjectOrderId;
 
-    // ===== 敏感字段（仅 ADMIN / AUDITOR）=====
+    // ===== 基础财务字段（GUEST 之外都可见）=====
     /** 红人视频制作与发布成本（美金） */
     @Column(name = "influencer_cost", columnDefinition = "TEXT")
     private String influencerCost;

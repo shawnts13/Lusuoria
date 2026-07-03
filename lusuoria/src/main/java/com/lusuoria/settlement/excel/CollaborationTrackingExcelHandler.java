@@ -110,7 +110,7 @@ public class CollaborationTrackingExcelHandler {
             setCellStr(row, c++, brand != null ? brand.getName() : "", wrap);
             setCellStr(row, c++, t.getTeamName(),      wrap);
             setCellStr(row, c++, t.getCountryMarket(), wrap);
-            setCellStr(row, c++, t.getAccountName(),   wrap);
+            setCellStr(row, c++, t.getInfluencer() != null ? t.getInfluencer().getAccountName() : "", wrap);
             setCellStr(row, c++, t.getPlatform(),      wrap);
             setCellStr(row, c++, t.getDemandContent(), wrap);
             setCellStr(row, c++, t.getPublishLink(),   wrap);
@@ -241,7 +241,7 @@ public class CollaborationTrackingExcelHandler {
                 }
 
                 CollaborationTrackingRequest req = new CollaborationTrackingRequest();
-                req.setAccountName(influencer.getAccountName());
+                req.setInfluencerId(influencer.getId());
 
                 // 品牌方：这里只负责按名称查出 id，具体"是否已在红人模块关联"交给 service.save() 统一校验
                 String brandName = getStr(row, colMap, "品牌方");
@@ -332,7 +332,7 @@ public class CollaborationTrackingExcelHandler {
                 boolean isUpdate = false;
                 if (publishLink != null && publishDate != null) {
                     List<CollaborationTracking> dup = trackingRepo.findDuplicates(
-                            req.getAccountName(), publishLink, publishDate, null);
+                            req.getInfluencerId(), publishLink, publishDate, null);
                     if (!dup.isEmpty()) {
                         req.setId(dup.get(0).getId());
                         isUpdate = true;

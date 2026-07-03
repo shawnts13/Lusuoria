@@ -4,7 +4,7 @@ import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.enums.VideoType;
 import lombok.Data;
 
-import javax.validation.constraints.NotBlank;
+import javax.validation.constraints.NotNull;
 import java.util.Date;
 
 @Data
@@ -13,10 +13,10 @@ public class CollaborationTrackingRequest {
 
     private Long brandId;
 
-    // teamName / countryMarket 不在请求中传入，由后端根据 accountName 从红人库自动填充快照
+    // teamName / countryMarket 不在请求中传入，由后端根据 influencerId 从红人库自动填充快照
 
-    @NotBlank(message = "红人社媒完整名字不能为空")
-    private String accountName;
+    @NotNull(message = "请选择红人")
+    private Long influencerId;
 
     /** 合作平台，前端多选后用换行符拼接 */
     private String platform;
