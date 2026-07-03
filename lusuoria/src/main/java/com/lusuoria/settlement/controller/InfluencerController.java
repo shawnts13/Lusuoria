@@ -180,19 +180,46 @@ public class InfluencerController {
 
         Influencer saved = influencerRepo.save(inf);
 
-        // 品牌方关联：先清空旧的，再按本次提交的 id 列表重新写入中间表
-        influencerBrandRepo.deleteByInfluencerId(saved.getId());
+        // 品牌方关联：只处理真正变化的部分，不再"全删再插"
+        // - 现有关联里，本次没提交的，软删除（isDeleted=true），保留记录本身
+        // - 本次提交的里，之前没关联过的，新插入一条
+        // - 本次提交的里，之前关联过但被移除过的（isDeleted=true），直接复活（isDeleted=false），
+        //   不能真的插入新行，因为 (influencer_id, brand_id) 上有唯一约束，插入会跟旧行撞上
+        // - 本次提交的里，本来就还关联着的，完全不动（不产生任何写库操作）
+        List<InfluencerBrand> existingRels = influencerBrandRepo.findByInfluencerId(saved.getId());
+        Map<Long, InfluencerBrand> existingByBrandId = new HashMap<Long, InfluencerBrand>();
+        for (InfluencerBrand rel : existingRels) {
+            existingByBrandId.put(rel.getBrandId(), rel);
+        }
+        Set<Long> newBrandIds = new HashSet<Long>();
         if (req.getBrandIds() != null) {
             for (Long brandId : req.getBrandIds()) {
-                if (brandId == null) continue;
-                Brand brand = brandCache.findById(brandId);
-                if (brand == null) throw new RuntimeException("品牌方不存在：" + brandId);
-                InfluencerBrand rel = new InfluencerBrand();
+                if (brandId != null) newBrandIds.add(brandId);
+            }
+        }
+        // 移除：现有有效关联里，不在本次提交列表中的
+        for (InfluencerBrand rel : existingRels) {
+            if (!Boolean.TRUE.equals(rel.getIsDeleted()) && !newBrandIds.contains(rel.getBrandId())) {
+                rel.setIsDeleted(true);
+                influencerBrandRepo.save(rel);
+            }
+        }
+        // 新增/复活：本次提交列表里，之前不存在或已被软删除的
+        for (Long brandId : newBrandIds) {
+            Brand brand = brandCache.findById(brandId);
+            if (brand == null) throw new RuntimeException("品牌方不存在：" + brandId);
+            InfluencerBrand rel = existingByBrandId.get(brandId);
+            if (rel == null) {
+                rel = new InfluencerBrand();
                 rel.setInfluencerId(saved.getId());
                 rel.setBrandId(brandId);
                 rel.setIsDeleted(false);
                 influencerBrandRepo.save(rel);
+            } else if (Boolean.TRUE.equals(rel.getIsDeleted())) {
+                rel.setIsDeleted(false);
+                influencerBrandRepo.save(rel);
             }
+            // else：已经是有效关联，不用动
         }
 
         domainSyncService.sync();

@@ -507,7 +507,7 @@ public class InfluencerExcelHandler {
         // 批量写库（只写有变化的记录）
         influencerRepo.saveAll(toSave);
 
-        // 品牌方关联：所有红人此时都已有 id，按 accountName 重新查一遍解析出 id 并写入中间表
+        // 品牌方关联：只处理真正变化的部分（逻辑跟红人管理页保存时一致），不再"全删再插"
         // （只处理本次 Excel 里明确给了品牌方列的红人，没填品牌方列的红人维持原有关联不变）
         if (!pendingBrandNames.isEmpty()) {
             Map<String, Influencer> savedMap = new HashMap<String, Influencer>();
@@ -516,15 +516,38 @@ public class InfluencerExcelHandler {
             for (Map.Entry<String, Set<String>> entry : pendingBrandNames.entrySet()) {
                 Influencer inf = savedMap.get(entry.getKey());
                 if (inf == null) continue;
-                influencerBrandRepo.deleteByInfluencerId(inf.getId());
+
+                Set<Long> newBrandIds = new HashSet<Long>();
                 for (String brandName : entry.getValue()) {
                     Brand brand = brandCache.findByName(brandName);
                     if (brand == null) continue; // 已在导入循环中报过错，这里跳过
-                    InfluencerBrand rel = new InfluencerBrand();
-                    rel.setInfluencerId(inf.getId());
-                    rel.setBrandId(brand.getId());
-                    rel.setIsDeleted(false);
-                    influencerBrandRepo.save(rel);
+                    newBrandIds.add(brand.getId());
+                }
+
+                List<InfluencerBrand> existingRels = influencerBrandRepo.findByInfluencerId(inf.getId());
+                Map<Long, InfluencerBrand> existingByBrandId = new HashMap<Long, InfluencerBrand>();
+                for (InfluencerBrand rel : existingRels) existingByBrandId.put(rel.getBrandId(), rel);
+
+                // 移除：现有有效关联里，这次 Excel 没给的
+                for (InfluencerBrand rel : existingRels) {
+                    if (!Boolean.TRUE.equals(rel.getIsDeleted()) && !newBrandIds.contains(rel.getBrandId())) {
+                        rel.setIsDeleted(true);
+                        influencerBrandRepo.save(rel);
+                    }
+                }
+                // 新增/复活
+                for (Long brandId : newBrandIds) {
+                    InfluencerBrand rel = existingByBrandId.get(brandId);
+                    if (rel == null) {
+                        rel = new InfluencerBrand();
+                        rel.setInfluencerId(inf.getId());
+                        rel.setBrandId(brandId);
+                        rel.setIsDeleted(false);
+                        influencerBrandRepo.save(rel);
+                    } else if (Boolean.TRUE.equals(rel.getIsDeleted())) {
+                        rel.setIsDeleted(false);
+                        influencerBrandRepo.save(rel);
+                    }
                 }
             }
         }
