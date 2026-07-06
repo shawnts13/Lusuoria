@@ -125,6 +125,24 @@ public class BrandExcelHandler {
             if (cell != null) colMap.put(cell.getStringCellValue().trim(), c);
         }
 
+        // 表头完整性校验：少了关键列（比如表头被误改）直接拒绝整个文件，不再是
+        // "这一列找不到就当作没填"这种静默处理
+        String[] requiredHeaders = {
+            "品牌方名称(必填)", "国家/市场", "合作类型", "联系人",
+            "结算币种(USD/RMB)", "付款周期(如月结30天)", "备注"
+        };
+        List<String> missingColumns = new ArrayList<String>();
+        for (String h : requiredHeaders) {
+            if (!colMap.containsKey(h)) missingColumns.add("「" + h + "」");
+        }
+        if (!missingColumns.isEmpty()) {
+            workbook.close();
+            errors.add("导入失败：Excel 表头缺少以下必需的列（可能是表头被误改或者删除了），"
+                    + "请对照模板核对后重新导入，本次没有导入任何数据：");
+            errors.addAll(missingColumns);
+            return errors;
+        }
+
         int successCount = 0, skipCount = 0;
         for (int i = 1; i <= totalRows; i++) {
             Row row = sheet.getRow(i);

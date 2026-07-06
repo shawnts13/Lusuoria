@@ -271,6 +271,48 @@ public class InfluencerExcelHandler {
             if (cell != null) colMap.put(cell.getStringCellValue().trim(), c);
         }
 
+        // 表头完整性校验：少了关键列（比如表头被误改）直接拒绝整个文件，不再是
+        // "这一列找不到就当作没填"这种静默处理
+        String[][] requiredGroups = {
+            {"红人社媒完整名字(必填)", "红人社媒完整名字", "红人ID(必填)", "红人ID"},
+            {"红人类型(必填)", "红人类型"},
+            {"品牌方-团队(每行一对,格式:品牌方/团队,团队可省略,多对用换行分隔)", "品牌方(多个用换行分隔)"},
+            {"服务国家/市场"},
+            {"主页链接(多条用换行分隔)", "主页链接"},
+            {"所属领域(多个用换行分隔)", "所属领域"},
+            {"合作案例链接(多条用换行分隔)", "合作案例链接"},
+            {"已签署合同链接"},
+            {"粉丝量"},
+            {"建联情况"},
+            {"付款周期"},
+            {"跟进人"},
+            {"红人电话"},
+            {"红人WhatsApp"},
+            {"红人Line"},
+            {"红人Telegram"},
+            {"红人邮箱"},
+            {"备注"},
+        };
+        List<String> missingColumns = new ArrayList<String>();
+        for (String[] group : requiredGroups) {
+            boolean found = false;
+            for (String name : group) if (colMap.containsKey(name)) { found = true; break; }
+            if (!found) missingColumns.add("「" + group[0] + "」");
+        }
+        if (canViewSensitive) {
+            String[] sensitiveHeaders = {"红人视频制作与发布成本（美金）", "视频投流成本（美金）", "视频版权成本（美金）"};
+            for (String h : sensitiveHeaders) {
+                if (!colMap.containsKey(h)) missingColumns.add("「" + h + "」");
+            }
+        }
+        if (!missingColumns.isEmpty()) {
+            workbook.close();
+            errors.add("导入失败：Excel 表头缺少以下必需的列（可能是表头被误改或者删除了），"
+                    + "请对照模板核对后重新导入，本次没有导入任何数据：");
+            errors.addAll(missingColumns);
+            return errors;
+        }
+
         // ---- 预检：找出 Excel 里重复的红人ID，提示用户 ----
         Map<String, List<Integer>> accountRowMap = new LinkedHashMap<String, List<Integer>>();
         for (int i = 1; i <= totalRows; i++) {

@@ -193,6 +193,39 @@ public class InfluencerPaymentExcelHandler {
             if (cell != null) colMap.put(cell.getStringCellValue().trim(), c);
         }
 
+        // 表头完整性校验：少了关键列（比如表头被误改）直接拒绝整个文件，不再是
+        // "这一列找不到就当作没填"这种静默处理
+        String[][] requiredGroups = {
+            {"红人社媒完整名字(必填)", "红人ID(必填)", "红人ID"},
+            {"结算月份(必填,如202604)"},
+            {"合作内容"},
+            {"合作数量"},
+            {"红人单价"},
+            {"应付金额"},
+            {"币种(USD/RMB)"},
+            {"汇率"},
+            {"人民币金额"},
+            {"对账日期(yyyy-MM-dd)"},
+            {"预计付款日(yyyy-MM-dd)"},
+            {"实际付款日(yyyy-MM-dd)"},
+            {"付款状态"},
+            {"已付金额"},
+            {"备注"},
+        };
+        List<String> missingColumns = new ArrayList<String>();
+        for (String[] group : requiredGroups) {
+            boolean found = false;
+            for (String name : group) if (colMap.containsKey(name)) { found = true; break; }
+            if (!found) missingColumns.add("「" + group[0] + "」");
+        }
+        if (!missingColumns.isEmpty()) {
+            workbook.close();
+            errors.add("导入失败：Excel 表头缺少以下必需的列（可能是表头被误改或者删除了），"
+                    + "请对照模板核对后重新导入，本次没有导入任何数据：");
+            errors.addAll(missingColumns);
+            return errors;
+        }
+
         // 构建账号 -> 红人 映射
         Map<String, Influencer> influencerMap = new HashMap<String, Influencer>();
         influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc()

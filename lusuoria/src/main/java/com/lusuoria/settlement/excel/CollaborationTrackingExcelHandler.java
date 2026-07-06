@@ -216,6 +216,18 @@ public class CollaborationTrackingExcelHandler {
             if (cell != null) colMap.put(cell.getStringCellValue().trim(), c);
         }
 
+        // 表头完整性校验：少了关键列（或者列名被改得跟哪个别名都对不上）直接拒绝整个文件，
+        // 不再是"这一列找不到就当作没填"这种静默处理——之前"内部执行人员"这一列表头被改名，
+        // 结果整列数据全部被当成空值导入，且没有任何报错提示，就是这类问题
+        List<String> missingColumns = checkRequiredHeaders(colMap, canViewSensitive);
+        if (!missingColumns.isEmpty()) {
+            workbook.close();
+            errors.add("导入失败：Excel 表头缺少以下必需的列（可能是表头被误改或者删除了），"
+                    + "请对照模板核对后重新导入，本次没有导入任何数据：");
+            errors.addAll(missingColumns);
+            return errors;
+        }
+
         // 预加载红人（按 accountName）和品牌方
         Map<String, Influencer> influencerMap = new HashMap<String, Influencer>();
         for (Influencer inf : influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc()) {
@@ -537,6 +549,65 @@ public class CollaborationTrackingExcelHandler {
      *   - 若按子串匹配到多个员工（重名歧义），抛出异常要求填写完整姓名
      *   - 匹配不到任何员工，返回 null（不报错，调用方决定如何处理空负责人）
      */
+    /**
+     * 按姓名模糊匹配员工，中文名/英文名填任一段都能匹配上，忽略大小写。
+     * 员工姓名在系统里是"中文名 英文名"存成一个字符串（比如"梁珈绫 Charlene"），
+     * 这里按空格拆开分别比较——注意中文输入法打出来的经常是全角空格（　，U+3000），
+     * Java 正则默认的 \s 不认这种空格，不特殊处理的话会导致按英文名单独匹配不上，
+     * 所以这里统一先把全角空格替换成半角空格再拆分。
+     */
+    /**
+     * 校验 Excel 表头是否包含所有必需的列（每组里只要有一个名字对上就算这一组满足，
+     * 兼容历史上用过的各种列名别名）。返回缺失的列组说明，全部满足则返回空列表。
+     */
+    private List<String> checkRequiredHeaders(Map<String, Integer> colMap, boolean canViewSensitive) {
+        // 每一项是"一组可接受的列名"，导入时按 firstNonNull(getStr(...)) 兼容了这些别名，
+        // 表头校验也要按同样的分组走，不能只认其中一个名字
+        String[][] requiredGroups = {
+            {"红人社媒完整名字", "红人ID", "达人名称", "达人"},
+            {"品牌方"},
+            {"红人团队"},
+            {"合作平台"},
+            {"需求内容(具体产品名)", "需求内容", "合作资源"},
+            {"视频发布链接", "发布链接(IG reel)", "发布链接", "主页link"},
+            {"发布时间"},
+            {"进度"},
+            {"项目视频类型"},
+            {"采买旧视频的原链接"},
+            {"项目负责人"},
+            {"内部执行人员"},
+            {"客户方的项目订单", "客户系统的订单ID", "订单ID"},
+            {"客户方付款批次", "客户付款批次"},
+            {"备注"},
+        };
+
+        List<String> missing = new ArrayList<String>();
+        for (String[] group : requiredGroups) {
+            boolean found = false;
+            for (String name : group) {
+                if (colMap.containsKey(name)) { found = true; break; }
+            }
+            if (!found) missing.add("「" + group[0] + "」");
+        }
+
+        // 敏感字段（红人成本/客户合作价格）只有当前角色能看到的时候才要求必须存在，
+        // 因为没权限的角色下载到的模板本来就不含这两列
+        if (canViewSensitive) {
+            String[][] sensitiveGroups = {
+                {"红人视频制作与发布成本（美金）", "红人成本$", "红人成本"},
+                {"客户合作价格（美金）", "客户合作价格$", "客户合作价格"},
+            };
+            for (String[] group : sensitiveGroups) {
+                boolean found = false;
+                for (String name : group) {
+                    if (colMap.containsKey(name)) { found = true; break; }
+                }
+                if (!found) missing.add("「" + group[0] + "」");
+            }
+        }
+        return missing;
+    }
+
     /**
      * 按姓名模糊匹配员工，中文名/英文名填任一段都能匹配上，忽略大小写。
      * 员工姓名在系统里是"中文名 英文名"存成一个字符串（比如"梁珈绫 Charlene"），
