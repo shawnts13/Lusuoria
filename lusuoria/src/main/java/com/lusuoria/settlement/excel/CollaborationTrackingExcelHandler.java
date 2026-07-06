@@ -339,8 +339,25 @@ public class CollaborationTrackingExcelHandler {
                 req.setPublishDate(publishDate);
 
                 // 进度、项目视频类型：Excel 导入无论新建还是更新已有记录，都允许带状态
-                req.setProgress(parseProgress(getStr(row, colMap, "进度")));
-                req.setVideoType(VideoType.fromLabel(getStr(row, colMap, "项目视频类型")));
+                // 填了但匹配不到有效选项时要报错，不能像以前那样静默地变成空值
+                String progressRaw = getStr(row, colMap, "进度");
+                if (progressRaw != null && !progressRaw.trim().isEmpty()) {
+                    CollaborationProgress progress = parseProgress(progressRaw);
+                    if (progress == null) {
+                        errors.add("第" + (i + 1) + "行：进度 [" + progressRaw + "] 不是有效选项，请核对");
+                        continue;
+                    }
+                    req.setProgress(progress);
+                }
+                String videoTypeRaw = getStr(row, colMap, "项目视频类型");
+                if (videoTypeRaw != null && !videoTypeRaw.trim().isEmpty()) {
+                    VideoType videoType = VideoType.fromLabel(videoTypeRaw);
+                    if (videoType == null) {
+                        errors.add("第" + (i + 1) + "行：项目视频类型 [" + videoTypeRaw + "] 不是有效选项，请核对");
+                        continue;
+                    }
+                    req.setVideoType(videoType);
+                }
                 req.setOldMaterialSourceLink(emptyToNull(getStr(row, colMap, "采买旧视频的原链接")));
 
                 // 客户方的项目订单（兼容"客户系统的订单ID"）
@@ -354,15 +371,15 @@ public class CollaborationTrackingExcelHandler {
                         getStr(row, colMap, "客户方付款批次"),
                         getStr(row, colMap, "客户付款批次")));
 
-                // 项目负责人：中文名/英文名模糊匹配（如系统里"梁珈绫 Charlene"，填任一段均可）
+                // 项目负责人：中文名/英文名模糊匹配（如系统里"梁珈绫 Charlene"，填任一段均可，忽略大小写）
                 String managerRaw = getStr(row, colMap, "项目负责人");
                 if (managerRaw != null && !managerRaw.trim().isEmpty()) {
                     Employee manager = matchEmployeeFuzzy(managerRaw, allEmployees);
                     if (manager == null) {
-                        errors.add("第" + (i + 1) + "行：项目负责人 [" + managerRaw + "] 未匹配到任何员工，跳过该字段");
-                    } else {
-                        req.setProjectManagerId(manager.getId());
+                        errors.add("第" + (i + 1) + "行：项目负责人 [" + managerRaw + "] 未匹配到任何员工，请核对");
+                        continue;
                     }
+                    req.setProjectManagerId(manager.getId());
                 }
 
                 // 内部执行人员：同样的模糊匹配规则
@@ -370,10 +387,10 @@ public class CollaborationTrackingExcelHandler {
                 if (executorRaw != null && !executorRaw.trim().isEmpty()) {
                     Employee executor = matchEmployeeFuzzy(executorRaw, allEmployees);
                     if (executor == null) {
-                        errors.add("第" + (i + 1) + "行：内部执行人员 [" + executorRaw + "] 未匹配到任何员工，跳过该字段");
-                    } else {
-                        req.setExecutorId(executor.getId());
+                        errors.add("第" + (i + 1) + "行：内部执行人员 [" + executorRaw + "] 未匹配到任何员工，请核对");
+                        continue;
                     }
+                    req.setExecutorId(executor.getId());
                 }
 
                 // 敏感字段
@@ -512,19 +529,26 @@ public class CollaborationTrackingExcelHandler {
      *   - 若按子串匹配到多个员工（重名歧义），抛出异常要求填写完整姓名
      *   - 匹配不到任何员工，返回 null（不报错，调用方决定如何处理空负责人）
      */
+    /**
+     * 按姓名模糊匹配员工，中文名/英文名填任一段都能匹配上，忽略大小写。
+     * 员工姓名在系统里是"中文名 英文名"存成一个字符串（比如"梁珈绫 Charlene"），
+     * 这里按空格拆开分别比较——注意中文输入法打出来的经常是全角空格（　，U+3000），
+     * Java 正则默认的 \s 不认这种空格，不特殊处理的话会导致按英文名单独匹配不上，
+     * 所以这里统一先把全角空格替换成半角空格再拆分。
+     */
     private Employee matchEmployeeFuzzy(String raw, List<Employee> allEmployees) {
         if (raw == null || raw.trim().isEmpty()) return null;
-        String input = raw.trim();
+        String input = normalizeSpaces(raw.trim());
 
         // 1. 精确匹配（性能最优，且行为最可预期）
         for (Employee e : allEmployees) {
-            if (input.equalsIgnoreCase(e.getName().trim())) return e;
+            if (input.equalsIgnoreCase(normalizeSpaces(e.getName().trim()))) return e;
         }
 
         // 2. 模糊匹配：员工姓名整体包含 input，或 input 是姓名里的某一段（按空格拆分后逐段比较）
         List<Employee> matches = new ArrayList<Employee>();
         for (Employee e : allEmployees) {
-            String name = e.getName().trim();
+            String name = normalizeSpaces(e.getName().trim());
             if (name.equalsIgnoreCase(input)) { matches.add(e); continue; }
             for (String part : name.split("\\s+")) {
                 if (part.equalsIgnoreCase(input)) { matches.add(e); break; }
@@ -535,10 +559,15 @@ public class CollaborationTrackingExcelHandler {
         if (matches.size() > 1) {
             StringBuilder names = new StringBuilder();
             for (Employee e : matches) names.append(e.getName()).append("；");
-            throw new RuntimeException("项目负责人 [" + input + "] 匹配到多个员工（"
+            throw new RuntimeException("[" + input + "] 匹配到多个员工（"
                     + names + "），请填写完整姓名以消除歧义");
         }
         return null; // 没匹配到
+    }
+
+    /** 把全角空格（中文输入法常见）统一替换成半角空格，避免按空格拆分姓名时拆不开 */
+    private String normalizeSpaces(String s) {
+        return s.replace('\u3000', ' ');
     }
 
     private String firstNonNull(String... vals) {

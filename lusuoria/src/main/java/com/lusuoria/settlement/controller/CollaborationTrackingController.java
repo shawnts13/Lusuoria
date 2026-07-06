@@ -70,9 +70,12 @@ public class CollaborationTrackingController {
             @RequestParam(defaultValue = "0")  int page,
             @RequestParam(defaultValue = "20") int size) {
         size = Math.max(1, Math.min(size, 200));
+        // accountName 是关联的红人记录上的字段，不是本表自己的属性，
+        // 排序时要用 JPQL 的关联路径写法（influencer.accountName），不能直接用列名
+        String sortProperty = "accountName".equals(sortBy) ? "influencer.accountName" : sortBy;
         Sort sort = sortDir.equalsIgnoreCase("asc")
-                ? Sort.by(Sort.Direction.ASC, sortBy)
-                : Sort.by(Sort.Direction.DESC, sortBy);
+                ? Sort.by(Sort.Direction.ASC, sortProperty)
+                : Sort.by(Sort.Direction.DESC, sortProperty);
         PageRequest pageable = PageRequest.of(page, size, sort);
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         Page<CollaborationTracking> result = trackingRepo.findByFilters(

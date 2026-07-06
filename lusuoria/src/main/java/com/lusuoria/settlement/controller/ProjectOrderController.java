@@ -42,9 +42,17 @@ public class ProjectOrderController {
             @RequestParam(required = false) String accountName,
             @RequestParam(required = false) Long projectManagerId,
             @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "createdAt") String sortBy,
+            @RequestParam(defaultValue = "desc") String sortDir,
             @RequestParam(defaultValue = "0")  int page,
             @RequestParam(defaultValue = "20") int size) {
-        PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        // influencerAccount 对应关联的红人记录上的字段，不是 ProjectOrder 自己的属性，
+        // 排序时要用 JPQL 的关联路径写法（influencer.accountName），不能直接用列名
+        String sortProperty = "influencerAccount".equals(sortBy) ? "influencer.accountName" : sortBy;
+        Sort sort = sortDir.equalsIgnoreCase("asc")
+                ? Sort.by(Sort.Direction.ASC, sortProperty)
+                : Sort.by(Sort.Direction.DESC, sortProperty);
+        PageRequest pageable = PageRequest.of(page, size, sort);
         return ApiResponse.success(projectOrderService.list(
                 brandId, projectMonth, projectType, clientStatus, internalStatus, videoType, internalProjectNo,
                 influencerId, accountName, projectManagerId, keyword, pageable));
