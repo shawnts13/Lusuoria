@@ -18,6 +18,7 @@ import com.lusuoria.settlement.repository.ProjectOrderRepository;
 import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.entity.InfluencerBrandTeam;
 import com.lusuoria.settlement.util.ProjectNoAllocator;
+import com.lusuoria.settlement.util.ProjectNoGenerator;
 import com.lusuoria.settlement.util.ProfitCalculator;
 import com.lusuoria.settlement.util.RoleUtil;
 import com.lusuoria.settlement.util.UrlNormalizer;
@@ -26,8 +27,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.text.SimpleDateFormat;
+import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * 红人合作跟踪 - 业务逻辑
@@ -43,6 +49,13 @@ import java.util.List;
  *       因为那样等于绕开了项目订单的删除审核。
  *  4. 删除：项目订单、红人合作跟踪都不再直接删除，而是生成一条"待处理"审核事项，
  *     由 ADMIN 在"待处理"模块里同意后才真正执行删除（见 PendingApprovalService）。
+ *
+ * 性能说明（2026-07）：
+ *  单条保存（表单编辑）跟 Excel 批量导入，校验规则必须完全一致，所以核心逻辑抽成了
+ *  doSave()，查重/编号分配这些需要"问数据库"的步骤，通过 LookupContext 这层接口
+ *  抽象出去——单条保存用 DbLookupContext（直接查库，简单可靠，反正只有一条不在乎性能），
+ *  Excel 批量导入用 BulkLookupContext（数据提前一次性批量查好放内存里，几百行导入时
+ *  不会每一行都跟数据库来回好几次，这是之前导入几百行经常"网络连接失败"卡超时的根因）。
  */
 @Service
 public class CollaborationTrackingService {
@@ -55,6 +68,7 @@ public class CollaborationTrackingService {
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private ProjectNoAllocator projectNoAllocator;
+    @Autowired private ProjectNoGenerator projectNoGenerator;
     @Autowired private ProfitCalculator profitCalculator;
     @Autowired private ExchangeRateService exchangeRateService;
     @Autowired private PendingApprovalService pendingApprovalService;
@@ -75,6 +89,96 @@ public class CollaborationTrackingService {
     }
 
     /**
+     * 保存时需要"问数据库"的几件事，抽象成接口。
+     * 单条保存和批量导入的校验规则完全一样，只是这几件事去哪问的方式不同。
+     */
+    private interface LookupContext {
+        /** 某个红人在某个品牌方下的"品牌方-团队"关联记录 */
+        List<InfluencerBrandTeam> getTeamOptions(Long influencerId, Long brandId);
+        /** 查重命中的那一条（没命中返回 null），excludeId 用于编辑时排除自身 */
+        CollaborationTracking findDuplicate(Long influencerId, String publishLink, Date publishDate, Long excludeId);
+        /** 这个归一化后的旧素材链接是否已经被别的记录占用（excludeId 排除自身） */
+        boolean isOldMaterialLinkTaken(String normalizedLink, Long excludeId);
+        /** 分配一个没被占用的内部项目编号 */
+        String allocateInternalProjectNo(String brandName, String month, String accountName);
+    }
+
+    /** 单条保存用：每一步都直接查数据库，简单可靠 */
+    private class DbLookupContext implements LookupContext {
+        public List<InfluencerBrandTeam> getTeamOptions(Long influencerId, Long brandId) {
+            return influencerBrandTeamRepo.findByInfluencerIdAndBrandId(influencerId, brandId);
+        }
+        public CollaborationTracking findDuplicate(Long influencerId, String publishLink, Date publishDate, Long excludeId) {
+            List<CollaborationTracking> dups = trackingRepo.findDuplicates(influencerId, publishLink, publishDate, excludeId);
+            return dups.isEmpty() ? null : dups.get(0);
+        }
+        public boolean isOldMaterialLinkTaken(String normalizedLink, Long excludeId) {
+            return !trackingRepo.findByOldMaterialSourceLinkNormalized(normalizedLink, excludeId).isEmpty();
+        }
+        public String allocateInternalProjectNo(String brandName, String month, String accountName) {
+            return projectNoAllocator.allocate(brandName, month, accountName);
+        }
+    }
+
+    /**
+     * Excel 批量导入用：数据提前一次性批量查好放内存里，导入循环里不再逐行查数据库。
+     * 由 CollaborationTrackingExcelHandler 在导入开始前统一预加载好，然后每一行调用
+     * saveBulk() 时传进来复用；saveBulk() 内部还会往这个上下文的索引里增量更新
+     * （比如这一行刚生成的内部项目编号要记进"已用编号"集合，避免同一批文件里后面
+     * 的行分配到重复编号）。
+     */
+    public static class BulkLookupContext implements LookupContext {
+        /** influencerId -> brandId -> 该红人在该品牌方下的团队关联记录 */
+        public Map<Long, Map<Long, List<InfluencerBrandTeam>>> brandTeamMap = new HashMap<>();
+        /** 查重索引：key 见 dedupKey()，value 是已存在的跟踪记录 */
+        public Map<String, CollaborationTracking> dedupIndex = new HashMap<>();
+        /** 归一化后的旧素材链接 -> 占用这个链接的跟踪记录 id */
+        public Map<String, Long> normalizedLinkOwner = new HashMap<>();
+        /** 已经被使用的内部项目编号（分配新编号时会持续往里加，避免同批文件内部撞号） */
+        public Set<String> usedProjectNos = new HashSet<>();
+
+        private final ProjectNoGenerator generator;
+        public BulkLookupContext(ProjectNoGenerator generator) { this.generator = generator; }
+
+        @Override
+        public List<InfluencerBrandTeam> getTeamOptions(Long influencerId, Long brandId) {
+            return brandTeamMap.getOrDefault(influencerId, Collections.emptyMap())
+                    .getOrDefault(brandId, Collections.emptyList());
+        }
+
+        @Override
+        public CollaborationTracking findDuplicate(Long influencerId, String publishLink, Date publishDate, Long excludeId) {
+            CollaborationTracking hit = dedupIndex.get(dedupKey(influencerId, publishLink, publishDate));
+            if (hit == null) return null;
+            return java.util.Objects.equals(hit.getId(), excludeId) ? null : hit;
+        }
+
+        @Override
+        public boolean isOldMaterialLinkTaken(String normalizedLink, Long excludeId) {
+            Long ownerId = normalizedLinkOwner.get(normalizedLink);
+            return ownerId != null && !ownerId.equals(excludeId);
+        }
+
+        @Override
+        public String allocateInternalProjectNo(String brandName, String month, String accountName) {
+            String prefix = generator.buildPrefix(brandName, month, accountName);
+            long count = 0;
+            for (String s : usedProjectNos) if (s.startsWith(prefix)) count++;
+            String candidate;
+            do {
+                candidate = generator.generate(brandName, month, accountName, count);
+                count++;
+            } while (usedProjectNos.contains(candidate));
+            usedProjectNos.add(candidate);
+            return candidate;
+        }
+
+        public static String dedupKey(Long influencerId, String publishLink, Date publishDate) {
+            return influencerId + "|" + publishLink + "|" + (publishDate != null ? publishDate.getTime() : "");
+        }
+    }
+
+    /**
      * @param allowStatusUpdateOnEdit 编辑已有记录时是否允许同时更新"进度"。
      *        默认（单条编辑表单）为 false —— 状态只能通过"状态流转"接口改，
      *        编辑表单里状态字段是锁死的，防止误操作。
@@ -87,21 +191,54 @@ public class CollaborationTrackingService {
 
     @Transactional
     public CollaborationTracking save(CollaborationTrackingRequest req, boolean allowStatusUpdateOnEdit) {
+        Influencer influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getInfluencerId())
+                .orElseThrow(() -> new RuntimeException("红人不存在：" + req.getInfluencerId()));
+        CollaborationTracking existing = req.getId() != null
+                ? trackingRepo.findByIdAndIsDeletedFalse(req.getId())
+                        .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + req.getId()))
+                : null;
+        return doSave(req, allowStatusUpdateOnEdit, influencer, existing, new DbLookupContext());
+    }
+
+    /**
+     * Excel 批量导入专用：红人、（如果是更新）已有记录、查重/编号分配用的数据，
+     * 全部由调用方（CollaborationTrackingExcelHandler）提前批量查好传进来，
+     * 这里不再逐行查数据库，只有最后落库这一步是真正的数据库写入。
+     */
+    @Transactional
+    public CollaborationTracking saveBulk(CollaborationTrackingRequest req, Influencer influencer,
+                                           CollaborationTracking existingOrNull, BulkLookupContext ctx) {
+        CollaborationTracking saved = doSave(req, true, influencer, existingOrNull, ctx);
+        // 增量维护批量上下文的索引，供同一批文件里后面的行查重/判断编号占用
+        if (saved.getPublishLink() != null && saved.getPublishDate() != null) {
+            ctx.dedupIndex.put(
+                    BulkLookupContext.dedupKey(saved.getInfluencerId(), saved.getPublishLink(), saved.getPublishDate()),
+                    saved);
+        }
+        if (saved.getOldMaterialSourceLinkNormalized() != null) {
+            ctx.normalizedLinkOwner.put(saved.getOldMaterialSourceLinkNormalized(), saved.getId());
+        }
+        return saved;
+    }
+
+    /**
+     * 保存的核心逻辑，单条保存和批量导入共用，保证两条路径的校验规则完全一致。
+     * 查重/团队校验/编号分配这几步"要问数据库的事"通过 ctx 抽象出去，
+     * 不直接在这里查表，具体走数据库还是走内存，由调用方传的 ctx 决定。
+     */
+    private CollaborationTracking doSave(CollaborationTrackingRequest req, boolean allowStatusUpdateOnEdit,
+                                          Influencer influencer, CollaborationTracking existingOrNull,
+                                          LookupContext ctx) {
         CollaborationTracking tracking;
         String oldOrderId = null;
 
-        if (req.getId() != null) {
-            tracking = trackingRepo.findByIdAndIsDeletedFalse(req.getId())
-                    .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + req.getId()));
+        if (existingOrNull != null) {
+            tracking = existingOrNull;
             oldOrderId = tracking.getClientOrderId();
         } else {
             tracking = new CollaborationTracking();
             tracking.setIsDeleted(false);
         }
-
-        // 红人必须存在于红人库（按 id 关联，不再按名字文本查找——红人改名不受影响）
-        Influencer influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getInfluencerId())
-                .orElseThrow(() -> new RuntimeException("红人不存在：" + req.getInfluencerId()));
 
         // 团队 / 国家：拷贝快照（不随红人库变）——countryMarket 仍是红人库的快照，
         // teamName 这个红人库单团队字段已经被"品牌方-团队"关联对取代，不再使用
@@ -114,7 +251,7 @@ public class CollaborationTrackingService {
         if (req.getBrandId() != null) {
             Brand brand = brandCache.findById(req.getBrandId());
             if (brand == null) throw new RuntimeException("品牌方不存在：" + req.getBrandId());
-            teamOptions = influencerBrandTeamRepo.findByInfluencerIdAndBrandId(influencer.getId(), req.getBrandId());
+            teamOptions = ctx.getTeamOptions(influencer.getId(), req.getBrandId());
             if (teamOptions.isEmpty()) {
                 throw new RuntimeException("品牌方 [" + brand.getName() + "] 未在红人模块中关联到该红人，"
                         + "请先在红人模块维护后再选择");
@@ -154,7 +291,7 @@ public class CollaborationTrackingService {
         tracking.setPublishDate(req.getPublishDate());
         // 进度：新建时，或明确允许编辑时更新状态（Excel 导入更新分支），才从请求体取值；
         // 普通编辑表单（allowStatusUpdateOnEdit=false）忽略请求体里的 progress，保留数据库原值
-        if (req.getId() == null || allowStatusUpdateOnEdit) {
+        if (existingOrNull == null || allowStatusUpdateOnEdit) {
             tracking.setProgress(req.getProgress());
         }
         tracking.setVideoType(req.getVideoType());
@@ -167,23 +304,19 @@ public class CollaborationTrackingService {
             throw new RuntimeException("只有\"项目视频类型\"为\"旧素材重发\"时才能填写\"采买旧视频的原链接\"");
         }
         String normalizedLink = UrlNormalizer.normalize(sourceLink);
-        if (normalizedLink != null) {
-            List<CollaborationTracking> dup = trackingRepo.findByOldMaterialSourceLinkNormalized(
-                    normalizedLink, req.getId());
-            if (!dup.isEmpty()) {
-                throw new DuplicateOldMaterialLinkException("旧素材已采买过，请确认是否重复采买");
-            }
+        if (normalizedLink != null && ctx.isOldMaterialLinkTaken(normalizedLink, existingOrNull != null ? existingOrNull.getId() : null)) {
+            throw new DuplicateOldMaterialLinkException("旧素材已采买过，请确认是否重复采买");
         }
         tracking.setOldMaterialSourceLink(sourceLink);
         tracking.setOldMaterialSourceLinkNormalized(normalizedLink);
 
         // 内部项目编号：仅新建时生成一次，前端不可编辑，此后永久不变
         // （月份固定用"创建时间当月"，不随后续填写的发布时间变化）
-        if (req.getId() == null) {
+        if (existingOrNull == null) {
             String brandName = tracking.getBrand() != null ? tracking.getBrand().getName() : null;
             String createMonth = new SimpleDateFormat("yyyyMM").format(new Date());
             tracking.setInternalProjectNo(
-                    projectNoAllocator.allocate(brandName, createMonth, influencer.getAccountName()));
+                    ctx.allocateInternalProjectNo(brandName, createMonth, influencer.getAccountName()));
         }
 
         // 项目负责人
@@ -213,10 +346,10 @@ public class CollaborationTrackingService {
 
         // ---- 去重判断（仅当链接和日期都非空时）----
         if (tracking.getPublishLink() != null && tracking.getPublishDate() != null) {
-            List<CollaborationTracking> dups = trackingRepo.findDuplicates(
-                    influencer.getId(), tracking.getPublishLink(),
-                    tracking.getPublishDate(), req.getId());
-            if (!dups.isEmpty()) {
+            CollaborationTracking dup = ctx.findDuplicate(
+                    influencer.getId(), tracking.getPublishLink(), tracking.getPublishDate(),
+                    existingOrNull != null ? existingOrNull.getId() : null);
+            if (dup != null) {
                 throw new DuplicateTrackingException(
                         "已存在相同记录：红人 [" + influencer.getAccountName()
                         + "] 在 " + new SimpleDateFormat("yyyy-MM-dd").format(tracking.getPublishDate())

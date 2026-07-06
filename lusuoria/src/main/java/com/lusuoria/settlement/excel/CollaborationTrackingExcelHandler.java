@@ -9,11 +9,14 @@ import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.InfluencerTeam;
+import com.lusuoria.settlement.entity.InfluencerBrandTeam;
 import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
+import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.service.impl.CollaborationTrackingService;
+import com.lusuoria.settlement.util.ProjectNoGenerator;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddressList;
 import org.apache.poi.xssf.usermodel.*;
@@ -44,10 +47,12 @@ public class CollaborationTrackingExcelHandler {
 
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private InfluencerRepository influencerRepo;
+    @Autowired private InfluencerBrandTeamRepository influencerBrandTeamRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private InfluencerTeamCache teamCache;
     @Autowired private CollaborationTrackingService trackingService;
+    @Autowired private ProjectNoGenerator projectNoGenerator;
 
     /** 导出/模板列顺序 */
     // 列定义：[列名, 是否敏感(1=是), 是否仅导出(1=模板不含)]
@@ -217,6 +222,41 @@ public class CollaborationTrackingExcelHandler {
             influencerMap.put(inf.getAccountName(), inf);
         }
 
+        // ============================================================
+        // 性能优化：批量预加载这次导入可能用到的所有数据，构造成内存索引（BulkLookupContext），
+        // 后面每一行调用 trackingService.saveBulk() 时不再逐行查数据库，
+        // 只有真正落库这一步才会有数据库写入。这是解决"导入几百行超时报网络错误"的关键。
+        // ============================================================
+        List<Long> allInfluencerIds = new ArrayList<Long>();
+        for (Influencer inf : influencerMap.values()) allInfluencerIds.add(inf.getId());
+
+        CollaborationTrackingService.BulkLookupContext bulkCtx =
+                new CollaborationTrackingService.BulkLookupContext(projectNoGenerator);
+
+        if (!allInfluencerIds.isEmpty()) {
+            // 1. 这批红人的"品牌方-团队"关联，按 影响人id -> 品牌方id -> 关联列表 组织好
+            for (InfluencerBrandTeam rel : influencerBrandTeamRepo.findByInfluencerIdIn(allInfluencerIds)) {
+                bulkCtx.brandTeamMap
+                        .computeIfAbsent(rel.getInfluencerId(), k -> new HashMap<Long, List<InfluencerBrandTeam>>())
+                        .computeIfAbsent(rel.getBrandId(), k -> new ArrayList<InfluencerBrandTeam>())
+                        .add(rel);
+            }
+            // 2. 这批红人名下已有的跟踪记录，建好查重索引 + 旧素材链接占用索引
+            for (CollaborationTracking existing : trackingRepo.findByInfluencerIdInAndIsDeletedFalse(allInfluencerIds)) {
+                if (existing.getPublishLink() != null && existing.getPublishDate() != null) {
+                    bulkCtx.dedupIndex.put(
+                            CollaborationTrackingService.BulkLookupContext.dedupKey(
+                                    existing.getInfluencerId(), existing.getPublishLink(), existing.getPublishDate()),
+                            existing);
+                }
+                if (existing.getOldMaterialSourceLinkNormalized() != null) {
+                    bulkCtx.normalizedLinkOwner.put(existing.getOldMaterialSourceLinkNormalized(), existing.getId());
+                }
+            }
+        }
+        // 3. 全表已用的内部项目编号（只是字符串，量不大，一次性查出来放内存里）
+        bulkCtx.usedProjectNos.addAll(trackingRepo.findAllInternalProjectNos());
+
         // 预加载员工列表，供"项目负责人"列模糊匹配
         List<Employee> allEmployees = employeeCache.getAll();
 
@@ -350,22 +390,25 @@ public class CollaborationTrackingExcelHandler {
                 req.setNotes(getStr(row, colMap, "备注"));
 
                 // ---- 查重：红人 + 发布链接 + 发布时间 完全相同 -> 更新已有记录，而不是新建 ----
+                // 用批量预加载好的内存索引查，不再逐行查数据库
                 boolean isUpdate = false;
+                CollaborationTracking existingOrNull = null;
                 if (publishLink != null && publishDate != null) {
-                    List<CollaborationTracking> dup = trackingRepo.findDuplicates(
-                            req.getInfluencerId(), publishLink, publishDate, null);
-                    if (!dup.isEmpty()) {
-                        req.setId(dup.get(0).getId());
+                    existingOrNull = bulkCtx.dedupIndex.get(
+                            CollaborationTrackingService.BulkLookupContext.dedupKey(
+                                    req.getInfluencerId(), publishLink, publishDate));
+                    if (existingOrNull != null) {
+                        req.setId(existingOrNull.getId());
                         isUpdate = true;
                     }
                 }
                 // 注：如果这行数据想改一条已经有关联项目订单的记录的"客户方的项目订单"，
-                // service.save() 会直接拒绝（LinkedOrderExistsException），走到下面的 catch 里，
+                // service.saveBulk() 会直接拒绝（LinkedOrderExistsException），走到下面的 catch 里，
                 // 记一条"第X行导入失败"，不会静默覆盖或出现异常行为
 
-                // 内部项目编号：新建时 service 内部会自动生成一次；命中更新分支时 id 不为空，
-                // service 会保留数据库里原有的编号，不会重新生成——这里不需要也不应该手动处理
-                CollaborationTracking savedTracking = trackingService.save(req, true);
+                // 内部项目编号：新建时会自动生成一次（走内存里的编号池，不查库）；
+                // 命中更新分支时 id 不为空，会保留数据库里原有的编号，不会重新生成
+                CollaborationTracking savedTracking = trackingService.saveBulk(req, influencer, existingOrNull, bulkCtx);
 
                 if (isUpdate) updatedCount++; else createdCount++;
                 if (savedTracking.getGeneratedProjectOrderId() != null) projectOrderLinked++;

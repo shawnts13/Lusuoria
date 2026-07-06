@@ -22,6 +22,19 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     /** 反查：哪条跟踪记录引用了这条已生成的项目订单（项目订单被删除审核通过后，要释放这个引用） */
     List<CollaborationTracking> findByGeneratedProjectOrderId(Long generatedProjectOrderId);
 
+    /**
+     * Excel 批量导入优化专用：一次性查出这批红人名下所有未删除的跟踪记录，
+     * 在内存里做查重匹配，避免导入循环里每一行都单独查一次数据库。
+     */
+    List<CollaborationTracking> findByInfluencerIdInAndIsDeletedFalse(List<Long> influencerIds);
+
+    /**
+     * Excel 批量导入优化专用：一次性取出所有未删除记录的内部项目编号，
+     * 在内存里做唯一性判断和序号分配，避免导入循环里每一行都单独查一次数据库。
+     */
+    @Query("SELECT c.internalProjectNo FROM CollaborationTracking c WHERE c.isDeleted = false")
+    List<String> findAllInternalProjectNos();
+
     boolean existsByInternalProjectNo(String internalProjectNo);
 
     /** 采买旧视频原链接查重：归一化后的链接是否已被其他记录使用（编辑时排除自身） */
