@@ -101,12 +101,9 @@ public class Influencer extends BaseEntity {
     @Column(name = "notes", columnDefinition = "TEXT")
     private String notes;
 
-    // ===== 非持久化字段：关联的品牌方信息，由 Controller 查询中间表后手动填充 =====
-    /** 关联的品牌方 id 列表（不持久化，仅用于 API 响应） */
+    // ===== 非持久化字段：关联的"品牌方-团队"对，由 Controller 查询中间表后手动填充 =====
+    /** 关联的"品牌方-团队"对列表（不持久化，仅用于 API 响应；一个红人可以有多个对，
+     * 同一品牌方下也可能有多个不同团队，团队也可能为空） */
     @Transient
-    private java.util.List<Long> brandIds;
-
-    /** 关联的品牌方名称列表（不持久化，仅用于 API 响应展示） */
-    @Transient
-    private java.util.List<String> brandNames;
+    private java.util.List<InfluencerBrandTeamView> brandTeamPairs;
 }

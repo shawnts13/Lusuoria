@@ -190,7 +190,7 @@ public class ProjectOrderExcelHandler {
                     }
                     case "已到账金额": setCellMoney(row, c++, o.getReceivedAmount(), money); break;
                     case "内部项目编号": setCellStr(row, c++, o.getInternalProjectNo(), normal); break;
-                    case "红人团队": setCellStr(row, c++, o.getInfluencer() != null ? o.getInfluencer().getTeamName() : "", normal); break;
+                    case "红人团队": setCellStr(row, c++, o.getTeam() != null ? o.getTeam().getName() : "", normal); break;
                     case "合作内容": setCellStr(row, c++, o.getCooperationContent(), normal); break;
                     case "其他外部成本":
                         if (rowOwnOtherExternal) setCellMoney(row, c++, o.getOtherExternalCost(), money);

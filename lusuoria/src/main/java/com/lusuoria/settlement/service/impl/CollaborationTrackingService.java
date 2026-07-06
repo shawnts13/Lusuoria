@@ -12,9 +12,11 @@ import com.lusuoria.settlement.entity.ProjectOrder;
 import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
-import com.lusuoria.settlement.repository.InfluencerBrandRepository;
+import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.ProjectOrderRepository;
+import com.lusuoria.settlement.config.InfluencerTeamCache;
+import com.lusuoria.settlement.entity.InfluencerBrandTeam;
 import com.lusuoria.settlement.util.ProjectNoAllocator;
 import com.lusuoria.settlement.util.ProfitCalculator;
 import com.lusuoria.settlement.util.RoleUtil;
@@ -47,7 +49,8 @@ public class CollaborationTrackingService {
 
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private InfluencerRepository influencerRepo;
-    @Autowired private InfluencerBrandRepository influencerBrandRepo;
+    @Autowired private InfluencerBrandTeamRepository influencerBrandTeamRepo;
+    @Autowired private InfluencerTeamCache teamCache;
     @Autowired private ProjectOrderRepository projectOrderRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
@@ -100,22 +103,49 @@ public class CollaborationTrackingService {
         Influencer influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getInfluencerId())
                 .orElseThrow(() -> new RuntimeException("红人不存在：" + req.getInfluencerId()));
 
-        // 团队 / 国家：拷贝快照（不随红人库变）
+        // 团队 / 国家：拷贝快照（不随红人库变）——countryMarket 仍是红人库的快照，
+        // teamName 这个红人库单团队字段已经被"品牌方-团队"关联对取代，不再使用
         tracking.setInfluencer(influencer);
-        tracking.setTeamName(influencer.getTeamName());
         tracking.setCountryMarket(influencer.getCountryMarket());
 
-        // 品牌方：必须是该红人在红人模块里已关联的品牌方之一
+        // 品牌方：必须是该红人在红人模块里已关联的"品牌方-团队"对里出现过的品牌方
+        // （不管那个品牌方下有没有配团队，只要有关联记录就算数）
+        List<InfluencerBrandTeam> teamOptions = null;
         if (req.getBrandId() != null) {
             Brand brand = brandCache.findById(req.getBrandId());
             if (brand == null) throw new RuntimeException("品牌方不存在：" + req.getBrandId());
-            if (!influencerBrandRepo.existsByInfluencerIdAndBrandId(influencer.getId(), req.getBrandId())) {
+            teamOptions = influencerBrandTeamRepo.findByInfluencerIdAndBrandId(influencer.getId(), req.getBrandId());
+            if (teamOptions.isEmpty()) {
                 throw new RuntimeException("品牌方 [" + brand.getName() + "] 未在红人模块中关联到该红人，"
                         + "请先在红人模块维护后再选择");
             }
             tracking.setBrand(brand);
         } else {
             tracking.setBrand(null);
+        }
+
+        // 红人团队：跟着选中的品牌方级联决定，不再是红人库里那个单一的团队字段
+        // - 没选品牌方：团队肯定为空
+        // - 该品牌方下这个红人没配团队：团队必须为空，前端应该直接禁用团队选择
+        // - 该品牌方下只有 1 个团队选项：不管请求里传的是什么，直接采用这唯一的选项
+        // - 该品牌方下有多个团队选项（包括"有团队"和"没配团队"这两种都算一个选项）：
+        //   请求里必须明确指定其中一个，且必须能对上，对不上就报错
+        if (teamOptions == null || teamOptions.isEmpty()) {
+            if (req.getTeamId() != null) {
+                throw new RuntimeException("请先选择品牌方，或该红人在此品牌方下没有关联任何团队");
+            }
+            tracking.setTeam(null);
+        } else if (teamOptions.size() == 1) {
+            Long onlyTeamId = teamOptions.get(0).getTeamId();
+            tracking.setTeam(onlyTeamId != null ? teamCache.findById(onlyTeamId) : null);
+        } else {
+            boolean matched = teamOptions.stream()
+                    .anyMatch(t -> java.util.Objects.equals(t.getTeamId(), req.getTeamId()));
+            if (!matched) {
+                throw new RuntimeException("该红人在品牌方 [" + tracking.getBrand().getName()
+                        + "] 下关联了多个团队，请明确选择其中一个团队");
+            }
+            tracking.setTeam(req.getTeamId() != null ? teamCache.findById(req.getTeamId()) : null);
         }
 
         tracking.setPlatform(req.getPlatform());
@@ -129,6 +159,7 @@ public class CollaborationTrackingService {
         }
         tracking.setVideoType(req.getVideoType());
         tracking.setClientPaymentBatch(req.getClientPaymentBatch());
+        tracking.setNotes(req.getNotes());
 
         // ---- 采买旧视频的原链接：只有"旧素材重发"才允许填，且全表唯一（归一化后比较） ----
         String sourceLink = emptyToNull(req.getOldMaterialSourceLink());
@@ -226,9 +257,11 @@ public class CollaborationTrackingService {
         return saved;
     }
 
-    /** 把跟踪记录的执行人员、发布时间同步到已关联的项目订单（两边共用同一个内部项目编号） */
+    /** 把跟踪记录的品牌方、团队、执行人员、发布时间同步到已关联的项目订单（两边共用同一个内部项目编号） */
     private void syncToLinkedOrder(CollaborationTracking t) {
         projectOrderRepo.findByIdAndIsDeletedFalse(t.getGeneratedProjectOrderId()).ifPresent(order -> {
+            order.setBrand(t.getBrand());
+            order.setTeam(t.getTeam());
             order.setExecutor(t.getExecutor());
             order.setVideoPublishDate(t.getPublishDate());
             projectOrderRepo.save(order);
@@ -281,8 +314,9 @@ public class CollaborationTrackingService {
             order.setCommissionRate(t.getProjectManager().getDefaultCommissionRate());
         }
 
-        // 内部执行人员、项目视频发布时间：从跟踪记录带过来，以后跟踪记录改了会自动同步
+        // 内部执行人员、红人团队、项目视频发布时间：从跟踪记录带过来，以后跟踪记录改了会自动同步
         order.setExecutor(t.getExecutor());
+        order.setTeam(t.getTeam());
         order.setVideoPublishDate(t.getPublishDate());
 
         // 汇率：按"上个月最后一个工作日"的中国银行/Frankfurter 汇率（与数据看板逻辑一致）

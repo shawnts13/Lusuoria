@@ -97,6 +97,15 @@ public class ProjectOrder extends BaseEntity {
     @JoinColumn(name = "executor_id")
     private Employee executor;
 
+    /** 红人团队。由关联的"红人合作跟踪"记录同步过来，不可在项目订单里直接编辑 */
+    @Column(name = "team_id", insertable = false, updatable = false)
+    private Long teamId;
+
+    @JsonIgnore
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "team_id")
+    private InfluencerTeam team;
+
     // ===== 收入 =====
     /** 客户合作价格（美金），原"客户单价"，现参与利润计算 */
     @Column(name = "client_price", precision = 15, scale = 2)

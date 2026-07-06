@@ -1,8 +1,9 @@
 package com.lusuoria.settlement.config;
 
 import com.lusuoria.settlement.dto.response.InfluencerSimpleResponse;
-import com.lusuoria.settlement.entity.InfluencerBrand;
-import com.lusuoria.settlement.repository.InfluencerBrandRepository;
+import com.lusuoria.settlement.entity.InfluencerBrandTeam;
+import com.lusuoria.settlement.entity.InfluencerBrandTeamView;
+import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -12,7 +13,7 @@ import javax.annotation.PostConstruct;
 import java.util.*;
 
 /**
- * 红人精简信息内存缓存（id / 账号名 / 团队 / 国家市场 / 关联品牌）
+ * 红人精简信息内存缓存（id / 账号名 / 国家市场 / 关联的"品牌方-团队"对）
  *
  * 供项目订单、红人合作跟踪、打款等模块的红人选择下拉框使用（/api/influencers/simple）。
  * 启动时加载，每4小时自动刷新；红人新增/编辑/删除/Excel导入后，
@@ -23,7 +24,9 @@ import java.util.*;
 public class InfluencerCache {
 
     @Autowired private InfluencerRepository influencerRepo;
-    @Autowired private InfluencerBrandRepository influencerBrandRepo;
+    @Autowired private InfluencerBrandTeamRepository influencerBrandTeamRepo;
+    @Autowired private BrandCache brandCache;
+    @Autowired private InfluencerTeamCache teamCache;
 
     private volatile List<InfluencerSimpleResponse> simpleList = new ArrayList<InfluencerSimpleResponse>();
 
@@ -42,19 +45,23 @@ public class InfluencerCache {
             InfluencerSimpleResponse r = new InfluencerSimpleResponse();
             r.setId((Long) row[0]);
             r.setAccountName((String) row[1]);
-            r.setTeamName((String) row[2]);
-            r.setCountryMarket((String) row[3]);
+            r.setCountryMarket((String) row[2]);
             list.add(r);
             ids.add(r.getId());
         }
         if (!ids.isEmpty()) {
-            List<InfluencerBrand> rels = influencerBrandRepo.findByInfluencerIdIn(ids);
-            Map<Long, List<Long>> byInfluencer = new HashMap<Long, List<Long>>();
-            for (InfluencerBrand rel : rels) {
-                byInfluencer.computeIfAbsent(rel.getInfluencerId(), k -> new ArrayList<Long>()).add(rel.getBrandId());
+            List<InfluencerBrandTeam> rels = influencerBrandTeamRepo.findByInfluencerIdIn(ids);
+            Map<Long, List<InfluencerBrandTeamView>> byInfluencer = new HashMap<Long, List<InfluencerBrandTeamView>>();
+            for (InfluencerBrandTeam rel : rels) {
+                com.lusuoria.settlement.entity.Brand brand = brandCache.findById(rel.getBrandId());
+                com.lusuoria.settlement.entity.InfluencerTeam team = teamCache.findById(rel.getTeamId());
+                InfluencerBrandTeamView view = new InfluencerBrandTeamView(
+                        rel.getBrandId(), brand != null ? brand.getName() : null,
+                        rel.getTeamId(), team != null ? team.getName() : null);
+                byInfluencer.computeIfAbsent(rel.getInfluencerId(), k -> new ArrayList<InfluencerBrandTeamView>()).add(view);
             }
             for (InfluencerSimpleResponse r : list) {
-                r.setBrandIds(byInfluencer.getOrDefault(r.getId(), Collections.<Long>emptyList()));
+                r.setBrandTeamPairs(byInfluencer.getOrDefault(r.getId(), Collections.<InfluencerBrandTeamView>emptyList()));
             }
         }
         simpleList = list;

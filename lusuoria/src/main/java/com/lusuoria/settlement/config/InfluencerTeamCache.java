@@ -48,6 +48,11 @@ public class InfluencerTeamCache {
         return nameMap.get(name.trim());
     }
 
+    public InfluencerTeam findById(Long id) {
+        if (id == null) return null;
+        return idMap.get(id);
+    }
+
     /**
      * 按名称获取或创建团队（保存红人时自动注册新团队名）
      */

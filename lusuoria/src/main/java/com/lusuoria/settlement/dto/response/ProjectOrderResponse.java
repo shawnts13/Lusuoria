@@ -47,6 +47,9 @@ public class ProjectOrderResponse {
     /** 内部执行人员：由关联的红人合作跟踪记录同步，不可在此直接编辑 */
     private Long executorId;
     private String executorName;
+    /** 红人团队：由关联的红人合作跟踪记录同步，不可在此直接编辑 */
+    private Long teamId;
+    private String teamName;
 
     // ===== 非敏感成本字段（所有角色可见）=====
     private String currency;                 // 固定为美元展示

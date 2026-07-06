@@ -44,10 +44,6 @@ public class CollaborationTracking extends BaseEntity {
     @JoinColumn(name = "brand_id")
     private Brand brand;
 
-    /** 红人团队（快照，保存时从红人库拷贝） */
-    @Column(name = "team_name")
-    private String teamName;
-
     /** 服务国家/市场（快照，保存时从红人库拷贝） */
     @Column(name = "country_market")
     private String countryMarket;
@@ -65,6 +61,19 @@ public class CollaborationTracking extends BaseEntity {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "influencer_id", nullable = false)
     private Influencer influencer;
+
+    /**
+     * 红人团队。跟随"品牌方"级联决定（同一个红人在不同品牌方下可能属于不同团队，
+     * 也可能某个品牌方下压根没配团队），不再是红人库里那个已经废弃的单一 team_name 字段。
+     * 具体校验规则见 CollaborationTrackingService.save()。
+     */
+    @Column(name = "team_id", insertable = false, updatable = false)
+    private Long teamId;
+
+    @JsonIgnore
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "team_id")
+    private InfluencerTeam team;
 
     /** 合作平台（多个，换行符分隔，如 "Instagram\nTikTok"） */
     @Column(name = "platform", columnDefinition = "TEXT")
@@ -151,6 +160,10 @@ public class CollaborationTracking extends BaseEntity {
     /** 客户合作价格（美金） */
     @Column(name = "client_price", columnDefinition = "TEXT")
     private String clientPrice;
+
+    /** 备注：记录一些特殊情况 */
+    @Column(name = "notes", columnDefinition = "TEXT")
+    private String notes;
 
     /**
      * 当前是否有一条"待审核"的删除申请（有的话前端删除按钮要显示"审核中"）。

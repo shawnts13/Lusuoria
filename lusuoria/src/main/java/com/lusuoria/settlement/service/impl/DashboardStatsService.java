@@ -8,6 +8,7 @@ import com.lusuoria.settlement.dto.response.ExchangeRateInfo;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
+import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.entity.ProjectOrder;
 import com.lusuoria.settlement.enums.ProjectType;
 import com.lusuoria.settlement.repository.ProjectOrderRepository;
@@ -251,7 +252,7 @@ public class DashboardStatsService {
             String key;
             switch (dimension) {
                 case "team":
-                    key = teamNameOf(o.getInfluencer());
+                    key = teamNameOf(o.getTeam());
                     break;
                 case "account":
                     key = o.getInfluencer() != null ? o.getInfluencer().getAccountName() : "未知账号";
@@ -340,9 +341,9 @@ public class DashboardStatsService {
         return e != null ? e.getName() : "未知负责人";
     }
 
-    private String teamNameOf(Influencer inf) {
-        if (inf == null || inf.getTeamName() == null || inf.getTeamName().trim().isEmpty()) return "未指定团队";
-        return inf.getTeamName();
+    private String teamNameOf(InfluencerTeam team) {
+        if (team == null || team.getName() == null || team.getName().trim().isEmpty()) return "未指定团队";
+        return team.getName();
     }
 
     /** 下钻接口统一用范围终止月份对应的汇率（即查看的最新月份的"上月最后工作日"汇率） */

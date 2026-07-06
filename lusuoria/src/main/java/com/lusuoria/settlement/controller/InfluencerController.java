@@ -11,10 +11,12 @@ import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.dto.response.InfluencerSimpleResponse;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.Influencer;
-import com.lusuoria.settlement.entity.InfluencerBrand;
+import com.lusuoria.settlement.entity.InfluencerBrandTeam;
+import com.lusuoria.settlement.entity.InfluencerBrandTeamView;
+import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.enums.ProjectType;
 import com.lusuoria.settlement.excel.InfluencerExcelHandler;
-import com.lusuoria.settlement.repository.InfluencerBrandRepository;
+import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.ProjectOrderRepository;
 import com.lusuoria.settlement.util.RoleUtil;
@@ -39,7 +41,7 @@ import java.util.stream.Collectors;
 public class InfluencerController {
 
     @Autowired private InfluencerRepository influencerRepo;
-    @Autowired private InfluencerBrandRepository influencerBrandRepo;
+    @Autowired private InfluencerBrandTeamRepository influencerBrandTeamRepo;
     @Autowired private InfluencerExcelHandler excelHandler;
     @Autowired private ProjectOrderRepository projectOrderRepo;
     @Autowired private BrandCache brandCache;
@@ -58,7 +60,7 @@ public class InfluencerController {
             @RequestParam(required = false) String platform,
             @RequestParam(required = false) String countryMarket,
             @RequestParam(required = false) Long brandId,
-            @RequestParam(required = false) String teamName,
+            @RequestParam(required = false) Long teamId,
             @RequestParam(required = false) Long followerMin,
             @RequestParam(required = false) Long followerMax,
             @RequestParam(required = false) String keyword,
@@ -72,9 +74,9 @@ public class InfluencerController {
                 : Sort.by(Sort.Direction.ASC,  sortBy);
         PageRequest pageable = PageRequest.of(page, size, sort);
         Page<Influencer> result = influencerRepo.findByFilters(
-                influencerType, platform, countryMarket, brandId, teamName,
+                influencerType, platform, countryMarket, brandId, teamId,
                 followerMin, followerMax, keyword, pageable);
-        attachBrands(result.getContent());
+        attachBrandTeamPairs(result.getContent());
         if (!RoleUtil.canViewBaselineFinancials()) {
             return ApiResponse.success(result.map(this::maskSensitive));
         }
@@ -90,7 +92,7 @@ public class InfluencerController {
     public ApiResponse<Influencer> getById(@PathVariable Long id) {
         Influencer inf = influencerRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("红人不存在"));
-        attachBrands(Collections.singletonList(inf));
+        attachBrandTeamPairs(Collections.singletonList(inf));
         if (!RoleUtil.canViewBaselineFinancials()) return ApiResponse.success(maskSensitive(inf));
         return ApiResponse.success(inf);
     }
@@ -107,7 +109,7 @@ public class InfluencerController {
         List<Influencer> list = influencerType != null
                 ? influencerRepo.findByInfluencerTypeAndIsDeletedFalse(influencerType)
                 : influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc();
-        attachBrands(list);
+        attachBrandTeamPairs(list);
         excelHandler.export(list, RoleUtil.canViewBaselineFinancials(), response);
     }
 
@@ -151,11 +153,6 @@ public class InfluencerController {
             inf.setIsDeleted(false);
         }
         inf.setInfluencerType(req.getInfluencerType());
-        // 保存红人时自动把新团队名注册到 influencer_teams 表
-        if (req.getTeamName() != null && !req.getTeamName().trim().isEmpty()) {
-            teamCache.getOrCreate(req.getTeamName().trim());
-        }
-        inf.setTeamName(req.getTeamName());
         inf.setAccountName(req.getAccountName());
         inf.setCountryMarket(req.getCountryMarket());
         inf.setPlatform(req.getPlatform());
@@ -180,52 +177,68 @@ public class InfluencerController {
 
         Influencer saved = influencerRepo.save(inf);
 
-        // 品牌方关联：只处理真正变化的部分，不再"全删再插"
+        // "品牌方-团队"关联：只处理真正变化的部分，不再"全删再插"
         // - 现有关联里，本次没提交的，软删除（isDeleted=true），保留记录本身
         // - 本次提交的里，之前没关联过的，新插入一条
         // - 本次提交的里，之前关联过但被移除过的（isDeleted=true），直接复活（isDeleted=false），
-        //   不能真的插入新行，因为 (influencer_id, brand_id) 上有唯一约束，插入会跟旧行撞上
+        //   不能真的插入新行，因为 (influencer_id, brand_id, team_id) 上有唯一约束，插入会跟旧行撞上
         // - 本次提交的里，本来就还关联着的，完全不动（不产生任何写库操作）
-        List<InfluencerBrand> existingRels = influencerBrandRepo.findByInfluencerId(saved.getId());
-        Map<Long, InfluencerBrand> existingByBrandId = new HashMap<Long, InfluencerBrand>();
-        for (InfluencerBrand rel : existingRels) {
-            existingByBrandId.put(rel.getBrandId(), rel);
+        List<InfluencerBrandTeam> existingRels = influencerBrandTeamRepo.findByInfluencerId(saved.getId());
+        // key: brandId + "|" + teamId（teamId 可能为空，用 -1 占位区分"没配团队"这种关联）
+        Map<String, InfluencerBrandTeam> existingByKey = new HashMap<String, InfluencerBrandTeam>();
+        for (InfluencerBrandTeam rel : existingRels) {
+            existingByKey.put(pairKey(rel.getBrandId(), rel.getTeamId()), rel);
         }
-        Set<Long> newBrandIds = new HashSet<Long>();
-        if (req.getBrandIds() != null) {
-            for (Long brandId : req.getBrandIds()) {
-                if (brandId != null) newBrandIds.add(brandId);
+
+        Set<String> newKeys = new HashSet<String>();
+        List<InfluencerRequest.BrandTeamPair> pairs = req.getBrandTeamPairs() != null
+                ? req.getBrandTeamPairs() : Collections.<InfluencerRequest.BrandTeamPair>emptyList();
+        for (InfluencerRequest.BrandTeamPair p : pairs) {
+            if (p.getBrandId() == null) continue;
+            Brand brand = brandCache.findById(p.getBrandId());
+            if (brand == null) throw new RuntimeException("品牌方不存在：" + p.getBrandId());
+            if (p.getTeamId() != null && teamCache.findById(p.getTeamId()) == null) {
+                throw new RuntimeException("团队不存在：" + p.getTeamId());
             }
+            newKeys.add(pairKey(p.getBrandId(), p.getTeamId()));
         }
+
         // 移除：现有有效关联里，不在本次提交列表中的
-        for (InfluencerBrand rel : existingRels) {
-            if (!Boolean.TRUE.equals(rel.getIsDeleted()) && !newBrandIds.contains(rel.getBrandId())) {
+        for (InfluencerBrandTeam rel : existingRels) {
+            if (!Boolean.TRUE.equals(rel.getIsDeleted())
+                    && !newKeys.contains(pairKey(rel.getBrandId(), rel.getTeamId()))) {
                 rel.setIsDeleted(true);
-                influencerBrandRepo.save(rel);
+                influencerBrandTeamRepo.save(rel);
             }
         }
         // 新增/复活：本次提交列表里，之前不存在或已被软删除的
-        for (Long brandId : newBrandIds) {
-            Brand brand = brandCache.findById(brandId);
-            if (brand == null) throw new RuntimeException("品牌方不存在：" + brandId);
-            InfluencerBrand rel = existingByBrandId.get(brandId);
+        for (InfluencerRequest.BrandTeamPair p : pairs) {
+            if (p.getBrandId() == null) continue;
+            String key = pairKey(p.getBrandId(), p.getTeamId());
+            InfluencerBrandTeam rel = existingByKey.get(key);
             if (rel == null) {
-                rel = new InfluencerBrand();
+                rel = new InfluencerBrandTeam();
                 rel.setInfluencerId(saved.getId());
-                rel.setBrandId(brandId);
+                rel.setBrandId(p.getBrandId());
+                rel.setTeamId(p.getTeamId());
                 rel.setIsDeleted(false);
-                influencerBrandRepo.save(rel);
+                influencerBrandTeamRepo.save(rel);
             } else if (Boolean.TRUE.equals(rel.getIsDeleted())) {
                 rel.setIsDeleted(false);
-                influencerBrandRepo.save(rel);
+                influencerBrandTeamRepo.save(rel);
             }
             // else：已经是有效关联，不用动
         }
 
         domainSyncService.sync();
         influencerCache.refresh();
-        attachBrands(Collections.singletonList(saved));
+        attachBrandTeamPairs(Collections.singletonList(saved));
         return ApiResponse.success(saved);
+    }
+
+    /** 品牌方-团队 对的去重 key，teamId 为空时用 -1 占位（区分"这个品牌下没配团队"这种关联） */
+    private String pairKey(Long brandId, Long teamId) {
+        return brandId + "|" + (teamId != null ? teamId : -1L);
     }
 
     @DeleteMapping("/{id}")
@@ -240,24 +253,22 @@ public class InfluencerController {
         return ApiResponse.success();
     }
 
-    /** 批量给一批红人填充关联的品牌方 id/名称（避免逐条 N+1 查询） */
-    private void attachBrands(List<Influencer> list) {
+    /** 批量给一批红人填充关联的"品牌方-团队"对（避免逐条 N+1 查询） */
+    private void attachBrandTeamPairs(List<Influencer> list) {
         if (list == null || list.isEmpty()) return;
         List<Long> ids = list.stream().map(Influencer::getId).collect(Collectors.toList());
-        List<InfluencerBrand> rels = influencerBrandRepo.findByInfluencerIdIn(ids);
-        Map<Long, List<Long>> byInfluencer = new HashMap<Long, List<Long>>();
-        for (InfluencerBrand rel : rels) {
-            byInfluencer.computeIfAbsent(rel.getInfluencerId(), k -> new ArrayList<Long>()).add(rel.getBrandId());
+        List<InfluencerBrandTeam> rels = influencerBrandTeamRepo.findByInfluencerIdIn(ids);
+        Map<Long, List<InfluencerBrandTeamView>> byInfluencer = new HashMap<Long, List<InfluencerBrandTeamView>>();
+        for (InfluencerBrandTeam rel : rels) {
+            Brand brand = brandCache.findById(rel.getBrandId());
+            InfluencerTeam team = teamCache.findById(rel.getTeamId());
+            InfluencerBrandTeamView view = new InfluencerBrandTeamView(
+                    rel.getBrandId(), brand != null ? brand.getName() : null,
+                    rel.getTeamId(), team != null ? team.getName() : null);
+            byInfluencer.computeIfAbsent(rel.getInfluencerId(), k -> new ArrayList<InfluencerBrandTeamView>()).add(view);
         }
         for (Influencer inf : list) {
-            List<Long> brandIds = byInfluencer.getOrDefault(inf.getId(), Collections.emptyList());
-            inf.setBrandIds(brandIds);
-            List<String> names = new ArrayList<String>();
-            for (Long bid : brandIds) {
-                Brand b = brandCache.findById(bid);
-                if (b != null) names.add(b.getName());
-            }
-            inf.setBrandNames(names);
+            inf.setBrandTeamPairs(byInfluencer.getOrDefault(inf.getId(), Collections.<InfluencerBrandTeamView>emptyList()));
         }
     }
 

@@ -54,7 +54,7 @@ public class CollaborationTrackingController {
     @GetMapping
     public ApiResponse<Page<CollaborationTracking>> list(
             @RequestParam(required = false) Long brandId,
-            @RequestParam(required = false) String teamName,
+            @RequestParam(required = false) Long teamId,
             @RequestParam(required = false) String countryMarket,
             @RequestParam(required = false) String accountName,
             @RequestParam(required = false) String platform,
@@ -76,7 +76,7 @@ public class CollaborationTrackingController {
         PageRequest pageable = PageRequest.of(page, size, sort);
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         Page<CollaborationTracking> result = trackingRepo.findByFilters(
-                brandId, teamName, countryMarket, accountName, platform,
+                brandId, teamId, countryMarket, accountName, platform,
                 progress, videoType, videoMonthParam, internalProjectNo,
                 clientOrderId, clientPaymentBatch, projectManagerId, pageable);
 
@@ -85,7 +85,7 @@ public class CollaborationTrackingController {
                 PendingApprovalModule.COLLABORATION_TRACKING));
         result.forEach(t -> t.setHasPendingDeleteRequest(pendingIds.contains(t.getId())));
 
-        if (!RoleUtil.canViewSensitiveFields()) {
+        if (!RoleUtil.canViewBaselineFinancials()) {
             return ApiResponse.success(result.map(this::maskSensitive));
         }
         return ApiResponse.success(result);
@@ -95,7 +95,7 @@ public class CollaborationTrackingController {
     public ApiResponse<CollaborationTracking> getById(@PathVariable Long id) {
         CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("跟踪记录不存在"));
-        if (!RoleUtil.canViewSensitiveFields()) t = maskSensitive(t);
+        if (!RoleUtil.canViewBaselineFinancials()) t = maskSensitive(t);
         return ApiResponse.success(t);
     }
 
@@ -104,7 +104,7 @@ public class CollaborationTrackingController {
     public ApiResponse<CollaborationTracking> save(@Valid @RequestBody CollaborationTrackingRequest req) {
         try {
             CollaborationTracking saved = trackingService.save(req);
-            CollaborationTracking out = RoleUtil.canViewSensitiveFields() ? saved : maskSensitive(saved);
+            CollaborationTracking out = RoleUtil.canViewBaselineFinancials() ? saved : maskSensitive(saved);
             return ApiResponse.success(out);
         } catch (CollaborationTrackingService.LinkedOrderExistsException e) {
             return ApiResponse.error(CODE_LINKED_ORDER_EXISTS, e.getMessage());
@@ -136,14 +136,14 @@ public class CollaborationTrackingController {
                 .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
         t.setProgress(req.getProgress());
         CollaborationTracking saved = trackingRepo.save(t);
-        return ApiResponse.success(RoleUtil.canViewSensitiveFields() ? saved : maskSensitive(saved));
+        return ApiResponse.success(RoleUtil.canViewBaselineFinancials() ? saved : maskSensitive(saved));
     }
 
     // ============ Excel ============
     @GetMapping("/export/excel")
     public void exportExcel(
             @RequestParam(required = false) Long brandId,
-            @RequestParam(required = false) String teamName,
+            @RequestParam(required = false) Long teamId,
             @RequestParam(required = false) String countryMarket,
             @RequestParam(required = false) String accountName,
             @RequestParam(required = false) String platform,
@@ -159,21 +159,21 @@ public class CollaborationTrackingController {
         PageRequest all = PageRequest.of(0, Integer.MAX_VALUE, Sort.by(Sort.Direction.DESC, "id"));
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         List<CollaborationTracking> list = trackingRepo.findByFilters(
-                brandId, teamName, countryMarket, accountName, platform,
+                brandId, teamId, countryMarket, accountName, platform,
                 progress, videoType, videoMonthParam, internalProjectNo,
                 clientOrderId, clientPaymentBatch, projectManagerId, all).getContent();
-        excelHandler.export(list, RoleUtil.canViewSensitiveFields(), response);
+        excelHandler.export(list, RoleUtil.canViewBaselineFinancials(), response);
     }
 
     @GetMapping("/template")
     public void downloadTemplate(HttpServletResponse response) throws IOException {
-        excelHandler.downloadTemplate(RoleUtil.canViewSensitiveFields(), response);
+        excelHandler.downloadTemplate(RoleUtil.canViewBaselineFinancials(), response);
     }
 
     @PostMapping("/import/excel")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<List<String>> importExcel(@RequestParam("file") MultipartFile file) throws IOException {
-        return ApiResponse.success(excelHandler.importData(file, RoleUtil.canViewSensitiveFields()));
+        return ApiResponse.success(excelHandler.importData(file, RoleUtil.canViewBaselineFinancials()));
     }
 
     private CollaborationTracking maskSensitive(CollaborationTracking t) {

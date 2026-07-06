@@ -18,6 +18,12 @@ public class CollaborationTrackingRequest {
     @NotNull(message = "请选择红人")
     private Long influencerId;
 
+    /**
+     * 红人团队 id。跟着 brandId 级联决定：该品牌方下这个红人只有一个团队选项时可以不传
+     * （后端会自动采用那唯一的选项）；有多个选项时必须传，且必须是其中一个合法选项。
+     */
+    private Long teamId;
+
     /** 合作平台，前端多选后用换行符拼接 */
     private String platform;
 
@@ -48,4 +54,7 @@ public class CollaborationTrackingRequest {
     // 敏感字段
     private String influencerCost;
     private String clientPrice;
+
+    /** 备注：记录一些特殊情况 */
+    private String notes;
 }

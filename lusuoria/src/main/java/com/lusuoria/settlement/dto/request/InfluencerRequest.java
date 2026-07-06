@@ -15,13 +15,11 @@ public class InfluencerRequest {
     @NotNull(message = "红人类型不能为空")
     private ProjectType influencerType;
 
-    private String teamName;         // 单个团队
-
     @NotBlank(message = "红人社媒完整名字不能为空")
     private String accountName;
 
-    /** 品牌方 id 列表（多选，关联 InfluencerBrand 中间表） */
-    private List<Long> brandIds;
+    /** 品牌方-团队 对列表（一个红人可以有多个对，同一品牌方下也可以有多个不同团队，团队可为空） */
+    private List<BrandTeamPair> brandTeamPairs;
     private String countryMarket;    // 服务国家/市场
     private String platform;
 
@@ -51,4 +49,11 @@ public class InfluencerRequest {
     private String copyrightCost;    // 视频版权成本（美金）
 
     private String notes;
+
+    /** 一个"品牌方-团队"对，teamId 可为空 */
+    @Data
+    public static class BrandTeamPair {
+        private Long brandId;
+        private Long teamId;
+    }
 }

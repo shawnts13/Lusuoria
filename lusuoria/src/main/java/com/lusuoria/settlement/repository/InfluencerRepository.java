@@ -18,10 +18,10 @@ public interface InfluencerRepository extends JpaRepository<Influencer, Long> {
     List<Influencer> findByIsDeletedFalseOrderByAccountNameAsc();
 
     /**
-     * 精简投影：只查下拉框需要的4个字段，不加载 notes/contacts/links/成本等大字段。
+     * 精简投影：只查下拉框需要的3个字段，不加载 notes/contacts/links/成本等大字段。
      * 供 /api/influencers/simple 使用，供项目订单/合作跟踪/打款等模块的红人选择下拉框使用。
      */
-    @Query("SELECT i.id, i.accountName, i.teamName, i.countryMarket FROM Influencer i " +
+    @Query("SELECT i.id, i.accountName, i.countryMarket FROM Influencer i " +
            "WHERE i.isDeleted = false ORDER BY i.accountName ASC")
     List<Object[]> findSimpleProjections();
 
@@ -37,17 +37,20 @@ public interface InfluencerRepository extends JpaRepository<Influencer, Long> {
            "AND (:platform IS NULL OR i.platform LIKE %:platform%) " +
            "AND (:countryMarket IS NULL OR i.countryMarket = :countryMarket) " +
            "AND (:brandId IS NULL OR i.id IN (" +
-           "    SELECT ib.influencerId FROM InfluencerBrand ib WHERE ib.brandId = :brandId)) " +
-           "AND (:teamName IS NULL OR i.teamName LIKE %:teamName%) " +
+           "    SELECT ibt.influencerId FROM InfluencerBrandTeam ibt " +
+           "    WHERE ibt.brandId = :brandId AND ibt.isDeleted = false)) " +
+           "AND (:teamId IS NULL OR i.id IN (" +
+           "    SELECT ibt2.influencerId FROM InfluencerBrandTeam ibt2 " +
+           "    WHERE ibt2.teamId = :teamId AND ibt2.isDeleted = false)) " +
            "AND (:followerMin IS NULL OR i.followerCount >= :followerMin) " +
            "AND (:followerMax IS NULL OR i.followerCount <= :followerMax) " +
-           "AND (:keyword IS NULL OR i.accountName LIKE %:keyword% OR i.teamName LIKE %:keyword%)")
+           "AND (:keyword IS NULL OR i.accountName LIKE %:keyword%)")
     Page<Influencer> findByFilters(
             @Param("influencerType") ProjectType influencerType,
             @Param("platform") String platform,
             @Param("countryMarket") String countryMarket,
             @Param("brandId") Long brandId,
-            @Param("teamName") String teamName,
+            @Param("teamId") Long teamId,
             @Param("followerMin") Long followerMin,
             @Param("followerMax") Long followerMax,
             @Param("keyword") String keyword,

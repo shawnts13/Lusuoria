@@ -60,7 +60,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      * 原因：Date 类型参数在这条动态筛选查询里（配合 Supabase 连接池）会触发
      * "could not determine data type of parameter"（SQLState 42P18），
      * 无论传不传值都会报错。改成字符串比较后，videoMonth 参数跟这条查询里
-     * 其他正常工作的字符串筛选字段（teamName等）是完全一样的类型，
+     * 其他正常工作的字符串筛选字段（accountName等）是完全一样的类型，
      * 不会再有参数类型歧义问题（跟 ProjectOrder.projectMonth 直接存字符串是同一个思路）。
      *
      * accountName 筛选走 c.influencer.accountName（通过关联的红人记录做模糊匹配，
@@ -69,7 +69,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     @Query("SELECT c FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false " +
            "AND (:brandId IS NULL OR c.brandId = :brandId) " +
-           "AND (:teamName IS NULL OR c.teamName LIKE %:teamName%) " +
+           "AND (:teamId IS NULL OR c.teamId = :teamId) " +
            "AND (:countryMarket IS NULL OR c.countryMarket = :countryMarket) " +
            "AND (:accountName IS NULL OR c.influencer.accountName LIKE %:accountName%) " +
            "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
@@ -82,7 +82,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId)")
     Page<CollaborationTracking> findByFilters(
             @Param("brandId") Long brandId,
-            @Param("teamName") String teamName,
+            @Param("teamId") Long teamId,
             @Param("countryMarket") String countryMarket,
             @Param("accountName") String accountName,
             @Param("platform") String platform,

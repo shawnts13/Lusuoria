@@ -2,11 +2,13 @@ package com.lusuoria.settlement.excel;
 
 import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.config.EmployeeCache;
+import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.dto.request.CollaborationTrackingRequest;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
+import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
@@ -44,13 +46,14 @@ public class CollaborationTrackingExcelHandler {
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
+    @Autowired private InfluencerTeamCache teamCache;
     @Autowired private CollaborationTrackingService trackingService;
 
     /** 导出/模板列顺序 */
     // 列定义：[列名, 是否敏感(1=是), 是否仅导出(1=模板不含)]
     private static final String[][] COLUMNS = {
         {"品牌方",                     "0", "0"},
-        {"红人团队",                   "0", "1"},  // 仅导出，模板不含（导入时系统自动填充）
+        {"红人团队",                   "0", "0"},  // 该红人在此品牌方下有多个团队可选时必须填写，否则可留空
         {"服务国家/市场",              "0", "1"},  // 仅导出，模板不含（导入时系统自动填充）
         {"红人社媒完整名字",           "0", "0"},
         {"合作平台",                   "0", "0"},
@@ -66,6 +69,7 @@ public class CollaborationTrackingExcelHandler {
         {"客户方付款批次",             "0", "0"},
         {"红人视频制作与发布成本（美金）", "1", "0"},
         {"客户合作价格（美金）",       "1", "0"},
+        {"备注",                       "0", "0"},
     };
 
     /** 该列是否仅用于导出（模板跳过） */
@@ -108,7 +112,7 @@ public class CollaborationTrackingExcelHandler {
             int c = 0;
             Brand brand = brandCache.findById(t.getBrandId());
             setCellStr(row, c++, brand != null ? brand.getName() : "", wrap);
-            setCellStr(row, c++, t.getTeamName(),      wrap);
+            setCellStr(row, c++, t.getTeam() != null ? t.getTeam().getName() : "", wrap);
             setCellStr(row, c++, t.getCountryMarket(), wrap);
             setCellStr(row, c++, t.getInfluencer() != null ? t.getInfluencer().getAccountName() : "", wrap);
             setCellStr(row, c++, t.getPlatform(),      wrap);
@@ -128,6 +132,7 @@ public class CollaborationTrackingExcelHandler {
                 setCellStrColored(row, c++, t.getInfluencerCost(), wrap, red);
                 setCellStrColored(row, c++, t.getClientPrice(),    wrap, red);
             }
+            setCellStr(row, c++, t.getNotes(), wrap);
         }
 
         for (int i = 0; i < hc; i++) sheet.setColumnWidth(i, 18 * 256);
@@ -177,6 +182,8 @@ public class CollaborationTrackingExcelHandler {
         ex.put("客户方付款批次", "已加入未结算列表");
         ex.put("红人视频制作与发布成本（美金）", "550");
         ex.put("客户合作价格（美金）", "800");
+        ex.put("红人团队", "");  // 该红人在选中的品牌方下只有0/1个团队时可以留空，多个团队时必须填写
+        ex.put("备注", "");
         Row exRow = sheet.createRow(1);
         for (String[] col : COLUMNS) {
             Integer idx = colIdxMap.get(col[0]);
@@ -254,6 +261,19 @@ public class CollaborationTrackingExcelHandler {
                     req.setBrandId(brand.getId());
                 }
 
+                // 红人团队：这里只负责按名称查出 id（没填就是 null），
+                // 具体"这个红人在这个品牌方下能不能用这个团队"交给 service.save() 统一校验
+                // （0个选项时必须留空、1个选项时可以留空自动采用、多个选项时必须填对其中一个）
+                String teamNameRaw = getStr(row, colMap, "红人团队");
+                if (teamNameRaw != null && !teamNameRaw.trim().isEmpty()) {
+                    InfluencerTeam team = teamCache.findByName(teamNameRaw.trim());
+                    if (team == null) {
+                        errors.add("第" + (i + 1) + "行：红人团队 [" + teamNameRaw + "] 不存在，请检查红人团队管理模块");
+                        continue;
+                    }
+                    req.setTeamId(team.getId());
+                }
+
                 // 合作平台：优先取"合作平台"列，没有则从"合作资源"/"需求内容"智能提取
                 String platformRaw = getStr(row, colMap, "合作平台");
                 String demandRaw = firstNonNull(
@@ -327,6 +347,7 @@ public class CollaborationTrackingExcelHandler {
                             getStr(row, colMap, "客户合作价格$"),
                             getStr(row, colMap, "客户合作价格")));
                 }
+                req.setNotes(getStr(row, colMap, "备注"));
 
                 // ---- 查重：红人 + 发布链接 + 发布时间 完全相同 -> 更新已有记录，而不是新建 ----
                 boolean isUpdate = false;

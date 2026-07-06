@@ -2,6 +2,7 @@ package com.lusuoria.settlement.service.impl;
 
 import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.config.EmployeeCache;
+import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.dto.request.ProjectOrderRequest;
 import com.lusuoria.settlement.dto.response.MonthlySummaryResponse;
 import com.lusuoria.settlement.dto.response.ProjectOrderResponse;
@@ -39,6 +40,7 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
     @Autowired private EmployeeRepository employeeRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
+    @Autowired private InfluencerTeamCache teamCache;
     @Autowired private ProfitCalculator profitCalculator;
     @Autowired private ProjectOrderExcelHandler excelHandler;
     @Autowired private PendingApprovalService pendingApprovalService;
@@ -322,6 +324,11 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         if (executor != null) {
             r.setExecutorId(executor.getId());
             r.setExecutorName(executor.getName());
+        }
+        InfluencerTeam team = teamCache.findById(o.getTeamId());
+        if (team != null) {
+            r.setTeamId(team.getId());
+            r.setTeamName(team.getName());
         }
 
         // ===== 红人成本/客户合作价格/已到账金额：现在是"基础字段"，GUEST 之外都能看 =====
