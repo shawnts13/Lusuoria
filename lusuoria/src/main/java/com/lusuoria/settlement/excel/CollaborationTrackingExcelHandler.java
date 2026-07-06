@@ -259,6 +259,14 @@ public class CollaborationTrackingExcelHandler {
 
         // 预加载员工列表，供"项目负责人"列模糊匹配
         List<Employee> allEmployees = employeeCache.getAll();
+        // 项目负责人只能选"项目负责人"或"管理层"角色；内部执行人员只能选"执行人员"角色
+        List<Employee> projectManagerCandidates = new ArrayList<Employee>();
+        List<Employee> executorCandidates = new ArrayList<Employee>();
+        for (Employee e : allEmployees) {
+            String role = e.getRole();
+            if ("项目负责人".equals(role) || "管理层".equals(role)) projectManagerCandidates.add(e);
+            if ("执行人员".equals(role)) executorCandidates.add(e);
+        }
 
         int processedCount = 0, createdCount = 0, updatedCount = 0, projectOrderLinked = 0;
         SimpleDateFormat[] dateFormats = {
@@ -371,23 +379,23 @@ public class CollaborationTrackingExcelHandler {
                         getStr(row, colMap, "客户方付款批次"),
                         getStr(row, colMap, "客户付款批次")));
 
-                // 项目负责人：中文名/英文名模糊匹配（如系统里"梁珈绫 Charlene"，填任一段均可，忽略大小写）
+                // 项目负责人：只能是"项目负责人"或"管理层"角色的员工；中文名/英文名模糊匹配，忽略大小写
                 String managerRaw = getStr(row, colMap, "项目负责人");
                 if (managerRaw != null && !managerRaw.trim().isEmpty()) {
-                    Employee manager = matchEmployeeFuzzy(managerRaw, allEmployees);
+                    Employee manager = matchEmployeeFuzzy(managerRaw, projectManagerCandidates);
                     if (manager == null) {
-                        errors.add("第" + (i + 1) + "行：项目负责人 [" + managerRaw + "] 未匹配到任何员工，请核对");
+                        errors.add("第" + (i + 1) + "行：项目负责人 [" + managerRaw + "] 未匹配到任何\"项目负责人\"或\"管理层\"角色的员工，请核对");
                         continue;
                     }
                     req.setProjectManagerId(manager.getId());
                 }
 
-                // 内部执行人员：同样的模糊匹配规则
+                // 内部执行人员：只能是"执行人员"角色的员工；同样的模糊匹配规则
                 String executorRaw = getStr(row, colMap, "内部执行人员");
                 if (executorRaw != null && !executorRaw.trim().isEmpty()) {
-                    Employee executor = matchEmployeeFuzzy(executorRaw, allEmployees);
+                    Employee executor = matchEmployeeFuzzy(executorRaw, executorCandidates);
                     if (executor == null) {
-                        errors.add("第" + (i + 1) + "行：内部执行人员 [" + executorRaw + "] 未匹配到任何员工，请核对");
+                        errors.add("第" + (i + 1) + "行：内部执行人员 [" + executorRaw + "] 未匹配到任何\"执行人员\"角色的员工，请核对");
                         continue;
                     }
                     req.setExecutorId(executor.getId());
