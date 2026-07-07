@@ -38,6 +38,7 @@ import java.util.stream.Collectors;
  * 对应的统一汇率（ExchangeRateService 提供）换算后返回，不使用每条订单各自的汇率。
  */
 @Service
+@org.springframework.transaction.annotation.Transactional(readOnly = true)
 public class DashboardStatsService {
 
     private static final BigDecimal CHINA_COST_RATIO = new BigDecimal("0.65");
