@@ -48,6 +48,7 @@ public class DashboardStatsService {
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private ExchangeRateService exchangeRateService;
+    @Autowired private com.lusuoria.settlement.util.ProfitCalculator profitCalculator;
 
     // ============ 顶部汇总 ============
 
@@ -170,6 +171,52 @@ public class DashboardStatsService {
         return drilldownAmountByDimension(startMonth, endMonth, currency, dimension, c -> c.grossProfit);
     }
 
+    // ============ 下钻：公司利润（美金/人民币，品牌方/团队/账号/类型/品牌方-团队 可切换） ============
+
+    public DashboardDrilldownResponse drilldownCompanyProfit(String startMonth, String endMonth,
+                                                              String currency, String dimension) {
+        return drilldownAmountByDimension(startMonth, endMonth, currency, dimension, c -> c.companyProfit);
+    }
+
+    // ============ 下钻：内部执行人力成本（按项目负责人，或项目负责人-品牌方-团队） ============
+    // 注意：这个字段本身是人民币，跟其他美元计价的字段方向相反，不能复用 drilldownAmountByDimension
+    // （那个用的是 convert()，是按"输入是美元"来处理的），这里单独写一份用 convertFromRmb()。
+    // 这里故意统计的是"所有已填的内部执行成本"原始总和，不区分是不是影响公司利润
+    // （跟看板最上面那个汇总数字口径一致——那个数字本身不受"是否管理层"这条新规则影响，
+    // 这个下钻明细只是把那个总数字拆开来看，口径也应该保持一致）。
+
+    public DashboardDrilldownResponse drilldownExecutionCost(String startMonth, String endMonth,
+                                                              String currency, String dimension) {
+        List<ProjectOrder> orders = projectOrderRepo.findByProjectMonthBetween(startMonth, endMonth);
+        BigDecimal rate = rateForRange(endMonth);
+        boolean toRmb = "RMB".equalsIgnoreCase(currency);
+
+        Map<String, BigDecimal> grouped = new LinkedHashMap<>();
+        for (ProjectOrder o : orders) {
+            BigDecimal execCostRmb = safe(o.getInternalExecutionCost());
+            String key = "manager_brand_team".equals(dimension)
+                    ? managerNameOf(o.getProjectManagerId()) + " - " + brandNameOf(o.getBrandId())
+                            + " - " + teamNameOf(o.getTeam())
+                    : managerNameOf(o.getProjectManagerId());
+            grouped.merge(key, execCostRmb, BigDecimal::add);
+        }
+
+        List<DashboardDrilldownResponse.DrilldownRow> rows = grouped.entrySet().stream()
+                .map(e -> DashboardDrilldownResponse.DrilldownRow.builder()
+                        .dimensionLabel(e.getKey())
+                        .dimensionType(dimension)
+                        .amount(convertFromRmb(e.getValue(), rate, toRmb))
+                        .build())
+                .sorted((a, b) -> b.getAmount().compareTo(a.getAmount()))
+                .collect(Collectors.toList());
+
+        return DashboardDrilldownResponse.builder()
+                .currency(toRmb ? "RMB" : "USD")
+                .exchangeRateInfo(exchangeRateService.getRateForMonth(endMonth))
+                .rows(rows)
+                .build();
+    }
+
     // ============ 下钻：负责人提成合计（仅按负责人） ============
 
     public DashboardDrilldownResponse drilldownCommission(String startMonth, String endMonth, String currency) {
@@ -261,6 +308,16 @@ public class DashboardStatsService {
                 case "type":
                     key = o.getProjectType() != null ? o.getProjectType().getLabel() : "未知类型";
                     break;
+                case "brand_team":
+                    key = brandNameOf(o.getBrandId()) + " - " + teamNameOf(o.getTeam());
+                    break;
+                case "manager":
+                    key = managerNameOf(o.getProjectManagerId());
+                    break;
+                case "manager_brand_team":
+                    key = managerNameOf(o.getProjectManagerId()) + " - " + brandNameOf(o.getBrandId())
+                            + " - " + teamNameOf(o.getTeam());
+                    break;
                 default: // brand
                     key = brandNameOf(o.getBrandId());
             }
@@ -299,8 +356,10 @@ public class DashboardStatsService {
         // 不要跟这里参与利润计算用的美元换算值搞混）
         BigDecimal otherCostUsd = orderRate.compareTo(BigDecimal.ZERO) > 0
                 ? otherCostRmb.divide(orderRate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
-        BigDecimal execCostUsd = orderRate.compareTo(BigDecimal.ZERO) > 0
+        BigDecimal execCostUsdRaw = orderRate.compareTo(BigDecimal.ZERO) > 0
                 ? execCostRmb.divide(orderRate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
+        // 内部执行成本只有项目负责人是"管理层"的时候才真的从利润里扣，规则跟 ProfitCalculator 一致
+        BigDecimal execCostUsd = profitCalculator.isManagementOrder(o) ? execCostUsdRaw : BigDecimal.ZERO;
 
         BigDecimal influencerCost;
         if (ProjectType.CHINA_INFLUENCER == o.getProjectType()) {

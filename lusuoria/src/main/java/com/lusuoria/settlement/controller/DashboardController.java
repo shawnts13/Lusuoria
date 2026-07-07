@@ -89,6 +89,34 @@ public class DashboardController {
                 dashboardStatsService.drilldownGrossProfit(startMonth, endMonth, currency, dimension));
     }
 
+    /** 下钻：公司利润，品牌方/团队/账号/类型/品牌方-团队 可切换 */
+    @GetMapping("/drilldown/company-profit")
+    public ApiResponse<DashboardDrilldownResponse> drilldownCompanyProfit(
+            @RequestParam String startMonth,
+            @RequestParam String endMonth,
+            @RequestParam(defaultValue = "USD") String currency,
+            @RequestParam(defaultValue = "brand") String dimension) {
+        if (!RoleUtil.canViewSensitiveFields()) {
+            return ApiResponse.error(403, "无权限查看财务数据");
+        }
+        return ApiResponse.success(
+                dashboardStatsService.drilldownCompanyProfit(startMonth, endMonth, currency, dimension));
+    }
+
+    /** 下钻：内部执行人力成本，按项目负责人，或项目负责人-品牌方-团队 可切换 */
+    @GetMapping("/drilldown/execution-cost")
+    public ApiResponse<DashboardDrilldownResponse> drilldownExecutionCost(
+            @RequestParam String startMonth,
+            @RequestParam String endMonth,
+            @RequestParam(defaultValue = "USD") String currency,
+            @RequestParam(defaultValue = "manager") String dimension) {
+        if (!RoleUtil.canViewSensitiveFields()) {
+            return ApiResponse.error(403, "无权限查看财务数据");
+        }
+        return ApiResponse.success(
+                dashboardStatsService.drilldownExecutionCost(startMonth, endMonth, currency, dimension));
+    }
+
     /** 下钻：负责人提成合计，按负责人拆分 */
     @GetMapping("/drilldown/commission")
     public ApiResponse<DashboardDrilldownResponse> drilldownCommission(

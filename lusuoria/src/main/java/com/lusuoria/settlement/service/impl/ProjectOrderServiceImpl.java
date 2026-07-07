@@ -297,6 +297,10 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
             resp.setBreakdown("该订单尚未填写\"项目视频发布时间\"，无法按月计算，请手动填写金额");
             return resp;
         }
+        if (order.getProjectManagerId() == null) {
+            resp.setBreakdown("该订单尚未填写\"项目负责人\"，无法判断计算规则，请手动填写金额");
+            return resp;
+        }
         VideoType videoType = order.getVideoType();
         if (videoType == null) {
             resp.setBreakdown("该订单尚未填写\"项目视频类型\"，无法计算，请手动填写金额");
@@ -305,6 +309,39 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
 
         String month = new SimpleDateFormat("yyyyMM").format(order.getVideoPublishDate());
         String monthLabel = Integer.parseInt(month.substring(4)) + "月";
+
+        // 关键业务规则：内部执行成本是不是按员工管理里维护的费率梯度算，取决于这条订单
+        // 的项目负责人是不是"管理层"（目前系统里只有一个人是管理层）——
+        //   - 是管理层：按费率梯度自动算出建议金额，这部分成本会影响公司利润
+        //   - 不是管理层：说明这个执行人员的工资是这个项目负责人自己掏钱付的，
+        //     系统不知道他们之间是怎么谈的价格，默认给0让他自己填，只是告诉他
+        //     "这个执行人员这个月已经帮你结算过多少笔、分别是什么类型"作为参考，
+        //     这部分金额不会影响公司利润（在 ProfitCalculator 里已经处理）
+        if (!profitCalculator.isManagementOrder(order)) {
+            resp.setSuggestedAmount(BigDecimal.ZERO);
+            List<ProjectOrder> costed = projectOrderRepo.findCostedOrdersForExecutorAndManager(
+                    executor.getId(), order.getProjectManagerId(), month);
+            Map<VideoType, Long> countByType = new java.util.EnumMap<>(VideoType.class);
+            for (ProjectOrder o : costed) {
+                if (o.getVideoType() != null) countByType.merge(o.getVideoType(), 1L, Long::sum);
+            }
+            StringBuilder sb = new StringBuilder();
+            sb.append(monthLabel).append("该执行人员已为你结算：");
+            if (countByType.isEmpty()) {
+                sb.append("暂无记录");
+            } else {
+                List<String> parts = new ArrayList<>();
+                for (Map.Entry<VideoType, Long> e : countByType.entrySet()) {
+                    parts.add(e.getKey().getLabel() + " " + e.getValue() + " 笔");
+                }
+                sb.append(String.join("、", parts));
+            }
+            sb.append("，共计 ").append(costed.size()).append(" 笔。");
+            sb.append("该执行人员不是管理层名下的人员，工资由你自行支付和约定，系统不提供参考金额，"
+                    + "这笔钱也不会计入公司利润。");
+            resp.setBreakdown(sb.toString());
+            return resp;
+        }
 
         switch (videoType) {
             case REAL_SHOT_NEW: {
@@ -326,7 +363,7 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
             }
             case OLD_MATERIAL_REPOST: {
                 List<ProjectOrder> costed = projectOrderRepo
-                        .findCostedOldMaterialOrdersForExecutor(executor.getId(), month);
+                        .findCostedOldMaterialOrdersForExecutor(executor.getId(), order.getProjectManagerId(), month);
                 int countSoFar = costed.size();
                 int thisOrderNumber = countSoFar + 1;
                 BigDecimal rate;

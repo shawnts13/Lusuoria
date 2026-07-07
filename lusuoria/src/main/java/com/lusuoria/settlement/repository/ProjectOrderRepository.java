@@ -123,13 +123,35 @@ public interface ProjectOrderRepository extends JpaRepository<ProjectOrder, Long
      * 分档、以及当月101条以上部分的累计封顶金额）。只统计"已经赋值"的，没赋值的不算，
      * 这个规则很重要——没赋值的可能是还没走到这一步、或者压根不需要付费的订单。
      */
+    /**
+     * 内部执行成本梯度分档计算专用：某执行人员在某"项目视频发布"月份下，
+     * 已经赋值过内部执行成本的旧素材重发订单，且项目负责人必须是指定的这个人
+     * （目前是"管理层"那唯一一个人，因为费率梯度是管理层跟执行人员之间的约定，
+     * 不应该把这个执行人员给其他项目负责人干的活也算进这个梯度里）。
+     * 按 id 升序排列（用 id 顺序近似代表实际处理顺序，用来判断第几笔、分档、
+     * 以及当月101条以上部分的累计封顶金额）。
+     */
     @Query("SELECT p FROM ProjectOrder p WHERE p.isDeleted = false " +
-           "AND p.executorId = :executorId AND p.videoType = com.lusuoria.settlement.enums.VideoType.OLD_MATERIAL_REPOST " +
+           "AND p.executorId = :executorId AND p.projectManagerId = :managerId " +
+           "AND p.videoType = com.lusuoria.settlement.enums.VideoType.OLD_MATERIAL_REPOST " +
            "AND p.internalExecutionCost IS NOT NULL " +
            "AND FUNCTION('to_char', p.videoPublishDate, 'YYYYMM') = :month " +
            "ORDER BY p.id ASC")
     List<ProjectOrder> findCostedOldMaterialOrdersForExecutor(
-            @Param("executorId") Long executorId, @Param("month") String month);
+            @Param("executorId") Long executorId, @Param("managerId") Long managerId, @Param("month") String month);
+
+    /**
+     * 非管理层项目负责人场景下，弹窗里的提示信息用：这个执行人员在某"项目视频发布"月份下，
+     * 已经为这个具体的项目负责人结算过的订单（已赋值内部执行成本），用来告诉这个项目负责人
+     * "这个执行人员这个月已经帮你干了多少活"，本身不参与任何金额计算（这种情况下金额是
+     * 项目负责人自己填的，系统不提供默认值），只是给个参考。
+     */
+    @Query("SELECT p FROM ProjectOrder p WHERE p.isDeleted = false " +
+           "AND p.executorId = :executorId AND p.projectManagerId = :managerId " +
+           "AND p.internalExecutionCost IS NOT NULL " +
+           "AND FUNCTION('to_char', p.videoPublishDate, 'YYYYMM') = :month")
+    List<ProjectOrder> findCostedOrdersForExecutorAndManager(
+            @Param("executorId") Long executorId, @Param("managerId") Long managerId, @Param("month") String month);
 
     /** 数据看板用：按月份范围（闭区间，字符串比较，格式 yyyyMM 可直接比较）查询 */
     @EntityGraph(attributePaths = {"influencer", "brand", "projectManager"})
