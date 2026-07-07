@@ -3,6 +3,7 @@ package com.lusuoria.settlement;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.data.jpa.repository.config.EnableJpaAuditing;
+import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 import java.util.TimeZone;
@@ -10,6 +11,7 @@ import java.util.TimeZone;
 @SpringBootApplication
 @EnableJpaAuditing
 @EnableScheduling
+@EnableAsync
 public class MyApplication {
     public static void main(String[] args) {
         // 这个系统是给中国用户用的，不管服务器实际部署在哪个地区，

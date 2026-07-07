@@ -6,12 +6,14 @@ import com.lusuoria.settlement.dto.request.CollaborationTrackingStatusRequest;
 import com.lusuoria.settlement.dto.request.DeleteRequestReasonRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.CollaborationTracking;
+import com.lusuoria.settlement.entity.ImportBatch;
 import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.excel.CollaborationTrackingExcelHandler;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
+import com.lusuoria.settlement.repository.ImportBatchRepository;
 import com.lusuoria.settlement.repository.PendingApprovalRepository;
 import com.lusuoria.settlement.service.impl.CollaborationTrackingService;
 import com.lusuoria.settlement.util.RoleUtil;
@@ -48,6 +50,7 @@ public class CollaborationTrackingController {
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private CollaborationTrackingService trackingService;
     @Autowired private CollaborationTrackingExcelHandler excelHandler;
+    @Autowired private ImportBatchRepository importBatchRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private PendingApprovalRepository pendingApprovalRepo;
 
@@ -175,8 +178,21 @@ public class CollaborationTrackingController {
 
     @PostMapping("/import/excel")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
-    public ApiResponse<List<String>> importExcel(@RequestParam("file") MultipartFile file) throws IOException {
-        return ApiResponse.success(excelHandler.importData(file, RoleUtil.canViewBaselineFinancials()));
+    public ApiResponse<Long> importExcel(@RequestParam("file") MultipartFile file) throws IOException {
+        // 导入改成异步了：数据量一大（比如几百行），同步等待整个导入跑完很容易撞到
+        // 浏览器/反向代理的超时限制。这里立即建一条"导入批次"记录、马上把 id 返回给前端，
+        // 实际的导入过程丢到后台线程慢慢跑，前端可以去"导入历史"页面随时查进度和结果。
+        ImportBatch batch = new ImportBatch();
+        batch.setModule("COLLABORATION_TRACKING");
+        batch.setFileName(file.getOriginalFilename());
+        batch.setUploadedByName(RoleUtil.getCurrentUsername());
+        batch.setStatus("PROCESSING");
+        batch.setStartedAt(new java.util.Date());
+        batch = importBatchRepo.save(batch);
+
+        byte[] fileBytes = file.getBytes(); // 必须先读成字节数组，HTTP 请求结束后原始文件流就用不了了
+        excelHandler.importDataAsync(batch.getId(), fileBytes, RoleUtil.canViewBaselineFinancials());
+        return ApiResponse.success(batch.getId());
     }
 
     private CollaborationTracking maskSensitive(CollaborationTracking t) {

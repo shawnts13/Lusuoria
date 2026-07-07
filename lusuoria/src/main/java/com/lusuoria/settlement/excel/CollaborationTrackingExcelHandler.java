@@ -10,6 +10,7 @@ import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.entity.InfluencerBrandTeam;
+import com.lusuoria.settlement.entity.ImportBatch;
 import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
@@ -28,6 +29,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URLEncoder;
 import java.text.SimpleDateFormat;
 import java.util.*;
@@ -64,6 +66,7 @@ public class CollaborationTrackingExcelHandler {
     @Autowired private EmployeeCache employeeCache;
     @Autowired private InfluencerTeamCache teamCache;
     @Autowired private CollaborationTrackingService trackingService;
+    @Autowired private com.lusuoria.settlement.repository.ImportBatchRepository importBatchRepo;
     @Autowired private ProjectNoGenerator projectNoGenerator;
 
     /** 导出/模板列顺序 */
@@ -213,9 +216,57 @@ public class CollaborationTrackingExcelHandler {
     }
 
     // ============ 导入 ============
+    /** 保留 MultipartFile 入口，兼容以后可能需要同步调用的场景 */
     public List<String> importData(MultipartFile file, boolean canViewSensitive) throws IOException {
+        return importData(file.getInputStream(), canViewSensitive);
+    }
+
+    /**
+     * 异步导入入口：立即返回，实际处理放到后台线程跑完再回填批次记录。
+     * 用有界线程池（importTaskExecutor），避免服务器同时处理太多导入任务。
+     */
+    @org.springframework.scheduling.annotation.Async("importTaskExecutor")
+    public void importDataAsync(Long batchId, byte[] fileBytes, boolean canViewSensitive) {
+        ImportBatch batch = importBatchRepo.findById(batchId).orElse(null);
+        if (batch == null) return; // 理论上不会发生，防御性判断
+        try {
+            List<String> errors = importData(new java.io.ByteArrayInputStream(fileBytes), canViewSensitive);
+            String summary = errors.isEmpty() ? "" : errors.get(0);
+            batch.setSuccessCount(parseIntFromSummary(summary, "新增 (\\d+) 条"));
+            batch.setUpdateCount(parseIntFromSummary(summary, "更新 (\\d+) 条"));
+            batch.setFailCount(parseIntFromSummary(summary, "失败 (\\d+) 条"));
+            batch.setTotalRows(parseIntFromSummary(summary, "共处理 (\\d+) 行"));
+            batch.setResultDetail(String.join("\n", errors));
+            batch.setStatus("COMPLETED");
+        } catch (Exception e) {
+            log.error("批次{}导入失败：{}", batchId, e.getMessage(), e);
+            batch.setStatus("FAILED");
+            batch.setErrorMessage(e.getMessage() != null ? e.getMessage() : e.toString());
+        } finally {
+            batch.setCompletedAt(new Date());
+            importBatchRepo.save(batch);
+        }
+    }
+
+    /** 从汇总文字里用正则挖出具体数字，挖不到就给 0（不影响主流程，只是统计数字不准） */
+    private int parseIntFromSummary(String summary, String pattern) {
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile(pattern).matcher(summary);
+            return m.find() ? Integer.parseInt(m.group(1)) : 0;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /**
+     * 实际的导入逻辑。改成接收 InputStream 而不是 MultipartFile，是因为异步导入场景下
+     * （见 CollaborationTrackingController 的异步入口），HTTP 请求已经结束、原始的
+     * MultipartFile 早就不能用了，只能先把文件内容读成字节数组存起来，后台线程处理时
+     * 用 ByteArrayInputStream 包一层传进来。
+     */
+    public List<String> importData(InputStream fileStream, boolean canViewSensitive) throws IOException {
         List<String> errors = new ArrayList<String>();
-        Workbook workbook = WorkbookFactory.create(file.getInputStream());
+        Workbook workbook = WorkbookFactory.create(fileStream);
         // 整个方法体包在 try/finally 里，不管中途从哪个分支 return、还是抛异常，
         // 都保证下面设置的 ThreadLocal 一定会被清理掉
         FORMULA_EVALUATOR.set(workbook.getCreationHelper().createFormulaEvaluator());
