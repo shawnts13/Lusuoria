@@ -208,6 +208,9 @@ public class DashboardStatsService {
             }
             grouped.merge(key, execCostRmb, BigDecimal::add);
         }
+        // 金额是0的不用展示——比如某个项目负责人压根没有任何执行人员记录，
+        // 分组出来是"负责人 - 未指定执行人员：¥0"，这种没有意义，过滤掉
+        grouped.entrySet().removeIf(e -> e.getValue() == null || e.getValue().compareTo(BigDecimal.ZERO) == 0);
 
         List<DashboardDrilldownResponse.DrilldownRow> rows = grouped.entrySet().stream()
                 .map(e -> DashboardDrilldownResponse.DrilldownRow.builder()
