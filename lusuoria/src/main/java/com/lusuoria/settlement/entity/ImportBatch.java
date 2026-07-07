@@ -43,6 +43,8 @@ public class ImportBatch extends BaseEntity {
     private Date completedAt;
 
     private Integer totalRows;
+    /** 已处理行数：处理中的时候，前端靠这个字段实时展示"跑到第几行了" */
+    private Integer processedCount;
     private Integer successCount;
     private Integer updateCount;
     private Integer failCount;

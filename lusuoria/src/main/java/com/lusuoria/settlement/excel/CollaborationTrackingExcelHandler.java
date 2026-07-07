@@ -230,12 +230,19 @@ public class CollaborationTrackingExcelHandler {
         ImportBatch batch = importBatchRepo.findById(batchId).orElse(null);
         if (batch == null) return; // 理论上不会发生，防御性判断
         try {
-            List<String> errors = importData(new java.io.ByteArrayInputStream(fileBytes), canViewSensitive);
+            List<String> errors = importData(new java.io.ByteArrayInputStream(fileBytes), canViewSensitive,
+                    (processed, total) -> {
+                        // 每处理一批就回写一次进度，前端"导入历史"页面轮询的时候就能看到实时进度
+                        batch.setTotalRows(total);
+                        batch.setProcessedCount(processed);
+                        importBatchRepo.save(batch);
+                    });
             String summary = errors.isEmpty() ? "" : errors.get(0);
             batch.setSuccessCount(parseIntFromSummary(summary, "新增 (\\d+) 条"));
             batch.setUpdateCount(parseIntFromSummary(summary, "更新 (\\d+) 条"));
             batch.setFailCount(parseIntFromSummary(summary, "失败 (\\d+) 条"));
             batch.setTotalRows(parseIntFromSummary(summary, "共处理 (\\d+) 行"));
+            batch.setProcessedCount(batch.getTotalRows());
             batch.setResultDetail(String.join("\n", errors));
             batch.setStatus("COMPLETED");
         } catch (Exception e) {
@@ -265,6 +272,16 @@ public class CollaborationTrackingExcelHandler {
      * 用 ByteArrayInputStream 包一层传进来。
      */
     public List<String> importData(InputStream fileStream, boolean canViewSensitive) throws IOException {
+        return importData(fileStream, canViewSensitive, (processed, total) -> {});
+    }
+
+    /**
+     * 带进度回调的版本：每处理完一批（20行）就回调一次，异步导入用这个版本
+     * 把进度实时写回"导入批次"记录，前端"导入历史"页面才能看到"处理中"的具体进度。
+     * 同步入口传一个空回调就行，不影响原来的行为。
+     */
+    public List<String> importData(InputStream fileStream, boolean canViewSensitive,
+                                    java.util.function.BiConsumer<Integer, Integer> progressCallback) throws IOException {
         List<String> errors = new ArrayList<String>();
         Workbook workbook = WorkbookFactory.create(fileStream);
         // 整个方法体包在 try/finally 里，不管中途从哪个分支 return、还是抛异常，
@@ -274,6 +291,7 @@ public class CollaborationTrackingExcelHandler {
         Sheet sheet = workbook.getSheetAt(0);
         int totalRows = sheet.getLastRowNum();
         if (totalRows < 1) { errors.add("Excel 文件为空"); workbook.close(); return errors; }
+        progressCallback.accept(0, totalRows); // 一开始就把总行数汇报出去
 
         // 列名 -> 列号
         Map<String, Integer> colMap = new HashMap<String, Integer>();
@@ -359,6 +377,7 @@ public class CollaborationTrackingExcelHandler {
             Row row = sheet.getRow(i);
             if (row == null || isRowEmpty(row)) continue;
             processedCount++;
+            if (i % 20 == 0 || i == totalRows) progressCallback.accept(i, totalRows);
             try {
                 // 红人社媒完整名字（兼容旧列名"红人ID"和"达人名称"）
                 String accountName = firstNonNull(

@@ -80,8 +80,8 @@ public class ProjectOrderExcelHandler {
         // 其余信息列（非展示顺序要求里的，附在后面）
         EXPORT_COLS.add(new ColDef("红人团队",         ColCategory.NONE));
         EXPORT_COLS.add(new ColDef("合作内容",         ColCategory.NONE));
-        EXPORT_COLS.add(new ColDef("其他外部成本",     ColCategory.OTHER_EXTERNAL_COST));
-        EXPORT_COLS.add(new ColDef("内部执行成本",     ColCategory.INTERNAL_EXEC_COST));
+        EXPORT_COLS.add(new ColDef("其他外部成本（人民币）",     ColCategory.OTHER_EXTERNAL_COST));
+        EXPORT_COLS.add(new ColDef("内部执行成本（人民币）",     ColCategory.INTERNAL_EXEC_COST));
         EXPORT_COLS.add(new ColDef("可分配利润",       ColCategory.PURE_PROFIT));
         EXPORT_COLS.add(new ColDef("合同签署",         ColCategory.NONE));
         EXPORT_COLS.add(new ColDef("预计到账日",       ColCategory.NONE));
@@ -192,11 +192,11 @@ public class ProjectOrderExcelHandler {
                     case "内部项目编号": setCellStr(row, c++, o.getInternalProjectNo(), normal); break;
                     case "红人团队": setCellStr(row, c++, o.getTeam() != null ? o.getTeam().getName() : "", normal); break;
                     case "合作内容": setCellStr(row, c++, o.getCooperationContent(), normal); break;
-                    case "其他外部成本":
+                    case "其他外部成本（人民币）":
                         if (rowOwnOtherExternal) setCellMoney(row, c++, o.getOtherExternalCost(), money);
                         else setCellStr(row, c++, MASKED, normal);
                         break;
-                    case "内部执行成本":
+                    case "内部执行成本（人民币）":
                         if (rowOwnInternalExec) setCellMoney(row, c++, o.getInternalExecutionCost(), money);
                         else setCellStr(row, c++, MASKED, normal);
                         break;

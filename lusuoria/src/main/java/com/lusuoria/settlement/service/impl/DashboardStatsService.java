@@ -89,8 +89,8 @@ public class DashboardStatsService {
                 .videoProjectCount(videoCount)
                 .totalClientPrice(convert(totalClientPrice, rate, toRmb))
                 .totalInfluencerCost(convert(totalInfluencerCost, rate, toRmb))
-                .totalOtherExternalCost(convert(totalOtherCost, rate, toRmb))
-                .totalInternalExecutionCost(convert(totalExecCost, rate, toRmb))
+                .totalOtherExternalCost(convertFromRmb(totalOtherCost, rate, toRmb))
+                .totalInternalExecutionCost(convertFromRmb(totalExecCost, rate, toRmb))
                 .totalGrossProfit(convert(totalGrossProfit, rate, toRmb))
                 .totalDistributableProfit(convert(totalDistributable, rate, toRmb))
                 .totalCommissionAmount(convert(totalCommission, rate, toRmb))
@@ -286,10 +286,20 @@ public class DashboardStatsService {
 
     /** 计算一条项目订单的各项金额，逻辑与 ProfitCalculator 保持一致 */
     private Computed compute(ProjectOrder o) {
-        BigDecimal clientPrice = safe(o.getClientPrice());
-        BigDecimal otherCost   = safe(o.getOtherExternalCost());
-        BigDecimal execCost    = safe(o.getInternalExecutionCost());
-        BigDecimal rate        = safe(o.getCommissionRate());
+        BigDecimal clientPrice  = safe(o.getClientPrice());
+        BigDecimal otherCostRmb = safe(o.getOtherExternalCost());
+        BigDecimal execCostRmb  = safe(o.getInternalExecutionCost());
+        BigDecimal rate         = safe(o.getCommissionRate());
+        BigDecimal orderRate    = safe(o.getExchangeRate());
+
+        // 其他外部成本、内部执行成本这两个字段填的是人民币，客户合作价格/项目毛利
+        // 都是美元计价，不能直接相减，要先按这条订单自己的汇率换算成美元再参与后面的计算
+        // （Computed 结构体里仍然保留人民币原值，供"其他外部成本合计"这类单独汇总展示用，
+        // 不要跟这里参与利润计算用的美元换算值搞混）
+        BigDecimal otherCostUsd = orderRate.compareTo(BigDecimal.ZERO) > 0
+                ? otherCostRmb.divide(orderRate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
+        BigDecimal execCostUsd = orderRate.compareTo(BigDecimal.ZERO) > 0
+                ? execCostRmb.divide(orderRate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
 
         BigDecimal influencerCost;
         if (ProjectType.CHINA_INFLUENCER == o.getProjectType()) {
@@ -298,17 +308,17 @@ public class DashboardStatsService {
             influencerCost = safe(o.getInfluencerCost());
         }
 
-        BigDecimal grossProfit = clientPrice.subtract(influencerCost).subtract(otherCost)
+        BigDecimal grossProfit = clientPrice.subtract(influencerCost).subtract(otherCostUsd)
                 .setScale(SCALE, RoundingMode.HALF_UP);
-        BigDecimal distributable = grossProfit.subtract(execCost).setScale(SCALE, RoundingMode.HALF_UP);
+        BigDecimal distributable = grossProfit.subtract(execCostUsd).setScale(SCALE, RoundingMode.HALF_UP);
         BigDecimal commission = distributable.multiply(rate).setScale(SCALE, RoundingMode.HALF_UP);
         BigDecimal companyProfit = distributable.subtract(commission).setScale(SCALE, RoundingMode.HALF_UP);
 
         Computed c = new Computed();
         c.clientPrice = clientPrice;
         c.influencerCost = influencerCost;
-        c.otherExternalCost = otherCost;
-        c.internalExecutionCost = execCost;
+        c.otherExternalCost = otherCostRmb;
+        c.internalExecutionCost = execCostRmb;
         c.grossProfit = grossProfit;
         c.distributableProfit = distributable;
         c.commissionAmount = commission;
@@ -355,6 +365,18 @@ public class DashboardStatsService {
         if (usdAmount == null) usdAmount = BigDecimal.ZERO;
         if (!toRmb || rate == null) return usdAmount.setScale(SCALE, RoundingMode.HALF_UP);
         return usdAmount.multiply(rate).setScale(SCALE, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 其他外部成本、内部执行成本合计这两个字段本身就是人民币原值（不是美元），
+     * 换算方向跟 convert() 正好相反：要人民币就直接原样返回，要美元才需要除以汇率。
+     */
+    private BigDecimal convertFromRmb(BigDecimal rmbAmount, BigDecimal rate, boolean toRmb) {
+        if (rmbAmount == null) rmbAmount = BigDecimal.ZERO;
+        if (toRmb || rate == null || rate.compareTo(BigDecimal.ZERO) <= 0) {
+            return rmbAmount.setScale(SCALE, RoundingMode.HALF_UP);
+        }
+        return rmbAmount.divide(rate, SCALE, RoundingMode.HALF_UP);
     }
 
     private BigDecimal safe(BigDecimal v) {
