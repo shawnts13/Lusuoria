@@ -374,6 +374,10 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         ProjectOrder order = projectOrderRepo.findByIdAndIsDeletedFalse(orderId)
                 .orElseThrow(() -> new RuntimeException("项目订单不存在：" + orderId));
         order.setInternalExecutionCost(amount);
+        // 内部执行成本变了，项目毛利往下的可分配利润/负责人提成/公司利润这些都要跟着重新算一遍，
+        // 不然数据库里存的还是设置这笔成本之前的旧值（列表页显示的就是这些存好的字段，
+        // 编辑页面看到的是前端自己实时算的，两边对不上正是因为这里漏了这一步）
+        profitCalculator.calculate(order);
         return toResponse(projectOrderRepo.save(order));
     }
 
