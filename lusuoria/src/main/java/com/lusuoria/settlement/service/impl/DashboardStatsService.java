@@ -194,10 +194,18 @@ public class DashboardStatsService {
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
         for (ProjectOrder o : orders) {
             BigDecimal execCostRmb = safe(o.getInternalExecutionCost());
-            String key = "manager_brand_team".equals(dimension)
-                    ? managerNameOf(o.getProjectManagerId()) + " - " + brandNameOf(o.getBrandId())
-                            + " - " + teamNameOf(o.getTeam())
-                    : managerNameOf(o.getProjectManagerId());
+            String key;
+            switch (dimension) {
+                case "manager_brand_team":
+                    key = managerNameOf(o.getProjectManagerId()) + " - " + brandNameOf(o.getBrandId())
+                            + " - " + teamNameOf(o.getTeam());
+                    break;
+                case "manager_executor":
+                    key = managerNameOf(o.getProjectManagerId()) + " - " + executorNameOf(o.getExecutorId());
+                    break;
+                default: // manager
+                    key = managerNameOf(o.getProjectManagerId());
+            }
             grouped.merge(key, execCostRmb, BigDecimal::add);
         }
 
@@ -409,6 +417,12 @@ public class DashboardStatsService {
         if (managerId == null) return "未指定负责人";
         Employee e = employeeCache.findById(managerId);
         return e != null ? e.getName() : "未知负责人";
+    }
+
+    private String executorNameOf(Long executorId) {
+        if (executorId == null) return "未指定执行人员";
+        Employee e = employeeCache.findById(executorId);
+        return e != null ? e.getName() : "未知执行人员";
     }
 
     private String teamNameOf(InfluencerTeam team) {

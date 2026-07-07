@@ -319,6 +319,7 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         //     这部分金额不会影响公司利润（在 ProfitCalculator 里已经处理）
         if (!profitCalculator.isManagementOrder(order)) {
             resp.setSuggestedAmount(BigDecimal.ZERO);
+            resp.setRateBasedSuggestion(false);
             List<ProjectOrder> costed = projectOrderRepo.findCostedOrdersForExecutorAndManager(
                     executor.getId(), order.getProjectManagerId(), month);
             Map<VideoType, Long> countByType = new java.util.EnumMap<>(VideoType.class);
@@ -337,12 +338,12 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
                 sb.append(String.join("、", parts));
             }
             sb.append("，共计 ").append(costed.size()).append(" 笔。");
-            sb.append("该执行人员不是管理层名下的人员，工资由你自行支付和约定，系统不提供参考金额，"
-                    + "这笔钱也不会计入公司利润。");
+            sb.append("工资由你自行支付和约定，请手动填写金额。");
             resp.setBreakdown(sb.toString());
             return resp;
         }
 
+        resp.setRateBasedSuggestion(true);
         switch (videoType) {
             case REAL_SHOT_NEW: {
                 BigDecimal rate = executor.getRateRealShotNew();

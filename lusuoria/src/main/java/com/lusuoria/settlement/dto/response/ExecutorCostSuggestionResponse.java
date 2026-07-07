@@ -15,4 +15,11 @@ public class ExecutorCostSuggestionResponse {
     private BigDecimal suggestedAmount;
     /** 算出这个金额的依据说明，比如"6月该执行人员处理AI新素材：¥70.00" */
     private String breakdown;
+    /**
+     * 这个建议金额是不是按员工管理里维护的费率梯度算出来的。
+     * true：项目负责人是管理层，走费率梯度，前端要展示"这是自动算出来的"这类说明文案
+     * false：项目负责人不是管理层，默认给0纯手填，前端不能提及费率梯度这件事
+     *        （那是管理层跟执行人员之间的内部安排，不该让其他项目负责人知道）
+     */
+    private boolean rateBasedSuggestion;
 }
