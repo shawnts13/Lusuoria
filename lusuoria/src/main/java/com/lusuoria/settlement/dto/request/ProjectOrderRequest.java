@@ -31,7 +31,6 @@ public class ProjectOrderRequest {
 
     private String clientOrderNo;
     private String cooperationContent;
-    private Boolean isOwnResource;
 
     /** 项目视频类型：实拍新视频 / AI新素材 / 旧素材重发（联动生成时取自红人合作跟踪） */
     private VideoType videoType;

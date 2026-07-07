@@ -60,9 +60,6 @@ public class ProjectOrder extends BaseEntity {
     @Column(name = "video_type")
     private VideoType videoType;
 
-    @Column(name = "is_own_resource")
-    private Boolean isOwnResource = false; // 自带资源/供应商项目（影响提成比例）
-
     // ===== 关联 =====
     @Column(name = "brand_id", insertable = false, updatable = false)
     private Long brandId;

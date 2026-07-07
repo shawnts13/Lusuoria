@@ -4,6 +4,7 @@ import com.lusuoria.settlement.dto.request.DeleteRequestReasonRequest;
 import com.lusuoria.settlement.dto.request.ProjectOrderRequest;
 import com.lusuoria.settlement.dto.request.ProjectOrderStatusRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
+import com.lusuoria.settlement.dto.response.ExecutorCostSuggestionResponse;
 import com.lusuoria.settlement.dto.response.MonthlySummaryResponse;
 import com.lusuoria.settlement.dto.response.ProjectOrderResponse;
 import com.lusuoria.settlement.entity.PendingApproval;
@@ -33,6 +34,7 @@ public class ProjectOrderController {
     public ApiResponse<Page<ProjectOrderResponse>> list(
             @RequestParam(required = false) Long brandId,
             @RequestParam(required = false) String projectMonth,
+            @RequestParam(required = false) String videoPublishMonth,
             @RequestParam(required = false) ProjectType projectType,
             @RequestParam(required = false) ClientStatus clientStatus,
             @RequestParam(required = false) InternalSettlementStatus internalStatus,
@@ -54,7 +56,7 @@ public class ProjectOrderController {
                 : Sort.by(Sort.Direction.DESC, sortProperty);
         PageRequest pageable = PageRequest.of(page, size, sort);
         return ApiResponse.success(projectOrderService.list(
-                brandId, projectMonth, projectType, clientStatus, internalStatus, videoType, internalProjectNo,
+                brandId, projectMonth, videoPublishMonth, projectType, clientStatus, internalStatus, videoType, internalProjectNo,
                 influencerId, accountName, projectManagerId, keyword, pageable));
     }
 
@@ -114,5 +116,29 @@ public class ProjectOrderController {
             @PathVariable Long id, @RequestBody ProjectOrderStatusRequest req) {
         return ApiResponse.success(
                 projectOrderService.updateStatus(id, req.getClientStatus(), req.getInternalStatus()));
+    }
+
+    /**
+     * 内部执行成本弹窗打开时调用：只读，算出默认建议金额 + 算出来的依据说明，不修改任何数据。
+     */
+    @GetMapping("/{id}/executor-cost-suggestion")
+    public ApiResponse<ExecutorCostSuggestionResponse> suggestExecutorCost(@PathVariable Long id) {
+        return ApiResponse.success(projectOrderService.suggestExecutorCost(id));
+    }
+
+    /**
+     * 内部执行成本弹窗确认时调用：保存金额，跟状态流转是分开的两步操作。
+     */
+    @PatchMapping("/{id}/executor-cost")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    public ApiResponse<ProjectOrderResponse> setExecutorCost(
+            @PathVariable Long id, @RequestBody ExecutorCostRequest req) {
+        return ApiResponse.success(projectOrderService.setExecutorCost(id, req.getAmount()));
+    }
+
+    /** 内部执行成本保存请求体 */
+    @lombok.Data
+    public static class ExecutorCostRequest {
+        private java.math.BigDecimal amount;
     }
 }

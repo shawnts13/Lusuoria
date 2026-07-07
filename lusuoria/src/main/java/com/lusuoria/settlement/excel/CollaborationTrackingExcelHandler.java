@@ -45,6 +45,18 @@ public class CollaborationTrackingExcelHandler {
 
     private static final Logger log = LoggerFactory.getLogger(CollaborationTrackingExcelHandler.class);
 
+    /**
+     * 公式求值器：Excel 里像"=400*0.65"这种公式单元格很常见（尤其是金额类字段，
+     * 经常是拿汇率或者其他单元格算出来的），不处理的话这类单元格会被 getStrByIdx()
+     * 直接判定成"读不出来"返回 null，导致对应字段导入后是空的。
+     *
+     * 用 ThreadLocal 而不是普通实例字段：这个类是 Spring 单例 Bean，如果多个人同时导入，
+     * 普通实例字段会被并发的请求互相覆盖，ThreadLocal 保证每个请求（线程）用的是自己
+     * 独立的一份，不会互相干扰。导入开始时设置好，结束后一定要清掉，避免内存泄漏
+     * （servlet 容器的工作线程是复用的，不清掉的话下一个请求进来还会读到上一次的引用）。
+     */
+    private static final ThreadLocal<FormulaEvaluator> FORMULA_EVALUATOR = new ThreadLocal<>();
+
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private InfluencerBrandTeamRepository influencerBrandTeamRepo;
@@ -204,6 +216,10 @@ public class CollaborationTrackingExcelHandler {
     public List<String> importData(MultipartFile file, boolean canViewSensitive) throws IOException {
         List<String> errors = new ArrayList<String>();
         Workbook workbook = WorkbookFactory.create(file.getInputStream());
+        // 整个方法体包在 try/finally 里，不管中途从哪个分支 return、还是抛异常，
+        // 都保证下面设置的 ThreadLocal 一定会被清理掉
+        FORMULA_EVALUATOR.set(workbook.getCreationHelper().createFormulaEvaluator());
+        try {
         Sheet sheet = workbook.getSheetAt(0);
         int totalRows = sheet.getLastRowNum();
         if (totalRows < 1) { errors.add("Excel 文件为空"); workbook.close(); return errors; }
@@ -460,6 +476,9 @@ public class CollaborationTrackingExcelHandler {
         errors.add(0, "新增 " + createdCount + " 条，更新 " + updatedCount + " 条，失败 " + (errors.size())
                 + " 条（共处理 " + processedCount + " 行）；关联项目订单 " + projectOrderLinked + " 条");
         return errors;
+        } finally {
+            FORMULA_EVALUATOR.remove();
+        }
     }
 
     // ============ 平台智能提取 ============
@@ -520,6 +539,16 @@ public class CollaborationTrackingExcelHandler {
         if (cell.getCellType() == CellType.NUMERIC && DateUtil.isCellDateFormatted(cell)) {
             return cell.getDateCellValue();
         }
+        // 公式算出来的日期（比如"=TODAY()-5"），求值后如果结果本身是按日期格式显示的，直接取日期值
+        if (cell.getCellType() == CellType.FORMULA) {
+            FormulaEvaluator evaluator = FORMULA_EVALUATOR.get();
+            if (evaluator != null) {
+                CellValue value = evaluator.evaluate(cell);
+                if (value != null && value.getCellType() == CellType.NUMERIC && DateUtil.isCellDateFormatted(cell)) {
+                    return DateUtil.getJavaDate(value.getNumberValue());
+                }
+            }
+        }
         String s = getStrByIdx(cell);
         if (s == null || s.isEmpty()) return null;
         for (SimpleDateFormat fmt : formats) {
@@ -535,6 +564,20 @@ public class CollaborationTrackingExcelHandler {
 
     private String getStrByIdx(Cell cell) {
         if (cell == null) return null;
+        if (cell.getCellType() == CellType.FORMULA) {
+            // 公式单元格（比如"=400*0.65"）：用求值器算出真正的结果，再按结果类型处理，
+            // 不能直接读，直接读只能拿到公式文本本身，而且下面 switch 也没有 FORMULA 这个分支
+            FormulaEvaluator evaluator = FORMULA_EVALUATOR.get();
+            if (evaluator == null) return null;
+            CellValue value = evaluator.evaluate(cell);
+            if (value == null) return null;
+            switch (value.getCellType()) {
+                case STRING:  return value.getStringValue().trim();
+                case NUMERIC: return String.valueOf((long) value.getNumberValue());
+                case BOOLEAN: return String.valueOf(value.getBooleanValue());
+                default:      return null; // 公式出错(ERROR)或者算出来是空的
+            }
+        }
         switch (cell.getCellType()) {
             case STRING:  return cell.getStringCellValue().trim();
             case NUMERIC: return String.valueOf((long) cell.getNumericCellValue());

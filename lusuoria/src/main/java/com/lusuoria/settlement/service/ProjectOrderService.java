@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.service;
 
 import com.lusuoria.settlement.dto.request.ProjectOrderRequest;
+import com.lusuoria.settlement.dto.response.ExecutorCostSuggestionResponse;
 import com.lusuoria.settlement.dto.response.MonthlySummaryResponse;
 import com.lusuoria.settlement.dto.response.ProjectOrderResponse;
 import com.lusuoria.settlement.entity.PendingApproval;
@@ -20,7 +21,7 @@ public interface ProjectOrderService {
 
     ProjectOrderResponse getById(Long id);
 
-    Page<ProjectOrderResponse> list(Long brandId, String projectMonth, ProjectType projectType,
+    Page<ProjectOrderResponse> list(Long brandId, String projectMonth, String videoPublishMonth, ProjectType projectType,
                                     ClientStatus clientStatus, InternalSettlementStatus internalStatus,
                                     VideoType videoType, String internalProjectNo,
                                     Long influencerId, String accountName, Long projectManagerId,
@@ -45,6 +46,10 @@ public interface ProjectOrderService {
      * 配合前端专门的"状态流转"弹窗使用。
      */
     ProjectOrderResponse updateStatus(Long id, ClientStatus clientStatus, InternalSettlementStatus internalStatus);
+
+    ExecutorCostSuggestionResponse suggestExecutorCost(Long orderId);
+
+    ProjectOrderResponse setExecutorCost(Long orderId, java.math.BigDecimal amount);
 
     void exportExcel(String projectMonth, HttpServletResponse response) throws IOException;
 }

@@ -34,6 +34,13 @@ public class InfluencerPaymentExcelHandler {
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private InfluencerPaymentRepository paymentRepo;
 
+    /**
+     * 公式求值器：Excel 里像"=xxx"这种公式单元格很常见，不处理的话会被 getStr()/getBigDecimal()/
+     * getInt() 判定成"读不出来"返回 null。用 ThreadLocal 而不是普通实例字段是因为这个类是
+     * Spring 单例 Bean，多个人同时导入时普通实例字段会互相覆盖，ThreadLocal 保证各自独立。
+     */
+    private static final ThreadLocal<FormulaEvaluator> FORMULA_EVALUATOR = new ThreadLocal<>();
+
     // ===== 导出 =====
     public void export(List<InfluencerPayment> payments, boolean canViewSensitive,
                        HttpServletResponse response) throws IOException {
@@ -181,6 +188,8 @@ public class InfluencerPaymentExcelHandler {
     public List<String> importData(MultipartFile file) throws IOException {
         List<String> errors = new ArrayList<String>();
         Workbook workbook = WorkbookFactory.create(file.getInputStream());
+        FORMULA_EVALUATOR.set(workbook.getCreationHelper().createFormulaEvaluator());
+        try {
         Sheet sheet = workbook.getSheetAt(0);
 
         int totalRows = sheet.getLastRowNum();
@@ -295,6 +304,9 @@ public class InfluencerPaymentExcelHandler {
         int failCount = errors.size();
         errors.add(0, "成功新增 " + successCount + " 条，跳过重复 " + skipCount + " 条，失败 " + failCount + " 条");
         return errors;
+        } finally {
+            FORMULA_EVALUATOR.remove();
+        }
     }
 
     // ===== 工具方法 =====
@@ -363,6 +375,18 @@ public class InfluencerPaymentExcelHandler {
         if (idx == null) return null;
         Cell cell = row.getCell(idx);
         if (cell == null) return null;
+        if (cell.getCellType() == CellType.FORMULA) {
+            FormulaEvaluator evaluator = FORMULA_EVALUATOR.get();
+            if (evaluator == null) return null;
+            CellValue value = evaluator.evaluate(cell);
+            if (value == null) return null;
+            switch (value.getCellType()) {
+                case STRING:  return value.getStringValue().trim();
+                case NUMERIC: return String.valueOf((long) value.getNumberValue());
+                case BOOLEAN: return String.valueOf(value.getBooleanValue());
+                default:      return null;
+            }
+        }
         switch (cell.getCellType()) {
             case STRING:  return cell.getStringCellValue().trim();
             case NUMERIC: return String.valueOf((long) cell.getNumericCellValue());
@@ -376,6 +400,18 @@ public class InfluencerPaymentExcelHandler {
         Cell cell = row.getCell(idx);
         if (cell == null) return null;
         try {
+            if (cell.getCellType() == CellType.FORMULA) {
+                FormulaEvaluator evaluator = FORMULA_EVALUATOR.get();
+                if (evaluator == null) return null;
+                CellValue value = evaluator.evaluate(cell);
+                if (value == null) return null;
+                if (value.getCellType() == CellType.NUMERIC) return BigDecimal.valueOf(value.getNumberValue());
+                if (value.getCellType() == CellType.STRING) {
+                    String v = value.getStringValue().trim();
+                    return v.isEmpty() ? null : new BigDecimal(v);
+                }
+                return null;
+            }
             if (cell.getCellType() == CellType.NUMERIC)
                 return BigDecimal.valueOf(cell.getNumericCellValue());
             if (cell.getCellType() == CellType.STRING) {
@@ -392,6 +428,18 @@ public class InfluencerPaymentExcelHandler {
         Cell cell = row.getCell(idx);
         if (cell == null) return null;
         try {
+            if (cell.getCellType() == CellType.FORMULA) {
+                FormulaEvaluator evaluator = FORMULA_EVALUATOR.get();
+                if (evaluator == null) return null;
+                CellValue value = evaluator.evaluate(cell);
+                if (value == null) return null;
+                if (value.getCellType() == CellType.NUMERIC) return (int) value.getNumberValue();
+                if (value.getCellType() == CellType.STRING) {
+                    String v = value.getStringValue().trim();
+                    return v.isEmpty() ? null : Integer.parseInt(v);
+                }
+                return null;
+            }
             if (cell.getCellType() == CellType.NUMERIC) return (int) cell.getNumericCellValue();
             if (cell.getCellType() == CellType.STRING) {
                 String v = cell.getStringCellValue().trim();

@@ -30,7 +30,6 @@ public class ProjectOrderResponse {
     private ProjectType projectType;
     private String projectTypeLabel;
     private String cooperationContent;
-    private Boolean isOwnResource;
 
     /** 项目视频类型：实拍新视频 / 实拍新图片 / AI新素材 / 旧素材重发 */
     private VideoType videoType;

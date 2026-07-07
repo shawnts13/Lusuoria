@@ -69,6 +69,7 @@ public interface ProjectOrderRepository extends JpaRepository<ProjectOrder, Long
            "WHERE p.isDeleted = false " +
            "AND (:brandId IS NULL OR p.brand.id = :brandId) " +
            "AND (:projectMonth IS NULL OR p.projectMonth = :projectMonth) " +
+           "AND (:videoPublishMonth IS NULL OR FUNCTION('to_char', p.videoPublishDate, 'YYYYMM') = :videoPublishMonth) " +
            "AND (:projectType IS NULL OR p.projectType = :projectType) " +
            "AND (:clientStatus IS NULL OR p.clientStatus = :clientStatus) " +
            "AND (:internalStatus IS NULL OR p.internalStatus = :internalStatus) " +
@@ -82,6 +83,7 @@ public interface ProjectOrderRepository extends JpaRepository<ProjectOrder, Long
     Page<ProjectOrder> findByFilters(
             @Param("brandId") Long brandId,
             @Param("projectMonth") String projectMonth,
+            @Param("videoPublishMonth") String videoPublishMonth,
             @Param("projectType") ProjectType projectType,
             @Param("clientStatus") ClientStatus clientStatus,
             @Param("internalStatus") InternalSettlementStatus internalStatus,
@@ -114,6 +116,20 @@ public interface ProjectOrderRepository extends JpaRepository<ProjectOrder, Long
            "AND FUNCTION('to_char', p.videoPublishDate, 'YYYYMM') BETWEEN :startMonth AND :endMonth")
     List<ProjectOrder> findByVideoPublishMonthBetween(
             @Param("startMonth") String startMonth, @Param("endMonth") String endMonth);
+
+    /**
+     * 内部执行成本计算专用：某执行人员在某"项目视频发布"月份下，已经赋值过内部执行成本的
+     * 旧素材重发订单，按 id 升序排列（用 id 顺序近似代表实际处理顺序，用来判断第几笔、
+     * 分档、以及当月101条以上部分的累计封顶金额）。只统计"已经赋值"的，没赋值的不算，
+     * 这个规则很重要——没赋值的可能是还没走到这一步、或者压根不需要付费的订单。
+     */
+    @Query("SELECT p FROM ProjectOrder p WHERE p.isDeleted = false " +
+           "AND p.executorId = :executorId AND p.videoType = com.lusuoria.settlement.enums.VideoType.OLD_MATERIAL_REPOST " +
+           "AND p.internalExecutionCost IS NOT NULL " +
+           "AND FUNCTION('to_char', p.videoPublishDate, 'YYYYMM') = :month " +
+           "ORDER BY p.id ASC")
+    List<ProjectOrder> findCostedOldMaterialOrdersForExecutor(
+            @Param("executorId") Long executorId, @Param("month") String month);
 
     /** 数据看板用：按月份范围（闭区间，字符串比较，格式 yyyyMM 可直接比较）查询 */
     @EntityGraph(attributePaths = {"influencer", "brand", "projectManager"})

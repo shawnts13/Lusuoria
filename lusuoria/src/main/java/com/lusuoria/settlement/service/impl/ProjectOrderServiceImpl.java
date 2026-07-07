@@ -4,6 +4,7 @@ import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.dto.request.ProjectOrderRequest;
+import com.lusuoria.settlement.dto.response.ExecutorCostSuggestionResponse;
 import com.lusuoria.settlement.dto.response.MonthlySummaryResponse;
 import com.lusuoria.settlement.dto.response.ProjectOrderResponse;
 import com.lusuoria.settlement.entity.*;
@@ -27,6 +28,7 @@ import org.springframework.transaction.annotation.Transactional;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -65,7 +67,6 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         order.setProjectType(req.getProjectType());
         order.setClientOrderNo(req.getClientOrderNo());
         order.setCooperationContent(req.getCooperationContent());
-        order.setIsOwnResource(Boolean.TRUE.equals(req.getIsOwnResource()));
         order.setVideoType(req.getVideoType());
 
         Brand brand = brandRepo.findByIdAndIsDeletedFalse(req.getBrandId())
@@ -138,13 +139,13 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<ProjectOrderResponse> list(Long brandId, String projectMonth, ProjectType projectType,
+    public Page<ProjectOrderResponse> list(Long brandId, String projectMonth, String videoPublishMonth, ProjectType projectType,
                                            ClientStatus clientStatus, InternalSettlementStatus internalStatus,
                                            VideoType videoType, String internalProjectNo,
                                            Long influencerId, String accountName, Long projectManagerId,
                                            String keyword, Pageable pageable) {
         Page<ProjectOrderResponse> page = projectOrderRepo
-                .findByFilters(brandId, projectMonth, projectType, clientStatus, internalStatus, videoType,
+                .findByFilters(brandId, projectMonth, videoPublishMonth, projectType, clientStatus, internalStatus, videoType,
                         internalProjectNo, influencerId, accountName, projectManagerId, keyword, pageable)
                 .map(this::toResponse);
 
@@ -267,6 +268,115 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         return toResponse(projectOrderRepo.save(order));
     }
 
+    /**
+     * 内部执行成本弹窗用：根据执行人员的费率档位，算出这笔订单默认应该填多少钱，
+     * 以及算出这个金额的依据说明。只读计算，不修改任何数据。
+     *
+     * 旧素材重发的分档规则（跟员工管理里维护的费率字段说明完全一致）：
+     *   第1-50条一个价，第51-100条一个价，第101条及以上一个价，且第101条以上
+     *   这部分的当月累计金额有封顶。"第几条"是按这个执行人员在这个视频发布月份下，
+     *   已经赋值过内部执行成本的旧素材重发订单数量 + 1 来算的——没赋值的订单不算数。
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public ExecutorCostSuggestionResponse suggestExecutorCost(Long orderId) {
+        ProjectOrder order = projectOrderRepo.findByIdAndIsDeletedFalse(orderId)
+                .orElseThrow(() -> new RuntimeException("项目订单不存在：" + orderId));
+        ExecutorCostSuggestionResponse resp = new ExecutorCostSuggestionResponse();
+
+        if (order.getExecutorId() == null) {
+            resp.setBreakdown("该订单没有内部执行人员，无需设置内部执行成本");
+            return resp;
+        }
+        Employee executor = employeeCache.findById(order.getExecutorId());
+        if (executor == null) {
+            resp.setBreakdown("执行人员信息不存在，请手动填写金额");
+            return resp;
+        }
+        if (order.getVideoPublishDate() == null) {
+            resp.setBreakdown("该订单尚未填写\"项目视频发布时间\"，无法按月计算，请手动填写金额");
+            return resp;
+        }
+        VideoType videoType = order.getVideoType();
+        if (videoType == null) {
+            resp.setBreakdown("该订单尚未填写\"项目视频类型\"，无法计算，请手动填写金额");
+            return resp;
+        }
+
+        String month = new SimpleDateFormat("yyyyMM").format(order.getVideoPublishDate());
+        String monthLabel = Integer.parseInt(month.substring(4)) + "月";
+
+        switch (videoType) {
+            case REAL_SHOT_NEW: {
+                BigDecimal rate = executor.getRateRealShotNew();
+                resp.setSuggestedAmount(rate);
+                resp.setBreakdown(monthLabel + "该执行人员处理实拍新视频：¥" + fmtAmount(rate));
+                break;
+            }
+            case REAL_SHOT_NEW_PHOTO: {
+                resp.setSuggestedAmount(null);
+                resp.setBreakdown("\"实拍新图片\"这个视频类型目前还没有配置对应的费率，请手动填写金额");
+                break;
+            }
+            case AI_NEW_MATERIAL: {
+                BigDecimal rate = executor.getRateAiNewMaterial();
+                resp.setSuggestedAmount(rate);
+                resp.setBreakdown(monthLabel + "该执行人员处理AI新素材：¥" + fmtAmount(rate));
+                break;
+            }
+            case OLD_MATERIAL_REPOST: {
+                List<ProjectOrder> costed = projectOrderRepo
+                        .findCostedOldMaterialOrdersForExecutor(executor.getId(), month);
+                int countSoFar = costed.size();
+                int thisOrderNumber = countSoFar + 1;
+                BigDecimal rate;
+                String tierLabel;
+                if (thisOrderNumber <= 50) {
+                    rate = executor.getRateOldMaterialTier1();
+                    tierLabel = "1-50";
+                } else if (thisOrderNumber <= 100) {
+                    rate = executor.getRateOldMaterialTier2();
+                    tierLabel = "51-100";
+                } else {
+                    rate = executor.getRateOldMaterialTier3();
+                    tierLabel = "101及以上";
+                    BigDecimal cap = executor.getOldMaterialMonthlyCap();
+                    if (cap != null && rate != null) {
+                        // 累计"第101条及以上"这部分已经挣到的钱（在这批已赋值的记录里，
+                        // 排在第101个及以后的才算，前100个属于tier1/tier2，不计入这个封顶）
+                        BigDecimal tier3EarnedSoFar = BigDecimal.ZERO;
+                        for (int idx = 100; idx < costed.size(); idx++) {
+                            BigDecimal c = costed.get(idx).getInternalExecutionCost();
+                            if (c != null) tier3EarnedSoFar = tier3EarnedSoFar.add(c);
+                        }
+                        BigDecimal remaining = cap.subtract(tier3EarnedSoFar);
+                        if (remaining.compareTo(BigDecimal.ZERO) < 0) remaining = BigDecimal.ZERO;
+                        if (rate.compareTo(remaining) > 0) rate = remaining;
+                    }
+                }
+                resp.setSuggestedAmount(rate);
+                resp.setBreakdown(monthLabel + "该执行人员已经处理了" + countSoFar + "笔旧素材重发订单，该笔(第"
+                        + thisOrderNumber + "笔)旧素材重发(" + tierLabel + ")：¥" + fmtAmount(rate));
+                break;
+            }
+        }
+        return resp;
+    }
+
+    private String fmtAmount(BigDecimal v) {
+        return v == null ? "0.00" : v.setScale(2, java.math.RoundingMode.HALF_UP).toString();
+    }
+
+    /** 保存内部执行成本（跟状态流转分开，是独立的一步操作） */
+    @Override
+    @Transactional
+    public ProjectOrderResponse setExecutorCost(Long orderId, BigDecimal amount) {
+        ProjectOrder order = projectOrderRepo.findByIdAndIsDeletedFalse(orderId)
+                .orElseThrow(() -> new RuntimeException("项目订单不存在：" + orderId));
+        order.setInternalExecutionCost(amount);
+        return toResponse(projectOrderRepo.save(order));
+    }
+
     @Override
     public void exportExcel(String projectMonth, HttpServletResponse response) throws IOException {
         List<ProjectOrder> orders;
@@ -300,7 +410,6 @@ public class ProjectOrderServiceImpl implements ProjectOrderService {
         r.setProjectType(o.getProjectType());
         r.setProjectTypeLabel(o.getProjectType() != null ? o.getProjectType().getLabel() : null);
         r.setCooperationContent(o.getCooperationContent());
-        r.setIsOwnResource(o.getIsOwnResource());
         r.setVideoType(o.getVideoType());
         r.setVideoTypeLabel(o.getVideoType() != null ? o.getVideoType().getLabel() : null);
 
