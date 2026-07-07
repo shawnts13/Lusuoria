@@ -192,6 +192,7 @@ public class DashboardStatsService {
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
+        Map<String, Long> counted = new LinkedHashMap<>();
         for (ProjectOrder o : orders) {
             BigDecimal execCostRmb = safe(o.getInternalExecutionCost());
             String key;
@@ -207,6 +208,8 @@ public class DashboardStatsService {
                     key = managerNameOf(o.getProjectManagerId());
             }
             grouped.merge(key, execCostRmb, BigDecimal::add);
+            // 笔数只统计实际填了内部执行成本的订单，跟金额是不是0保持同一个口径
+            if (execCostRmb.compareTo(BigDecimal.ZERO) > 0) counted.merge(key, 1L, Long::sum);
         }
         // 金额是0的不用展示——比如某个项目负责人压根没有任何执行人员记录，
         // 分组出来是"负责人 - 未指定执行人员：¥0"，这种没有意义，过滤掉
@@ -216,6 +219,7 @@ public class DashboardStatsService {
                 .map(e -> DashboardDrilldownResponse.DrilldownRow.builder()
                         .dimensionLabel(e.getKey())
                         .dimensionType(dimension)
+                        .videoCount(counted.get(e.getKey()))
                         .amount(convertFromRmb(e.getValue(), rate, toRmb))
                         .build())
                 .sorted((a, b) -> b.getAmount().compareTo(a.getAmount()))
@@ -236,16 +240,19 @@ public class DashboardStatsService {
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
+        Map<String, Long> counted = new LinkedHashMap<>();
         for (ProjectOrder o : orders) {
             Computed c = compute(o);
             String managerName = managerNameOf(o.getProjectManagerId());
             grouped.merge(managerName, c.commissionAmount, BigDecimal::add);
+            counted.merge(managerName, 1L, Long::sum);
         }
 
         List<DashboardDrilldownResponse.DrilldownRow> rows = grouped.entrySet().stream()
                 .map(e -> DashboardDrilldownResponse.DrilldownRow.builder()
                         .dimensionLabel(e.getKey())
                         .dimensionType("manager")
+                        .videoCount(counted.get(e.getKey()))
                         .amount(convert(e.getValue(), rate, toRmb))
                         .build())
                 .sorted((a, b) -> b.getAmount().compareTo(a.getAmount()))
@@ -269,12 +276,14 @@ public class DashboardStatsService {
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
+        Map<String, Long> counted = new LinkedHashMap<>();
         for (ProjectOrder o : orders) {
             Computed c = compute(o);
             String brandName = brandNameOf(o.getBrandId());
             String teamLabel = teamNameOf(o.getTeam());
             String key = brandName + "|" + teamLabel;
             grouped.merge(key, extractor.apply(c), BigDecimal::add);
+            counted.merge(key, 1L, Long::sum);
         }
 
         List<DashboardDrilldownResponse.DrilldownRow> rows = new ArrayList<>();
@@ -283,6 +292,7 @@ public class DashboardStatsService {
             rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
                     .dimensionLabel(parts[0] + " - " + parts[1])
                     .dimensionType("brand_team")
+                    .videoCount(counted.get(e.getKey()))
                     .amount(convert(e.getValue(), rate, toRmb))
                     .build());
         }
@@ -306,6 +316,7 @@ public class DashboardStatsService {
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
+        Map<String, Long> counted = new LinkedHashMap<>();
         for (ProjectOrder o : orders) {
             Computed c = compute(o);
             String key;
@@ -333,12 +344,14 @@ public class DashboardStatsService {
                     key = brandNameOf(o.getBrandId());
             }
             grouped.merge(key, extractor.apply(c), BigDecimal::add);
+            counted.merge(key, 1L, Long::sum);
         }
 
         List<DashboardDrilldownResponse.DrilldownRow> rows = grouped.entrySet().stream()
                 .map(e -> DashboardDrilldownResponse.DrilldownRow.builder()
                         .dimensionLabel(e.getKey())
                         .dimensionType(dimension)
+                        .videoCount(counted.get(e.getKey()))
                         .amount(convert(e.getValue(), rate, toRmb))
                         .build())
                 .sorted((a, b) -> b.getAmount().compareTo(a.getAmount()))
