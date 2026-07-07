@@ -119,19 +119,19 @@ public class DashboardStatsService {
                 grouped.merge(key, 1L, Long::sum);
             }
         } else {
-            // 默认：按品牌方 + 项目类型分组
-            dimensionType = "brand_type";
+            // 默认：按品牌方 + 红人团队分组（没关联团队的订单统一归到"未指定团队"）
+            dimensionType = "brand_team";
             for (ProjectOrder o : orders) {
                 String brandName = brandNameOf(o.getBrandId());
-                String typeLabel = o.getProjectType() != null ? o.getProjectType().getLabel() : "未知类型";
-                String key = brandName + "|" + typeLabel;
+                String teamLabel = teamNameOf(o.getTeam());
+                String key = brandName + "|" + teamLabel;
                 grouped.merge(key, 1L, Long::sum);
             }
         }
 
         List<DashboardDrilldownResponse.DrilldownRow> rows = new ArrayList<>();
         for (Map.Entry<String, Long> e : grouped.entrySet()) {
-            String label = "brand_type".equals(dimensionType)
+            String label = "brand_team".equals(dimensionType)
                     ? String.join(" - ", e.getKey().split("\\|", 2))
                     : e.getKey();
             rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
@@ -149,10 +149,10 @@ public class DashboardStatsService {
                 .build();
     }
 
-    // ============ 下钻：客户合作价格（按品牌方 + 红人类型） ============
+    // ============ 下钻：客户合作价格（按品牌方 + 红人团队） ============
 
     public DashboardDrilldownResponse drilldownClientPrice(String startMonth, String endMonth, String currency) {
-        return drilldownAmountByBrandAndType(startMonth, endMonth, currency, c -> c.clientPrice);
+        return drilldownAmountByBrandAndTeam(startMonth, endMonth, currency, c -> c.clientPrice);
     }
 
     // ============ 下钻：红人成本（按品牌方/团队/账号/类型） ============
@@ -199,9 +199,9 @@ public class DashboardStatsService {
                 .build();
     }
 
-    // ============ 通用：按品牌方 + 红人类型 拆分金额 ============
+    // ============ 通用：按品牌方 + 红人团队 拆分金额 ============
 
-    private DashboardDrilldownResponse drilldownAmountByBrandAndType(
+    private DashboardDrilldownResponse drilldownAmountByBrandAndTeam(
             String startMonth, String endMonth, String currency,
             java.util.function.Function<Computed, BigDecimal> extractor) {
 
@@ -213,8 +213,8 @@ public class DashboardStatsService {
         for (ProjectOrder o : orders) {
             Computed c = compute(o);
             String brandName = brandNameOf(o.getBrandId());
-            String typeLabel = o.getProjectType() != null ? o.getProjectType().getLabel() : "未知类型";
-            String key = brandName + "|" + typeLabel;
+            String teamLabel = teamNameOf(o.getTeam());
+            String key = brandName + "|" + teamLabel;
             grouped.merge(key, extractor.apply(c), BigDecimal::add);
         }
 
@@ -223,7 +223,7 @@ public class DashboardStatsService {
             String[] parts = e.getKey().split("\\|", 2);
             rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
                     .dimensionLabel(parts[0] + " - " + parts[1])
-                    .dimensionType("brand_type")
+                    .dimensionType("brand_team")
                     .amount(convert(e.getValue(), rate, toRmb))
                     .build());
         }
