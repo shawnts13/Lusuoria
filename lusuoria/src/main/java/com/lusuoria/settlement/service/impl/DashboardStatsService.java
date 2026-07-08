@@ -86,6 +86,13 @@ public class DashboardStatsService {
             totalCompanyProfit  = totalCompanyProfit.add(c.companyProfit);
         }
 
+        // 内部其他员工成本：财务、IT后勤这两个角色的固定月薪（不跟具体订单挂钩，
+        // 员工管理里维护的是"月薪"，这里就是这一个月的固定支出），要从公司利润里扣掉
+        BigDecimal totalOtherStaffCostRmb = otherStaffCostRmb(1);
+        BigDecimal totalOtherStaffCostUsd = rate.compareTo(BigDecimal.ZERO) > 0
+                ? totalOtherStaffCostRmb.divide(rate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
+        totalCompanyProfit = totalCompanyProfit.subtract(totalOtherStaffCostUsd);
+
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
         return DashboardSummaryResponse.builder()
                 .videoProjectCount(videoCount)
@@ -93,12 +100,72 @@ public class DashboardStatsService {
                 .totalInfluencerCost(convert(totalInfluencerCost, rate, toRmb))
                 .totalOtherExternalCost(convertFromRmb(totalOtherCost, rate, toRmb))
                 .totalInternalExecutionCost(convertFromRmb(totalExecCost, rate, toRmb))
+                .totalOtherStaffCost(convertFromRmb(totalOtherStaffCostRmb, rate, toRmb))
                 .totalGrossProfit(convert(totalGrossProfit, rate, toRmb))
                 .totalDistributableProfit(convert(totalDistributable, rate, toRmb))
                 .totalCommissionAmount(convert(totalCommission, rate, toRmb))
                 .totalCompanyProfit(convert(totalCompanyProfit, rate, toRmb))
                 .currency(toRmb ? "RMB" : "USD")
                 .exchangeRateInfo(rateInfo)
+                .build();
+    }
+
+    /** 财务、IT后勤角色目前是固定月薪，跟具体订单无关；法务角色薪资方案还没设计，暂不计入 */
+    private static final java.util.Set<String> OTHER_STAFF_ROLES =
+            new java.util.HashSet<>(java.util.Arrays.asList("财务", "IT后勤"));
+
+    private List<Employee> otherStaffEmployees() {
+        List<Employee> result = new ArrayList<>();
+        for (Employee e : employeeCache.getAll()) {
+            if (OTHER_STAFF_ROLES.contains(e.getRole())) result.add(e);
+        }
+        return result;
+    }
+
+    /** 财务+IT后勤全部员工的固定月薪合计（人民币），乘以月份数（月份范围下钻会用到） */
+    private BigDecimal otherStaffCostRmb(int monthCount) {
+        BigDecimal sum = BigDecimal.ZERO;
+        for (Employee e : otherStaffEmployees()) {
+            sum = sum.add(safe(e.getFixedMonthlySalary()));
+        }
+        return sum.multiply(BigDecimal.valueOf(monthCount));
+    }
+
+    /** 起止月份（yyyyMM）之间一共跨了多少个月，闭区间，比如 202601~202603 = 3 */
+    private int monthCountBetween(String startMonth, String endMonth) {
+        int startY = Integer.parseInt(startMonth.substring(0, 4));
+        int startM = Integer.parseInt(startMonth.substring(4));
+        int endY = Integer.parseInt(endMonth.substring(0, 4));
+        int endM = Integer.parseInt(endMonth.substring(4));
+        int count = (endY - startY) * 12 + (endM - startM) + 1;
+        return Math.max(count, 1);
+    }
+
+    // ============ 下钻：内部其他员工成本（按"员工角色-姓名"） ============
+    // 注意：这个成本压根不来自 ProjectOrder，是财务/IT后勤这些员工的固定月薪，
+    // 按查询的月份范围跨了几个月来乘算，不需要遍历订单数据
+
+    public DashboardDrilldownResponse drilldownOtherStaffCost(String startMonth, String endMonth, String currency) {
+        BigDecimal rate = rateForRange(endMonth);
+        boolean toRmb = "RMB".equalsIgnoreCase(currency);
+        int monthCount = monthCountBetween(startMonth, endMonth);
+
+        List<DashboardDrilldownResponse.DrilldownRow> rows = new ArrayList<>();
+        for (Employee e : otherStaffEmployees()) {
+            BigDecimal amountRmb = safe(e.getFixedMonthlySalary()).multiply(BigDecimal.valueOf(monthCount));
+            rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
+                    .dimensionLabel(e.getRole() + " - " + e.getName())
+                    .dimensionType("role_name")
+                    .videoCount(1L) // 这里借用这个字段表示"人数"，一条记录=一个人
+                    .amount(convertFromRmb(amountRmb, rate, toRmb))
+                    .build());
+        }
+        rows.sort((a, b) -> b.getAmount().compareTo(a.getAmount()));
+
+        return DashboardDrilldownResponse.builder()
+                .currency(toRmb ? "RMB" : "USD")
+                .exchangeRateInfo(exchangeRateService.getRateForMonth(endMonth))
+                .rows(rows)
                 .build();
     }
 

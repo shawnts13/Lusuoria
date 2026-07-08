@@ -117,6 +117,19 @@ public class DashboardController {
                 dashboardStatsService.drilldownExecutionCost(startMonth, endMonth, currency, dimension));
     }
 
+    /** 下钻：内部其他员工成本，按"员工角色-姓名"（财务/IT后勤这些固定月薪的角色） */
+    @GetMapping("/drilldown/other-staff-cost")
+    public ApiResponse<DashboardDrilldownResponse> drilldownOtherStaffCost(
+            @RequestParam String startMonth,
+            @RequestParam String endMonth,
+            @RequestParam(defaultValue = "USD") String currency) {
+        if (!RoleUtil.canViewSensitiveFields()) {
+            return ApiResponse.error(403, "无权限查看财务数据");
+        }
+        return ApiResponse.success(
+                dashboardStatsService.drilldownOtherStaffCost(startMonth, endMonth, currency));
+    }
+
     /** 下钻：负责人提成合计，按负责人拆分 */
     @GetMapping("/drilldown/commission")
     public ApiResponse<DashboardDrilldownResponse> drilldownCommission(
