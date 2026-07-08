@@ -89,7 +89,7 @@ public class DashboardStatsService {
         // 内部其他员工成本：财务、IT后勤这两个角色的固定月薪（不跟具体订单挂钩，
         // 员工管理里维护的是"月薪"，这里就是这一个月的固定支出），要从公司利润里扣掉
         BigDecimal totalOtherStaffCostRmb = otherStaffCostRmb(1);
-        BigDecimal totalOtherStaffCostUsd = rate.compareTo(BigDecimal.ZERO) > 0
+        BigDecimal totalOtherStaffCostUsd = (rate != null && rate.compareTo(BigDecimal.ZERO) > 0)
                 ? totalOtherStaffCostRmb.divide(rate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
         totalCompanyProfit = totalCompanyProfit.subtract(totalOtherStaffCostUsd);
 
