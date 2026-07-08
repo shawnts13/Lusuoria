@@ -126,15 +126,32 @@ public class CollaborationTrackingExcelHandler {
         }
 
         SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd");
+
+        // open-in-view=false，请求结束后 Hibernate 会话即关闭，导出发生在事务外，
+        // 不能再访问 t.getInfluencer()/t.getTeam() 这类 LAZY @ManyToOne（会抛 LazyInitializationException，
+        // 表现为导出的 xlsx 只有一百多字节、内容其实是错误信息、无法打开）。
+        // 改用直读的 id 列 + 缓存/一次性批量查来取名称，不触碰懒加载实体。
+        Set<Long> infIds = new HashSet<>();
+        for (CollaborationTracking t : list) {
+            if (t.getInfluencerId() != null) infIds.add(t.getInfluencerId());
+        }
+        Map<Long, String> influencerNameById = new HashMap<>();
+        if (!infIds.isEmpty()) {
+            for (Influencer inf : influencerRepo.findAllById(infIds)) {
+                influencerNameById.put(inf.getId(), inf.getAccountName());
+            }
+        }
+
         int r = 1;
         for (CollaborationTracking t : list) {
             Row row = sheet.createRow(r++);
             int c = 0;
             Brand brand = brandCache.findById(t.getBrandId());
             setCellStr(row, c++, brand != null ? brand.getName() : "", wrap);
-            setCellStr(row, c++, t.getTeam() != null ? t.getTeam().getName() : "", wrap);
+            InfluencerTeam team = t.getTeamId() != null ? teamCache.findById(t.getTeamId()) : null;
+            setCellStr(row, c++, team != null ? team.getName() : "", wrap);
             setCellStr(row, c++, t.getCountryMarket(), wrap);
-            setCellStr(row, c++, t.getInfluencer() != null ? t.getInfluencer().getAccountName() : "", wrap);
+            setCellStr(row, c++, influencerNameById.getOrDefault(t.getInfluencerId(), ""), wrap);
             setCellStr(row, c++, t.getPlatform(),      wrap);
             setCellStr(row, c++, t.getDemandContent(), wrap);
             setCellStr(row, c++, t.getPublishLink(),   wrap);

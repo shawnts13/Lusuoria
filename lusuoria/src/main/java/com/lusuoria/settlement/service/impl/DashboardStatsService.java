@@ -27,8 +27,8 @@ import java.util.stream.Collectors;
  * 保证公式调整后看板数字始终与最新业务口径一致。
  *
  * 核心公式（与 ProfitCalculator 保持一致）：
- *   红人成本（中国红人）= 客户合作价格 × 65%，（海外红人）= 直填值
- *   项目毛利 = 客户合作价格 - 红人成本 - 其他外部成本
+ *   红人成本 = 直填值（不分红人类型，一律取录入的实际值，不再按类型强制 65% 自动计算）
+ *   项目毛利 = 客户合作价格 - 红人成本 - 其他外部成本（其他外部成本也按实际录入值，不分红人类型）
  *   可分配利润 = 项目毛利 - 内部执行成本
  *   负责人提成 = 可分配利润 × 提成比例
  *   公司利润 = 客户合作价格 - 红人成本 - 其他外部成本 - 内部执行成本 - 负责人提成
@@ -41,7 +41,6 @@ import java.util.stream.Collectors;
 @org.springframework.transaction.annotation.Transactional(readOnly = true)
 public class DashboardStatsService {
 
-    private static final BigDecimal CHINA_COST_RATIO = new BigDecimal("0.65");
     private static final int SCALE = 2;
 
     @Autowired private ProjectOrderRepository projectOrderRepo;
@@ -452,12 +451,8 @@ public class DashboardStatsService {
         // 内部执行成本只有项目负责人是"管理层"的时候才真的从利润里扣，规则跟 ProfitCalculator 一致
         BigDecimal execCostUsd = profitCalculator.isManagementOrder(o) ? execCostUsdRaw : BigDecimal.ZERO;
 
-        BigDecimal influencerCost;
-        if (ProjectType.CHINA_INFLUENCER == o.getProjectType()) {
-            influencerCost = clientPrice.multiply(CHINA_COST_RATIO).setScale(SCALE, RoundingMode.HALF_UP);
-        } else {
-            influencerCost = safe(o.getInfluencerCost());
-        }
+        // 红人成本：不分红人类型，一律取录入的实际值（直填），不再按类型强制 65% 自动计算
+        BigDecimal influencerCost = safe(o.getInfluencerCost());
 
         BigDecimal grossProfit = clientPrice.subtract(influencerCost).subtract(otherCostUsd)
                 .setScale(SCALE, RoundingMode.HALF_UP);

@@ -1,7 +1,6 @@
 package com.lusuoria.settlement.util;
 
 import com.lusuoria.settlement.entity.ProjectOrder;
-import com.lusuoria.settlement.enums.ProjectType;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -22,15 +21,14 @@ import java.math.RoundingMode;
  *     不是公司出的钱，所以哪怕这个字段填了金额，也不能从公司利润里扣
  * 其他外部成本不受这条规则影响，不管谁是项目负责人都正常扣减。
  *
- * 海外红人（差价模式）：
- *   红人成本 = 直填
- *   项目毛利 = 客户合作价格 - 红人成本 - 其他外部成本(已换算成美元)
- *   项目可分配利润 = 项目毛利 - 内部执行成本(仅项目负责人是管理层时才扣，已换算成美元)
+ * 红人成本一律以"实际值"为准（红人合作跟踪 Excel 导入 / 前端录入进来的值直填），
+ * 不再按红人类型强制自动计算。之前中国红人固定按"客户合作价格 × 65%"覆盖，现已废弃：
+ * 因为有些红人的类型可能被标记错了，强制换算会算出错误的成本，所以统一改成直填实际值。
  *
- * 中国红人（35/65分成）：
- *   红人成本 = 客户合作价格 × 65%
- *   项目毛利 = 客户合作价格 × 35%
- *   项目可分配利润 = 项目毛利 - 其他外部成本(已换算成美元) - 内部执行成本(仅项目负责人是管理层时才扣，已换算成美元)
+ * 现在中国红人和海外红人走完全一致的差价模式，红人类型不再影响任何金额计算：
+ *   红人成本 = 直填（实际值）
+ *   项目毛利 = 客户合作价格 - 红人成本 - 其他外部成本(已换算成美元，按实际录入值)
+ *   项目可分配利润 = 项目毛利 - 内部执行成本(仅项目负责人是管理层时才扣，已换算成美元)
  *
  * 通用：
  *   负责人提成 = 项目可分配利润 × 提成比例
@@ -40,9 +38,7 @@ import java.math.RoundingMode;
 @Component
 public class ProfitCalculator {
 
-    private static final BigDecimal CHINA_COST_RATIO    = new BigDecimal("0.65");
-    private static final BigDecimal CHINA_COMPANY_RATIO = new BigDecimal("0.35");
-    private static final int        SCALE               = 2;
+    private static final int SCALE = 2;
 
     /** 员工角色里"管理层"这个角色的固定叫法，跟 OptionConfigController 里维护的一致 */
     public static final String MANAGEMENT_ROLE = "管理层";
@@ -55,42 +51,28 @@ public class ProfitCalculator {
         // 其他外部成本、内部执行成本这两个字段是以人民币为单位填写的，
         // 客户合作价格/项目毛利这些都是美元计价，两者不能直接相减，
         // 要先按这条订单的汇率把人民币成本换算成美元，再参与后面的利润计算
+        // （不分红人类型，其他外部成本都按实际录入值参与差价计算）
         BigDecimal otherCost = toUsd(safe(order.getOtherExternalCost()), exchangeRate);
         BigDecimal execCostRaw = toUsd(safe(order.getInternalExecutionCost()), exchangeRate);
         // 内部执行成本只有项目负责人是"管理层"的时候才真的从利润里扣，
         // 不是管理层的话，这个字段只是记录用，不影响公司利润
         BigDecimal execCost = isManagementOrder(order) ? execCostRaw : BigDecimal.ZERO;
 
-        BigDecimal influencerCost;
-        BigDecimal grossProfit;
+        // 红人成本：不分红人类型，一律取录入的实际值（直填），不再按类型强制 65% 自动计算
+        BigDecimal influencerCost = safe(order.getInfluencerCost());
 
-        if (ProjectType.CHINA_INFLUENCER == order.getProjectType()) {
-            // 中国红人：固定 65/35，红人成本由客户合作价格自动算出
-            influencerCost = clientPrice.multiply(CHINA_COST_RATIO)
-                    .setScale(SCALE, RoundingMode.HALF_UP);
-            grossProfit = clientPrice.multiply(CHINA_COMPANY_RATIO)
-                    .setScale(SCALE, RoundingMode.HALF_UP);
-        } else {
-            // 海外红人：差价模式，红人成本直填
-            influencerCost = safe(order.getInfluencerCost());
-            grossProfit = clientPrice
-                    .subtract(influencerCost)
-                    .subtract(otherCost)
-                    .setScale(SCALE, RoundingMode.HALF_UP);
-        }
+        // 项目毛利 = 客户合作价格 - 红人成本 - 其他外部成本（不分红人类型，口径一致）
+        BigDecimal grossProfit = clientPrice
+                .subtract(influencerCost)
+                .subtract(otherCost)
+                .setScale(SCALE, RoundingMode.HALF_UP);
 
         order.setInfluencerCost(influencerCost);
         order.setGrossProfit(grossProfit);
 
-        // 可分配利润
-        BigDecimal distributable;
-        if (ProjectType.CHINA_INFLUENCER == order.getProjectType()) {
-            distributable = grossProfit.subtract(otherCost).subtract(execCost)
-                    .setScale(SCALE, RoundingMode.HALF_UP);
-        } else {
-            distributable = grossProfit.subtract(execCost)
-                    .setScale(SCALE, RoundingMode.HALF_UP);
-        }
+        // 可分配利润 = 项目毛利 - 内部执行成本（其他外部成本已经在毛利里扣过，这里不再重复扣）
+        BigDecimal distributable = grossProfit.subtract(execCost)
+                .setScale(SCALE, RoundingMode.HALF_UP);
         order.setDistributableProfit(distributable);
 
         // 负责人提成
