@@ -1,5 +1,6 @@
 package com.lusuoria.settlement.dto.request;
 
+import com.lusuoria.settlement.enums.PaymentCycleType;
 import lombok.Data;
 import javax.validation.constraints.NotBlank;
 
@@ -12,6 +13,12 @@ public class BrandRequest {
     private String cooperationType;
     private String contactPerson;
     private String settlementCurrency;
-    private String paymentCycle;
+
+    private PaymentCycleType paymentCycleType;
+    private java.math.BigDecimal costThresholdAmount;
+    private Integer daysWithinThreshold;
+    private Integer daysAboveThreshold;
+    private Integer daysAfterMonthEnd;
+
     private String notes;
 }

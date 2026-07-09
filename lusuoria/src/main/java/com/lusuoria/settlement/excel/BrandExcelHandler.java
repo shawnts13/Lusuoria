@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.excel;
 
 import com.lusuoria.settlement.entity.Brand;
+import com.lusuoria.settlement.enums.PaymentCycleType;
 import com.lusuoria.settlement.repository.BrandRepository;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddressList;
@@ -36,7 +37,11 @@ public class BrandExcelHandler {
         XSSFCellStyle hdr  = createHeaderStyle(wb);
         XSSFCellStyle nor  = createNormalStyle(wb);
 
-        String[] headers = { "品牌方名称", "国家/市场", "合作类型", "联系人", "结算币种", "付款周期", "备注" };
+        String[] headers = {
+            "品牌方名称", "国家/市场", "合作类型", "联系人", "结算币种",
+            "付款周期类型", "阈值分档-成本阈值", "阈值分档-阈值以内天数", "阈值分档-阈值以上天数", "月结-对账日后天数",
+            "备注"
+        };
         Row headerRow = sheet.createRow(0);
         for (int i = 0; i < headers.length; i++) {
             Cell cell = headerRow.createCell(i);
@@ -54,7 +59,11 @@ public class BrandExcelHandler {
             setCellStr(row, c++, b.getCooperationType(),   nor);
             setCellStr(row, c++, b.getContactPerson(),     nor);
             setCellStr(row, c++, b.getSettlementCurrency(), nor);
-            setCellStr(row, c++, b.getPaymentCycle(),      nor);
+            setCellStr(row, c++, b.getPaymentCycleType() != null ? b.getPaymentCycleType().getLabel() : "", nor);
+            setCellStr(row, c++, b.getCostThresholdAmount() != null ? b.getCostThresholdAmount().toPlainString() : "", nor);
+            setCellStr(row, c++, b.getDaysWithinThreshold() != null ? String.valueOf(b.getDaysWithinThreshold()) : "", nor);
+            setCellStr(row, c++, b.getDaysAboveThreshold()  != null ? String.valueOf(b.getDaysAboveThreshold())  : "", nor);
+            setCellStr(row, c++, b.getDaysAfterMonthEnd()   != null ? String.valueOf(b.getDaysAfterMonthEnd())   : "", nor);
             setCellStr(row, c++, b.getNotes(),             nor);
         }
 
@@ -75,8 +84,10 @@ public class BrandExcelHandler {
         XSSFCellStyle hdr  = createHeaderStyle(wb);
 
         String[] headers = {
-            "品牌方名称(必填)", "国家/市场", "合作类型", "联系人",
-            "结算币种(USD/RMB)", "付款周期(如月结30天)", "备注"
+            "品牌方名称(必填)", "国家/市场", "合作类型", "联系人", "结算币种(USD/RMB)",
+            "付款周期类型(按红人成本阈值分档/月底对账日后N天结款)",
+            "阈值分档-成本阈值", "阈值分档-阈值以内天数", "阈值分档-阈值以上天数", "月结-对账日后天数",
+            "备注"
         };
         Row headerRow = sheet.createRow(0);
         for (int i = 0; i < headers.length; i++) {
@@ -88,21 +99,33 @@ public class BrandExcelHandler {
 
         // 结算币种下拉
         DataValidationHelper dvHelper = sheet.getDataValidationHelper();
-        DataValidation dv = dvHelper.createValidation(
+        DataValidation currencyDv = dvHelper.createValidation(
                 dvHelper.createExplicitListConstraint(new String[]{"USD", "RMB", "EUR"}),
                 new CellRangeAddressList(1, 1000, 4, 4));
-        dv.setShowErrorBox(true);
-        sheet.addValidationData(dv);
+        currencyDv.setShowErrorBox(true);
+        sheet.addValidationData(currencyDv);
 
-        // 示例行
+        // 付款周期类型下拉
+        String[] cycleTypeLabels = { PaymentCycleType.COST_THRESHOLD.getLabel(), PaymentCycleType.MONTH_END.getLabel() };
+        DataValidation cycleTypeDv = dvHelper.createValidation(
+                dvHelper.createExplicitListConstraint(cycleTypeLabels),
+                new CellRangeAddressList(1, 1000, 5, 5));
+        cycleTypeDv.setShowErrorBox(true);
+        sheet.addValidationData(cycleTypeDv);
+
+        // 示例行：按红人成本阈值分档（阈值分档相关列填数字，月结列留空）
         Row ex = sheet.createRow(1);
         ex.createCell(0).setCellValue("TEMU");
         ex.createCell(1).setCellValue("美国");
         ex.createCell(2).setCellValue("达人营销");
         ex.createCell(3).setCellValue("张三");
         ex.createCell(4).setCellValue("USD");
-        ex.createCell(5).setCellValue("月结30天");
-        ex.createCell(6).setCellValue("示例数据，填完后请删除");
+        ex.createCell(5).setCellValue(PaymentCycleType.COST_THRESHOLD.getLabel());
+        ex.createCell(6).setCellValue("1000");
+        ex.createCell(7).setCellValue("30");
+        ex.createCell(8).setCellValue("60");
+        ex.createCell(9).setCellValue("");
+        ex.createCell(10).setCellValue("示例数据，填完后请删除");
 
         wb.write(response.getOutputStream());
         wb.close();
@@ -137,8 +160,10 @@ public class BrandExcelHandler {
         // 表头完整性校验：少了关键列（比如表头被误改）直接拒绝整个文件，不再是
         // "这一列找不到就当作没填"这种静默处理
         String[] requiredHeaders = {
-            "品牌方名称(必填)", "国家/市场", "合作类型", "联系人",
-            "结算币种(USD/RMB)", "付款周期(如月结30天)", "备注"
+            "品牌方名称(必填)", "国家/市场", "合作类型", "联系人", "结算币种(USD/RMB)",
+            "付款周期类型(按红人成本阈值分档/月底对账日后N天结款)",
+            "阈值分档-成本阈值", "阈值分档-阈值以内天数", "阈值分档-阈值以上天数", "月结-对账日后天数",
+            "备注"
         };
         List<String> missingColumns = new ArrayList<String>();
         for (String h : requiredHeaders) {
@@ -172,7 +197,26 @@ public class BrandExcelHandler {
                 brand.setCooperationType(getStr(row, colMap, "合作类型"));
                 brand.setContactPerson(getStr(row, colMap, "联系人"));
                 brand.setSettlementCurrency(getStr(row, colMap, "结算币种(USD/RMB)"));
-                brand.setPaymentCycle(getStr(row, colMap, "付款周期(如月结30天)"));
+
+                // 付款周期类型：留空表示还没配置，不是错误；填了但匹配不到有效选项才报错
+                String cycleTypeRaw = getStr(row, colMap, "付款周期类型(按红人成本阈值分档/月底对账日后N天结款)");
+                if (cycleTypeRaw != null && !cycleTypeRaw.trim().isEmpty()) {
+                    PaymentCycleType cycleType = PaymentCycleType.fromLabel(cycleTypeRaw);
+                    if (cycleType == null) {
+                        errors.add("第" + (i + 1) + "行：付款周期类型 [" + cycleTypeRaw + "] 不是有效选项，请核对");
+                        continue;
+                    }
+                    brand.setPaymentCycleType(cycleType);
+                }
+                try {
+                    brand.setCostThresholdAmount(getDecimal(row, colMap, "阈值分档-成本阈值"));
+                    brand.setDaysWithinThreshold(getInt(row, colMap, "阈值分档-阈值以内天数"));
+                    brand.setDaysAboveThreshold(getInt(row, colMap, "阈值分档-阈值以上天数"));
+                    brand.setDaysAfterMonthEnd(getInt(row, colMap, "月结-对账日后天数"));
+                } catch (NumberFormatException e) {
+                    errors.add("第" + (i + 1) + "行：付款周期的金额/天数必须是数字，请核对");
+                    continue;
+                }
                 brand.setNotes(getStr(row, colMap, "备注"));
                 brandRepo.save(brand);
                 successCount++;
@@ -211,6 +255,53 @@ public class BrandExcelHandler {
             case STRING:  return cell.getStringCellValue().trim();
             case NUMERIC: return String.valueOf((long) cell.getNumericCellValue());
             default:      return null;
+        }
+    }
+
+    /**
+     * 读取金额列，单元格为空返回 null，读不出数字抛 NumberFormatException。
+     * 不走 getStr()：那个方法数字单元格是 (long) 强转，会把小数部分砍掉，
+     * 阈值金额这种带小数的场景不能用（参考 CollaborationTrackingExcelHandler.getMoneyCell 的写法）。
+     */
+    private java.math.BigDecimal getDecimal(Row row, Map<String, Integer> map, String header) {
+        Integer idx = map.get(header);
+        if (idx == null) return null;
+        Cell cell = row.getCell(idx);
+        if (cell == null) return null;
+        if (cell.getCellType() == CellType.FORMULA) {
+            FormulaEvaluator evaluator = FORMULA_EVALUATOR.get();
+            if (evaluator == null) return null;
+            CellValue value = evaluator.evaluate(cell);
+            if (value == null) return null;
+            switch (value.getCellType()) {
+                case NUMERIC: return java.math.BigDecimal.valueOf(value.getNumberValue());
+                case BLANK:   return null;
+                case STRING: {
+                    String s = value.getStringValue().trim();
+                    return s.isEmpty() ? null : new java.math.BigDecimal(s.replaceAll(",", ""));
+                }
+                default: throw new NumberFormatException("公式结果不是数字");
+            }
+        }
+        switch (cell.getCellType()) {
+            case NUMERIC: return java.math.BigDecimal.valueOf(cell.getNumericCellValue());
+            case BLANK:   return null;
+            case STRING: {
+                String s = cell.getStringCellValue().trim();
+                return s.isEmpty() ? null : new java.math.BigDecimal(s.replaceAll(",", ""));
+            }
+            default: throw new NumberFormatException("不是数字");
+        }
+    }
+
+    /** 读取天数列，单元格为空返回 null，读不出整数（含带小数点的值）抛 NumberFormatException */
+    private Integer getInt(Row row, Map<String, Integer> map, String header) {
+        java.math.BigDecimal d = getDecimal(row, map, header);
+        if (d == null) return null;
+        try {
+            return d.intValueExact();
+        } catch (ArithmeticException e) {
+            throw new NumberFormatException("天数必须是整数");
         }
     }
 

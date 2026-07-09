@@ -80,7 +80,7 @@ public class CollaborationTrackingExcelHandler {
         {"合作平台",                   "0", "0"},
         {"需求内容(具体产品名)",       "0", "0"},
         {"视频发布链接",               "0", "0"},
-        {"发布时间",                   "0", "0"},
+        {"视频发布时间",               "0", "0"},  // 原名"发布时间"，导入时仍兼容旧列名"发布时间"
         {"视频项目进度",               "0", "0"},  // 原名"进度"，导入时仍兼容旧列名"进度"
         {"红人结款进度",               "0", "0"},  // 默认空，只有"视频项目进度"达到前置条件才允许设置
         {"项目视频类型",               "0", "0"},
@@ -113,6 +113,11 @@ public class CollaborationTrackingExcelHandler {
     private static final String PAYMENT_PROGRESS_HINT =
         "该字段默认为空，且只有当\"视频项目进度\"为\"已发布（未结算）\"、\"已加入客户未结算列表\"、"
         + "\"客户已结算\"时，该字段才会被启用";
+
+    /** 模板里"视频发布时间"表头的提示语（Excel 原生批注，鼠标悬停可见） */
+    private static final String PUBLISH_DATE_HINT =
+        "只有当\"视频项目进度\"为\"已发布（未结算）\"、\"已加入客户未结算列表\"、\"客户已结算\"时才能填写，"
+        + "否则这一行会导入失败";
 
     /** 模板里两个金额列表头的提示语（Excel 原生批注，鼠标悬停可见） */
     private static final String MONEY_FIELD_HINT =
@@ -220,8 +225,9 @@ public class CollaborationTrackingExcelHandler {
         addDropdown(sheet, dv, colIdxMap, "红人结款进度", PAYMENT_PROGRESS_LABELS);
         addDropdown(sheet, dv, colIdxMap, "项目视频类型", VIDEO_TYPE_LABELS);
 
-        // "红人结款进度"表头加一条批注提示前置条件，避免误填
+        // "红人结款进度"/"视频发布时间"表头各加一条批注提示前置条件，避免误填
         addHeaderComment(sheet, wb, colIdxMap, "红人结款进度", PAYMENT_PROGRESS_HINT);
+        addHeaderComment(sheet, wb, colIdxMap, "视频发布时间", PUBLISH_DATE_HINT);
         // 两个金额列加批注提示必须是数字，避免误填文本备注
         addHeaderComment(sheet, wb, colIdxMap, "红人视频制作与发布成本（美金）", MONEY_FIELD_HINT);
         addHeaderComment(sheet, wb, colIdxMap, "客户合作价格（美金）", MONEY_FIELD_HINT);
@@ -233,7 +239,7 @@ public class CollaborationTrackingExcelHandler {
         ex.put("合作平台", "Instagram\nTikTok");
         ex.put("需求内容(具体产品名)", "手持游戏机");
         ex.put("视频发布链接", "https://instagram.com/p/xxx");
-        ex.put("发布时间", "2026-04-09");
+        ex.put("视频发布时间", "2026-04-09");
         ex.put("视频项目进度", "已发布（未结算）");
         ex.put("红人结款进度", "");  // 默认留空，只有视频项目进度达到前置条件才启用，具体见表头批注
         ex.put("项目视频类型", "实拍新视频");
@@ -482,7 +488,7 @@ public class CollaborationTrackingExcelHandler {
                         getStr(row, colMap, "主页link")));
                 req.setPublishLink(publishLink);
 
-                // 发布时间
+                // 视频发布时间
                 Date publishDate = parseDate(row, colMap, dateFormats);
                 req.setPublishDate(publishDate);
 
@@ -498,6 +504,15 @@ public class CollaborationTrackingExcelHandler {
                         continue;
                     }
                     req.setProgress(progress);
+                }
+
+                // 视频发布时间：只有上面解析出来的视频项目进度达到前置条件（已发布(未结算)/
+                // 已加入客户未结算列表/客户已结算）时才允许填写，不满足条件却填了值 -> 整行导入失败
+                // （不再像以前那样不校验直接接受）
+                if (publishDate != null && (req.getProgress() == null || !req.getProgress().allowsPaymentProgress())) {
+                    errors.add("第" + (i + 1) + "行：只有\"视频项目进度\"为\"已发布（未结算）\"、\"已加入客户未结算列表\"、"
+                            + "\"客户已结算\"时才能填写\"视频发布时间\"，请核对");
+                    continue;
                 }
                 // 红人结款进度：默认空，只有上面解析出来的视频项目进度达到前置条件才允许设置值，
                 // 不满足条件时直接报错（不像其他字段那样静默跳过），跟单条保存/状态流转共用同一句错误文案
@@ -676,7 +691,7 @@ public class CollaborationTrackingExcelHandler {
     }
 
     private Date parseDate(Row row, Map<String, Integer> colMap, SimpleDateFormat[] formats) {
-        Integer idx = firstNonNullIdx(colMap, "发布时间", "发布日期");
+        Integer idx = firstNonNullIdx(colMap, "视频发布时间", "发布时间", "发布日期");
         if (idx == null) return null;
         Cell cell = row.getCell(idx);
         if (cell == null) return null;
@@ -781,7 +796,7 @@ public class CollaborationTrackingExcelHandler {
             {"合作平台"},
             {"需求内容(具体产品名)", "需求内容", "合作资源"},
             {"视频发布链接", "发布链接(IG reel)", "发布链接", "主页link"},
-            {"发布时间"},
+            {"视频发布时间", "发布时间"},   // 兼容改名前的旧列名"发布时间"
             {"视频项目进度", "进度"},   // 兼容改名前的旧列名"进度"
             {"红人结款进度"},
             {"项目视频类型"},

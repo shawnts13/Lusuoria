@@ -62,6 +62,15 @@ public class RoleUtil {
     }
 
     /**
+     * 是否可以在编辑表单里直接修改"视频发布时间"
+     * 仅 ADMIN；其他角色这个字段在表单里不可编辑，只能通过"状态流转"在视频项目进度
+     * 进入符合条件的状态时由系统自动填上（见 CollaborationTrackingService.updateStatus）
+     */
+    public static boolean canEditPublishDate() {
+        return "ADMIN".equals(getCurrentRole());
+    }
+
+    /**
      * 是否可以执行老板审核
      * 仅 ADMIN
      */

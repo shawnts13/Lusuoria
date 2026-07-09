@@ -88,7 +88,15 @@ public class CollaborationTracking extends BaseEntity {
     @Column(name = "publish_link", columnDefinition = "TEXT")
     private String publishLink;
 
-    /** 发布时间（前期可能为空） */
+    /**
+     * 视频发布时间（原名"发布时间"，字段本身/列名不变，只是显示名称改了，2026-07）。
+     * 前期可能为空。写入规则（2026-07 起）：
+     *   - Excel 批量导入：允许直接填，但只有"视频项目进度"达到 allowsPaymentProgress() 要求的
+     *     三个阶段才能填，否则整行导入失败（校验见 CollaborationTrackingExcelHandler）；
+     *   - 单条保存（新建/编辑表单）：仅 ADMIN 能编辑，其他角色提交的值会被忽略，保留数据库原值；
+     *   - 其他角色只能通过"状态流转"接口在视频项目进度进入上述三个阶段、且当前为空时，
+     *     由系统自动填上当天日期（见 CollaborationTrackingService.updateStatus）。
+     */
     @Temporal(TemporalType.DATE)
     @Column(name = "publish_date")
     private Date publishDate;

@@ -184,7 +184,7 @@ public class DashboardStatsService {
             java.text.SimpleDateFormat monthFmt = new java.text.SimpleDateFormat("yyyy-MM");
             for (CollaborationTracking o : orders) {
                 String key = o.getPublishDate() != null
-                        ? monthFmt.format(o.getPublishDate()) : "未填写发布时间";
+                        ? monthFmt.format(o.getPublishDate()) : "未填写视频发布时间";
                 grouped.merge(key, 1L, Long::sum);
             }
         } else {

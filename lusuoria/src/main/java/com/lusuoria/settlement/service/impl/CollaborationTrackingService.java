@@ -283,7 +283,15 @@ public class CollaborationTrackingService {
         tracking.setPlatform(req.getPlatform());
         tracking.setDemandContent(req.getDemandContent());
         tracking.setPublishLink(emptyToNull(req.getPublishLink()));
-        tracking.setPublishDate(req.getPublishDate());
+
+        // 视频发布时间：Excel 批量导入允许直接填写（是否符合"视频项目进度"前置条件由
+        // CollaborationTrackingExcelHandler 逐行校验报错，这里不重复校验）；单条保存
+        // （新建/编辑表单提交）只有 ADMIN 能编辑，其他角色提交的值直接忽略、保留数据库原值——
+        // 其他角色只能通过"状态流转"在进度进入符合条件的状态时被系统自动填上，见 updateStatus()
+        boolean isBulkImport = ctx instanceof BulkLookupContext;
+        if (isBulkImport || RoleUtil.canEditPublishDate()) {
+            tracking.setPublishDate(req.getPublishDate());
+        }
         // 进度：新建时，或明确允许编辑时更新状态（Excel 导入更新分支），才从请求体取值；
         // 普通编辑表单（allowStatusUpdateOnEdit=false）忽略请求体里的 progress，保留数据库原值
         if (existingOrNull == null || allowStatusUpdateOnEdit) {
@@ -472,6 +480,17 @@ public class CollaborationTrackingService {
             return result;
         }
 
+        // 视频发布时间自动填写：视频项目进度这次是从"不满足前置条件"变为"满足前置条件"
+        // （首次进入已发布(未结算)/已加入客户未结算列表/客户已结算这三个阶段），且当前还没有
+        // 视频发布时间时，系统自动填上当天日期（年月日，JVM 默认时区已固定为北京时间）。
+        // 只在当前为空时才填，避免已经有值（管理员手动填过，或者之前已经自动填过）的记录
+        // 在这三个阶段之间来回流转时被反复覆盖成"今天"，抹掉真实的发布日期。
+        boolean enteringPublishedZone = newProgress != null && newProgress.allowsPaymentProgress()
+                && (t.getProgress() == null || !t.getProgress().allowsPaymentProgress());
+        if (enteringPublishedZone && t.getPublishDate() == null) {
+            t.setPublishDate(new Date());
+        }
+
         t.setProgress(newProgress);
         t.setInfluencerPaymentProgress(newPayment);
         CollaborationTracking saved = trackingRepo.save(t);
@@ -516,7 +535,7 @@ public class CollaborationTrackingService {
             return resp;
         }
         if (t.getPublishDate() == null) {
-            resp.setBreakdown("该记录尚未填写\"发布时间\"，无法按月计算，请手动填写金额");
+            resp.setBreakdown("该记录尚未填写\"视频发布时间\"，无法按月计算，请手动填写金额");
             return resp;
         }
         if (t.getProjectManagerId() == null) {

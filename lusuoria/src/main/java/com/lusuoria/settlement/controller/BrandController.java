@@ -76,7 +76,11 @@ public class BrandController {
         brand.setCooperationType(req.getCooperationType());
         brand.setContactPerson(req.getContactPerson());
         brand.setSettlementCurrency(req.getSettlementCurrency());
-        brand.setPaymentCycle(req.getPaymentCycle());
+        brand.setPaymentCycleType(req.getPaymentCycleType());
+        brand.setCostThresholdAmount(req.getCostThresholdAmount());
+        brand.setDaysWithinThreshold(req.getDaysWithinThreshold());
+        brand.setDaysAboveThreshold(req.getDaysAboveThreshold());
+        brand.setDaysAfterMonthEnd(req.getDaysAfterMonthEnd());
         brand.setNotes(req.getNotes());
         Brand saved = brandRepo.save(brand);
         brandCache.refresh();
