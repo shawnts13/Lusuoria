@@ -3,12 +3,16 @@ package com.lusuoria.settlement.service.impl;
 import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.dto.request.CollaborationTrackingRequest;
+import com.lusuoria.settlement.dto.request.CollaborationTrackingStatusRequest;
+import com.lusuoria.settlement.dto.response.CollaborationStatusUpdateResult;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.entity.ProjectOrder;
+import com.lusuoria.settlement.enums.CollaborationProgress;
+import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
@@ -294,6 +298,18 @@ public class CollaborationTrackingService {
         if (existingOrNull == null || allowStatusUpdateOnEdit) {
             tracking.setProgress(req.getProgress());
         }
+
+        // 红人结款进度：跟"进度"字段一样的编辑权限规则——只有新建，或明确允许时（Excel 导入更新分支）
+        // 才能改；且只有上面刚设置好的"进度"达到前置条件（已发布(未结算)/已加入客户未结算列表/
+        // 客户已结算）时，才允许设置这个字段的值，否则直接拒绝（Excel 导入报错文案见 handler，
+        // 这里是单条保存/批量落库共用的最终防线）
+        if (existingOrNull == null || allowStatusUpdateOnEdit) {
+            InfluencerPaymentProgress newPayment = req.getInfluencerPaymentProgress();
+            if (newPayment != null && (tracking.getProgress() == null || !tracking.getProgress().allowsPaymentProgress())) {
+                throw new RuntimeException(InfluencerPaymentProgress.PRECONDITION_ERROR);
+            }
+            tracking.setInfluencerPaymentProgress(newPayment);
+        }
         tracking.setVideoType(req.getVideoType());
         tracking.setClientPaymentBatch(req.getClientPaymentBatch());
         tracking.setNotes(req.getNotes());
@@ -413,6 +429,63 @@ public class CollaborationTrackingService {
         return pendingApprovalService.requestDelete(
                 PendingApprovalModule.COLLABORATION_TRACKING, id,
                 tracking.getInternalProjectNo(), summary, reason);
+    }
+
+    /**
+     * "状态流转"：修改"视频项目进度"/"红人结款进度"这两个字段。
+     *
+     * 正常情况下直接生效。但如果同时满足：
+     *   1. 当前记录"红人结款进度"已经有值；
+     *   2. 当前"视频项目进度"已经达到前置条件（allowsPaymentProgress()==true）；
+     *   3. 这次要把"视频项目进度"改成不满足前置条件的另一个状态（倒退）；
+     * 这种改动不允许直接生效，必须提交一条"待审核"事项，由管理员在"待处理"模块同意后
+     * 才真正落地——同意时红人结款进度会一并清空（不满足前置条件就不该再有值）。
+     */
+    @Transactional
+    public CollaborationStatusUpdateResult updateStatus(Long id, CollaborationTrackingStatusRequest req) {
+        CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
+                .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
+
+        CollaborationProgress newProgress = req.getProgress();
+        InfluencerPaymentProgress newPayment = req.getInfluencerPaymentProgress();
+
+        // 基本前置条件校验：想设置红人结款进度的值，视频项目进度必须已经达到要求
+        if (newPayment != null && (newProgress == null || !newProgress.allowsPaymentProgress())) {
+            throw new RuntimeException(InfluencerPaymentProgress.PRECONDITION_ERROR);
+        }
+
+        // 倒退检测：红人结款进度当前已有值 + 视频项目进度当前满足条件 + 这次要改成不满足条件的
+        // 另一个状态 —— 这种改动需要走管理员审核，不能直接生效
+        boolean isRollback = t.getInfluencerPaymentProgress() != null
+                && t.getProgress() != null && t.getProgress().allowsPaymentProgress()
+                && newProgress != null && !newProgress.allowsPaymentProgress()
+                && newProgress != t.getProgress();
+
+        CollaborationStatusUpdateResult result = new CollaborationStatusUpdateResult();
+
+        if (isRollback) {
+            if (req.getReason() == null || req.getReason().trim().isEmpty()) {
+                throw new RuntimeException("该记录\"红人结款进度\"已有值，视频项目进度要改回不满足前置条件的状态"
+                        + "需要管理员审核，请填写原因");
+            }
+            String summary = (t.getBrand() != null ? t.getBrand().getName() : "未知品牌")
+                    + " - " + (t.getInfluencer() != null ? t.getInfluencer().getAccountName() : "未知红人");
+            // 倒退到不满足前置条件的状态后，红人结款进度理应清空，不管这次请求里传的是什么，
+            // 审核通过时一律按"清空"处理，保持"不满足条件就不该有值"的约束
+            pendingApprovalService.requestProgressRollback(
+                    t.getId(), t.getInternalProjectNo(), summary, req.getReason(),
+                    newProgress, null);
+            result.setTracking(t);
+            result.setPendingApproval(true);
+            return result;
+        }
+
+        t.setProgress(newProgress);
+        t.setInfluencerPaymentProgress(newPayment);
+        CollaborationTracking saved = trackingRepo.save(t);
+        result.setTracking(saved);
+        result.setPendingApproval(false);
+        return result;
     }
 
     /**

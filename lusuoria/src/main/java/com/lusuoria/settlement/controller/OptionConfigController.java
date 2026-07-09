@@ -45,11 +45,19 @@ public class OptionConfigController {
                 InfluencerOptions.COUNTRIES,
                 InfluencerOptions.COUNTRIES));
 
-        // 红人合作跟踪 - 进度
+        // 红人合作跟踪 - 视频项目进度（原名"进度"）
         result.put("collab_progress", toOptions(
-                new String[]{"PENDING_DRAFT", "PENDING_PUBLISH", "PENDING_REVISION",
-                             "PUBLISHED_UNSETTLED", "JOINED_CLIENT_UNSETTLED_LIST", "DELAYED", "SETTLED"},
-                new String[]{"待草稿", "待发布", "待修改", "已发布（未结算）", "已加入客户未结算列表", "暂时延期", "已结算"}));
+                new String[]{"PENDING_CLIENT_BRIEF", "CONTRACT_SENT", "INFLUENCER_ORDERED", "SHOOTING_GUIDE_SENT",
+                             "PENDING_DRAFT", "PENDING_REVISION", "PENDING_PUBLISH",
+                             "PUBLISHED_UNSETTLED", "JOINED_CLIENT_UNSETTLED_LIST", "SETTLED", "DELAYED"},
+                new String[]{"待客户出brief", "合同已发给红人", "红人已下单", "拍摄指导已发给红人",
+                             "待草稿", "待红人修改", "待发布",
+                             "已发布（未结算）", "已加入客户未结算列表", "客户已结算", "折损"}));
+
+        // 红人合作跟踪 - 红人结款进度
+        result.put("influencer_payment_progress", toOptions(
+                new String[]{"PENDING_INVOICE", "INVOICE_PROVIDED", "PENDING_SETTLEMENT_NO_INVOICE", "INCLUDED_IN_PAYMENT_BATCH"},
+                new String[]{"待红人发送invoice", "红人已提供invoice", "待结款（不涉及invoice）", "已纳入红人结款批次"}));
 
         // 项目视频类型
         result.put("video_type", toOptions(

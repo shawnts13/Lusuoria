@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.dto.request;
 
 import com.lusuoria.settlement.enums.CollaborationProgress;
+import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.VideoType;
 import lombok.Data;
 
@@ -34,6 +35,12 @@ public class CollaborationTrackingRequest {
     private Date publishDate;
 
     private CollaborationProgress progress;
+
+    /**
+     * 红人结款进度。默认空，只有当上面的 progress 达到前置条件（已发布(未结算)/
+     * 已加入客户未结算列表/客户已结算）时才允许设置值，由 service 层统一校验。
+     */
+    private InfluencerPaymentProgress influencerPaymentProgress;
 
     /** 项目视频类型：实拍新视频 / 实拍新图片 / AI新素材 / 旧素材重发 */
     private VideoType videoType;

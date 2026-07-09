@@ -12,6 +12,7 @@ import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.entity.InfluencerBrandTeam;
 import com.lusuoria.settlement.entity.ImportBatch;
 import com.lusuoria.settlement.enums.CollaborationProgress;
+import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
@@ -80,7 +81,8 @@ public class CollaborationTrackingExcelHandler {
         {"需求内容(具体产品名)",       "0", "0"},
         {"视频发布链接",               "0", "0"},
         {"发布时间",                   "0", "0"},
-        {"进度",                       "0", "0"},
+        {"视频项目进度",               "0", "0"},  // 原名"进度"，导入时仍兼容旧列名"进度"
+        {"红人结款进度",               "0", "0"},  // 默认空，只有"视频项目进度"达到前置条件才允许设置
         {"项目视频类型",               "0", "0"},
         {"采买旧视频的原链接",         "0", "0"},
         {"项目负责人",                 "0", "0"},
@@ -98,8 +100,19 @@ public class CollaborationTrackingExcelHandler {
     }
 
     private static final String[] PROGRESS_LABELS = {
-        "待草稿", "待发布", "待修改", "已发布（未结算）", "已加入客户未结算列表", "暂时延期", "已结算"
+        "待客户出brief", "合同已发给红人", "红人已下单", "拍摄指导已发给红人",
+        "待草稿", "待红人修改", "待发布",
+        "已发布（未结算）", "已加入客户未结算列表", "客户已结算", "折损"
     };
+
+    private static final String[] PAYMENT_PROGRESS_LABELS = {
+        "待红人发送invoice", "红人已提供invoice", "待结款（不涉及invoice）", "已纳入红人结款批次"
+    };
+
+    /** 模板里"红人结款进度"表头的提示语（Excel 原生批注，鼠标悬停可见） */
+    private static final String PAYMENT_PROGRESS_HINT =
+        "该字段默认为空，且只有当\"视频项目进度\"为\"已发布（未结算）\"、\"已加入客户未结算列表\"、"
+        + "\"客户已结算\"时，该字段才会被启用";
 
     private static final String[] VIDEO_TYPE_LABELS = {
         "实拍新视频", "实拍新图片", "AI新素材", "旧素材重发"
@@ -157,6 +170,7 @@ public class CollaborationTrackingExcelHandler {
             setCellStr(row, c++, t.getPublishLink(),   wrap);
             setCellStr(row, c++, t.getPublishDate() != null ? df.format(t.getPublishDate()) : "", wrap);
             setCellStr(row, c++, t.getProgress() != null ? t.getProgress().getLabel() : "", wrap);
+            setCellStr(row, c++, t.getInfluencerPaymentProgress() != null ? t.getInfluencerPaymentProgress().getLabel() : "", wrap);
             setCellStr(row, c++, t.getVideoType() != null ? t.getVideoType().getLabel() : "", wrap);
             setCellStr(row, c++, t.getOldMaterialSourceLink() != null ? t.getOldMaterialSourceLink() : "", wrap);
             Employee manager = employeeCache.findById(t.getProjectManagerId());
@@ -197,10 +211,14 @@ public class CollaborationTrackingExcelHandler {
             hc++;
         }
 
-        // 进度下拉
+        // 视频项目进度 / 红人结款进度 下拉
         DataValidationHelper dv = sheet.getDataValidationHelper();
-        addDropdown(sheet, dv, colIdxMap, "进度", PROGRESS_LABELS);
+        addDropdown(sheet, dv, colIdxMap, "视频项目进度", PROGRESS_LABELS);
+        addDropdown(sheet, dv, colIdxMap, "红人结款进度", PAYMENT_PROGRESS_LABELS);
         addDropdown(sheet, dv, colIdxMap, "项目视频类型", VIDEO_TYPE_LABELS);
+
+        // "红人结款进度"表头加一条批注提示前置条件，避免误填
+        addHeaderComment(sheet, wb, colIdxMap, "红人结款进度", PAYMENT_PROGRESS_HINT);
 
         // 示例行
         Map<String, String> ex = new HashMap<String, String>();
@@ -210,7 +228,8 @@ public class CollaborationTrackingExcelHandler {
         ex.put("需求内容(具体产品名)", "手持游戏机");
         ex.put("视频发布链接", "https://instagram.com/p/xxx");
         ex.put("发布时间", "2026-04-09");
-        ex.put("进度", "已发布（未结算）");
+        ex.put("视频项目进度", "已发布（未结算）");
+        ex.put("红人结款进度", "");  // 默认留空，只有视频项目进度达到前置条件才启用，具体见表头批注
         ex.put("项目视频类型", "实拍新视频");
         ex.put("采买旧视频的原链接", "");  // 仅"项目视频类型"为"旧素材重发"时才填写，其余情况留空
         ex.put("项目负责人", "梁珈绫 Charlene");
@@ -461,16 +480,33 @@ public class CollaborationTrackingExcelHandler {
                 Date publishDate = parseDate(row, colMap, dateFormats);
                 req.setPublishDate(publishDate);
 
-                // 进度、项目视频类型：Excel 导入无论新建还是更新已有记录，都允许带状态
+                // 视频项目进度、红人结款进度、项目视频类型：Excel 导入无论新建还是更新已有记录，都允许带状态
                 // 填了但匹配不到有效选项时要报错，不能像以前那样静默地变成空值
-                String progressRaw = getStr(row, colMap, "进度");
+                String progressRaw = firstNonNull(
+                        getStr(row, colMap, "视频项目进度"),
+                        getStr(row, colMap, "进度"));   // 兼容改名前的旧列名
                 if (progressRaw != null && !progressRaw.trim().isEmpty()) {
                     CollaborationProgress progress = parseProgress(progressRaw);
                     if (progress == null) {
-                        errors.add("第" + (i + 1) + "行：进度 [" + progressRaw + "] 不是有效选项，请核对");
+                        errors.add("第" + (i + 1) + "行：视频项目进度 [" + progressRaw + "] 不是有效选项，请核对");
                         continue;
                     }
                     req.setProgress(progress);
+                }
+                // 红人结款进度：默认空，只有上面解析出来的视频项目进度达到前置条件才允许设置值，
+                // 不满足条件时直接报错（不像其他字段那样静默跳过），跟单条保存/状态流转共用同一句错误文案
+                String paymentProgressRaw = getStr(row, colMap, "红人结款进度");
+                if (paymentProgressRaw != null && !paymentProgressRaw.trim().isEmpty()) {
+                    InfluencerPaymentProgress paymentProgress = InfluencerPaymentProgress.fromLabel(paymentProgressRaw);
+                    if (paymentProgress == null) {
+                        errors.add("第" + (i + 1) + "行：红人结款进度 [" + paymentProgressRaw + "] 不是有效选项，请核对");
+                        continue;
+                    }
+                    if (req.getProgress() == null || !req.getProgress().allowsPaymentProgress()) {
+                        errors.add("第" + (i + 1) + "行：" + InfluencerPaymentProgress.PRECONDITION_ERROR);
+                        continue;
+                    }
+                    req.setInfluencerPaymentProgress(paymentProgress);
                 }
                 String videoTypeRaw = getStr(row, colMap, "项目视频类型");
                 if (videoTypeRaw != null && !videoTypeRaw.trim().isEmpty()) {
@@ -545,6 +581,17 @@ public class CollaborationTrackingExcelHandler {
                 // 注：如果这行数据想改一条已经有关联项目订单的记录的"客户方的项目订单"，
                 // service.saveBulk() 会直接拒绝（LinkedOrderExistsException），走到下面的 catch 里，
                 // 记一条"第X行导入失败"，不会静默覆盖或出现异常行为
+
+                // ---- 视频项目进度"倒退"保护：这条记录红人结款进度已有值，且这行想把视频项目进度
+                //      改成不满足前置条件的另一个状态 —— 这种改动必须走"状态流转"功能提交管理员审核，
+                //      Excel 批量导入不支持这种改动（没有交互式填写审核原因的环节），直接拒绝这一行 ----
+                if (existingOrNull != null && existingOrNull.getInfluencerPaymentProgress() != null
+                        && req.getProgress() != null && !req.getProgress().allowsPaymentProgress()
+                        && req.getProgress() != existingOrNull.getProgress()) {
+                    errors.add("第" + (i + 1) + "行：该记录\"红人结款进度\"已有值，视频项目进度不能通过Excel导入"
+                            + "改回不满足前置条件的状态，请使用系统里的\"状态流转\"功能提交管理员审核，跳过此行");
+                    continue;
+                }
 
                 // 内部项目编号：新建时会自动生成一次（走内存里的编号池，不查库）；
                 // 命中更新分支时 id 不为空，会保留数据库里原有的编号，不会重新生成
@@ -701,7 +748,8 @@ public class CollaborationTrackingExcelHandler {
             {"需求内容(具体产品名)", "需求内容", "合作资源"},
             {"视频发布链接", "发布链接(IG reel)", "发布链接", "主页link"},
             {"发布时间"},
-            {"进度"},
+            {"视频项目进度", "进度"},   // 兼容改名前的旧列名"进度"
+            {"红人结款进度"},
             {"项目视频类型"},
             {"采买旧视频的原链接"},
             {"项目负责人"},
@@ -843,6 +891,33 @@ public class CollaborationTrackingExcelHandler {
                 new CellRangeAddressList(1, 1000, idx, idx));
         val.setShowErrorBox(false);
         sheet.addValidationData(val);
+    }
+
+    /**
+     * 给表头单元格加一条 Excel 原生批注（鼠标悬停在表头上就能看到提示文字），
+     * 用于说明一些光看列名看不出来的填写规则（比如"红人结款进度"的前置条件）。
+     * 不写进示例行/正文，不会干扰导入时对数据的读取。
+     */
+    private void addHeaderComment(XSSFSheet sheet, XSSFWorkbook wb,
+                                   Map<String, Integer> colIdxMap, String colName, String commentText) {
+        Integer idx = colIdxMap.get(colName);
+        if (idx == null) return;
+        Row header = sheet.getRow(0);
+        if (header == null) return;
+        Cell cell = header.getCell(idx);
+        if (cell == null) return;
+
+        CreationHelper factory = wb.getCreationHelper();
+        Drawing<?> drawing = sheet.createDrawingPatriarch();
+        ClientAnchor anchor = factory.createClientAnchor();
+        anchor.setCol1(idx);
+        anchor.setCol2(idx + 4);
+        anchor.setRow1(0);
+        anchor.setRow2(5);
+        Comment comment = drawing.createCellComment(anchor);
+        comment.setString(factory.createRichTextString(commentText));
+        comment.setAuthor("系统提示");
+        cell.setCellComment(comment);
     }
 
     private XSSFCellStyle headerStyle(XSSFWorkbook wb, boolean sensitive) {

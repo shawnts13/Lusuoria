@@ -5,10 +5,12 @@ import com.lusuoria.settlement.dto.request.CollaborationTrackingRequest;
 import com.lusuoria.settlement.dto.request.CollaborationTrackingStatusRequest;
 import com.lusuoria.settlement.dto.request.DeleteRequestReasonRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
+import com.lusuoria.settlement.dto.response.CollaborationStatusUpdateResult;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.ImportBatch;
 import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.enums.CollaborationProgress;
+import com.lusuoria.settlement.enums.PendingApprovalCategory;
 import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.excel.CollaborationTrackingExcelHandler;
@@ -86,10 +88,15 @@ public class CollaborationTrackingController {
                 progress, videoType, videoMonthParam, internalProjectNo,
                 clientOrderId, clientPaymentBatch, projectManagerId, pageable);
 
-        // 批量标记"当前是否有待审核的删除申请"，避免逐行查库
-        Set<Long> pendingIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(
-                PendingApprovalModule.COLLABORATION_TRACKING));
-        result.forEach(t -> t.setHasPendingDeleteRequest(pendingIds.contains(t.getId())));
+        // 批量标记"当前是否有待审核的删除申请 / 进度倒退申请"，避免逐行查库
+        Set<Long> pendingDeleteIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(
+                PendingApprovalModule.COLLABORATION_TRACKING, PendingApprovalCategory.DELETE_REQUEST));
+        Set<Long> pendingRollbackIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(
+                PendingApprovalModule.COLLABORATION_TRACKING, PendingApprovalCategory.PROGRESS_ROLLBACK));
+        result.forEach(t -> {
+            t.setHasPendingDeleteRequest(pendingDeleteIds.contains(t.getId()));
+            t.setHasPendingRollbackRequest(pendingRollbackIds.contains(t.getId()));
+        });
 
         if (!RoleUtil.canViewBaselineFinancials()) {
             return ApiResponse.success(result.map(this::maskSensitive));
@@ -131,18 +138,22 @@ public class CollaborationTrackingController {
     }
 
     /**
-     * 状态流转：只允许修改"进度"这一个字段，不接收、也不会改动其他任何字段。
+     * 状态流转：只允许修改"视频项目进度"/"红人结款进度"这两个字段，不接收、也不会改动其他任何字段。
      * 配合前端专门的"状态流转"弹窗使用，防止编辑状态时误改其他内容。
+     *
+     * 正常情况下改动立即生效；但如果是"视频项目进度"从符合条件的状态倒退回不符合条件的状态、
+     * 且当前记录"红人结款进度"已经有值，这种改动不会立即生效，而是提交一条待审核事项，
+     * 由管理员在"待处理"模块同意后才真正生效（见 CollaborationTrackingService.updateStatus）。
      */
     @PatchMapping("/{id}/status")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
-    public ApiResponse<CollaborationTracking> updateStatus(
+    public ApiResponse<CollaborationStatusUpdateResult> updateStatus(
             @PathVariable Long id, @RequestBody CollaborationTrackingStatusRequest req) {
-        CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
-                .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
-        t.setProgress(req.getProgress());
-        CollaborationTracking saved = trackingRepo.save(t);
-        return ApiResponse.success(RoleUtil.canViewBaselineFinancials() ? saved : maskSensitive(saved));
+        CollaborationStatusUpdateResult result = trackingService.updateStatus(id, req);
+        if (!RoleUtil.canViewBaselineFinancials()) {
+            result.setTracking(maskSensitive(result.getTracking()));
+        }
+        return ApiResponse.success(result);
     }
 
     // ============ Excel ============

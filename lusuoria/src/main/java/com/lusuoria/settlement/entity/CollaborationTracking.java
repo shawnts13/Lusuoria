@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.entity;
 
 import com.lusuoria.settlement.enums.CollaborationProgress;
+import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.VideoType;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.*;
@@ -97,6 +98,15 @@ public class CollaborationTracking extends BaseEntity {
     @Column(name = "progress")
     private CollaborationProgress progress;
 
+    /**
+     * 红人结款进度。默认空，只有"进度"达到 allowsPaymentProgress() 要求的三个阶段才允许设置值
+     * （校验见 CollaborationTrackingService）。跟"进度"字段一样，新建时可选，
+     * 编辑已有记录时锁定，只能通过"状态流转"接口修改。
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "influencer_payment_progress")
+    private InfluencerPaymentProgress influencerPaymentProgress;
+
     /** 项目视频类型：实拍新视频 / 实拍新图片 / AI新素材 / 旧素材重发 */
     @Enumerated(EnumType.STRING)
     @Column(name = "video_type")
@@ -171,4 +181,11 @@ public class CollaborationTracking extends BaseEntity {
      */
     @Transient
     private Boolean hasPendingDeleteRequest;
+
+    /**
+     * 当前是否有一条"待审核"的视频项目进度倒退申请（有的话前端状态流转要提示"审核中"，
+     * 避免同一条记录被重复提交倒退申请）。瞬态字段，不落库，由 Controller 批量查出来再赋值。
+     */
+    @Transient
+    private Boolean hasPendingRollbackRequest;
 }

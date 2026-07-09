@@ -66,4 +66,17 @@ public class PendingApproval extends BaseEntity {
     /** 拒绝原因（同意时不需要填） */
     @Column(name = "resolution_note", length = 500)
     private String resolutionNote;
+
+    /**
+     * 以下两个字段只有 category=PROGRESS_ROLLBACK 时才有值：申请当时想要改成的
+     * "视频项目进度"/"红人结款进度"（存枚举 name，不存枚举类型本身，
+     * 避免这张通用表跟红人合作跟踪模块的具体枚举强耦合）。
+     * 审核同意时，PendingApprovalService 按这两个值真正落地到目标记录上；
+     * 审核拒绝时，目标记录原样不动，这两个字段也不会再被使用。
+     */
+    @Column(name = "requested_progress")
+    private String requestedProgress;
+
+    @Column(name = "requested_payment_progress")
+    private String requestedPaymentProgress;
 }
