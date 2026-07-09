@@ -6,12 +6,10 @@ import com.lusuoria.settlement.dto.response.DashboardDrilldownResponse;
 import com.lusuoria.settlement.dto.response.DashboardSummaryResponse;
 import com.lusuoria.settlement.dto.response.ExchangeRateInfo;
 import com.lusuoria.settlement.entity.Brand;
+import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
-import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.InfluencerTeam;
-import com.lusuoria.settlement.entity.ProjectOrder;
-import com.lusuoria.settlement.enums.ProjectType;
-import com.lusuoria.settlement.repository.ProjectOrderRepository;
+import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -23,19 +21,24 @@ import java.util.stream.Collectors;
 /**
  * 数据看板统计服务
  *
- * 所有金额数字均为动态计算，不依赖 ProjectOrder 表里预存的 gross_profit 等字段，
+ * 2026-07："项目订单"模块整体废弃，看板统计的数据来源从 ProjectOrder 换成了
+ * CollaborationTracking，成本/利润这些字段也是从那边迁移过来的同一批字段，公式不变。
+ * 月份口径统一改成按"发布时间"（原来还分"项目建立月份"和"项目视频发布时间"两种口径，
+ * 前者已经随着项目订单模块一起废弃，现在只有一种口径，所有统计都按发布时间来）。
+ *
+ * 所有金额数字均为动态计算，不依赖 CollaborationTracking 表里预存的 gross_profit 等字段，
  * 保证公式调整后看板数字始终与最新业务口径一致。
  *
  * 核心公式（与 ProfitCalculator 保持一致）：
- *   红人成本 = 直填值（不分红人类型，一律取录入的实际值，不再按类型强制 65% 自动计算）
- *   项目毛利 = 客户合作价格 - 红人成本 - 其他外部成本（其他外部成本也按实际录入值，不分红人类型）
+ *   红人成本 = 直填值（不分红人类型，一律取录入的实际值）
+ *   项目毛利 = 客户合作价格 - 红人成本 - 其他外部成本
  *   可分配利润 = 项目毛利 - 内部执行成本
  *   负责人提成 = 可分配利润 × 提成比例
  *   公司利润 = 客户合作价格 - 红人成本 - 其他外部成本 - 内部执行成本 - 负责人提成
  *            （等价于：可分配利润 - 负责人提成）
  *
  * 币种换算：看板/下钻请求统一传入 currency=USD|RMB，所有金额按"看板查看月份"
- * 对应的统一汇率（ExchangeRateService 提供）换算后返回，不使用每条订单各自的汇率。
+ * 对应的统一汇率（ExchangeRateService 提供）换算后返回，不使用每条记录各自的汇率。
  */
 @Service
 @org.springframework.transaction.annotation.Transactional(readOnly = true)
@@ -43,7 +46,7 @@ public class DashboardStatsService {
 
     private static final int SCALE = 2;
 
-    @Autowired private ProjectOrderRepository projectOrderRepo;
+    @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private ExchangeRateService exchangeRateService;
@@ -59,9 +62,8 @@ public class DashboardStatsService {
         ExchangeRateInfo rateInfo = exchangeRateService.getRateForMonth(yearMonth);
         BigDecimal rate = rateInfo.getUsdToCny();
 
-        // "视频项目数量"及本月汇总数据，统一按"项目视频发布时间"取（而不是"项目建立月份"），
-        // 因为利润核算是按发布时间所在月份统计的，跟旧项目拖到次月才发布的情况保持口径一致
-        List<ProjectOrder> orders = projectOrderRepo.findByVideoPublishMonth(yearMonth);
+        // "视频项目数量"及本月汇总数据，统一按"发布时间"取
+        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
         long videoCount = orders.size();
 
         BigDecimal totalClientPrice = BigDecimal.ZERO;
@@ -73,7 +75,7 @@ public class DashboardStatsService {
         BigDecimal totalCommission = BigDecimal.ZERO;
         BigDecimal totalCompanyProfit = BigDecimal.ZERO;
 
-        for (ProjectOrder o : orders) {
+        for (CollaborationTracking o : orders) {
             Computed c = compute(o);
             totalClientPrice    = totalClientPrice.add(c.clientPrice);
             totalInfluencerCost = totalInfluencerCost.add(c.influencerCost);
@@ -85,7 +87,7 @@ public class DashboardStatsService {
             totalCompanyProfit  = totalCompanyProfit.add(c.companyProfit);
         }
 
-        // 内部其他员工成本：财务、IT后勤这两个角色的固定月薪（不跟具体订单挂钩，
+        // 内部其他员工成本：财务、IT后勤这两个角色的固定月薪（不跟具体记录挂钩，
         // 员工管理里维护的是"月薪"，这里就是这一个月的固定支出），要从公司利润里扣掉
         BigDecimal totalOtherStaffCostRmb = otherStaffCostRmb(1);
         BigDecimal totalOtherStaffCostUsd = (rate != null && rate.compareTo(BigDecimal.ZERO) > 0)
@@ -109,7 +111,7 @@ public class DashboardStatsService {
                 .build();
     }
 
-    /** 财务、IT后勤角色目前是固定月薪，跟具体订单无关；法务角色薪资方案还没设计，暂不计入 */
+    /** 财务、IT后勤角色目前是固定月薪，跟具体记录无关；法务角色薪资方案还没设计，暂不计入 */
     private static final java.util.Set<String> OTHER_STAFF_ROLES =
             new java.util.HashSet<>(java.util.Arrays.asList("财务", "IT后勤"));
 
@@ -141,8 +143,8 @@ public class DashboardStatsService {
     }
 
     // ============ 下钻：内部其他员工成本（按"员工角色-姓名"） ============
-    // 注意：这个成本压根不来自 ProjectOrder，是财务/IT后勤这些员工的固定月薪，
-    // 按查询的月份范围跨了几个月来乘算，不需要遍历订单数据
+    // 注意：这个成本压根不来自 CollaborationTracking，是财务/IT后勤这些员工的固定月薪，
+    // 按查询的月份范围跨了几个月来乘算，不需要遍历记录数据
 
     public DashboardDrilldownResponse drilldownOtherStaffCost(String startMonth, String endMonth, String currency) {
         BigDecimal rate = rateForRange(endMonth);
@@ -171,25 +173,24 @@ public class DashboardStatsService {
     // ============ 下钻：视频项目数量（按品牌方 + 红人类型） ============
 
     public DashboardDrilldownResponse drilldownVideoCount(String startMonth, String endMonth, String dimension) {
-        List<ProjectOrder> orders = projectOrderRepo.findByVideoPublishMonthBetween(startMonth, endMonth);
+        List<CollaborationTracking> orders = trackingRepo.findByPublishMonthBetween(startMonth, endMonth);
 
         Map<String, Long> grouped = new LinkedHashMap<>();
         String dimensionType;
 
         if ("publish_month".equals(dimension)) {
-            // 按"项目视频发布时间"所在月份分组：用来看有多少视频是"建立月份"跟"实际发布月份"不一致
-            // （比如旧项目拖到次月甚至更久才发布）的情况多不多
+            // 按"发布时间"所在月份分组
             dimensionType = "publish_month";
             java.text.SimpleDateFormat monthFmt = new java.text.SimpleDateFormat("yyyy-MM");
-            for (ProjectOrder o : orders) {
-                String key = o.getVideoPublishDate() != null
-                        ? monthFmt.format(o.getVideoPublishDate()) : "未填写发布时间";
+            for (CollaborationTracking o : orders) {
+                String key = o.getPublishDate() != null
+                        ? monthFmt.format(o.getPublishDate()) : "未填写发布时间";
                 grouped.merge(key, 1L, Long::sum);
             }
         } else {
-            // 默认：按品牌方 + 红人团队分组（没关联团队的订单统一归到"未指定团队"）
+            // 默认：按品牌方 + 红人团队分组（没关联团队的记录统一归到"未指定团队"）
             dimensionType = "brand_team";
-            for (ProjectOrder o : orders) {
+            for (CollaborationTracking o : orders) {
                 String brandName = brandNameOf(o.getBrandId());
                 String teamLabel = teamNameOf(o.getTeam());
                 String key = brandName + "|" + teamLabel;
@@ -248,18 +249,18 @@ public class DashboardStatsService {
     // 注意：这个字段本身是人民币，跟其他美元计价的字段方向相反，不能复用 drilldownAmountByDimension
     // （那个用的是 convert()，是按"输入是美元"来处理的），这里单独写一份用 convertFromRmb()。
     // 这里故意统计的是"所有已填的内部执行成本"原始总和，不区分是不是影响公司利润
-    // （跟看板最上面那个汇总数字口径一致——那个数字本身不受"是否管理层"这条新规则影响，
+    // （跟看板最上面那个汇总数字口径一致——那个数字本身不受"是否管理层"这条规则影响，
     // 这个下钻明细只是把那个总数字拆开来看，口径也应该保持一致）。
 
     public DashboardDrilldownResponse drilldownExecutionCost(String startMonth, String endMonth,
                                                               String currency, String dimension) {
-        List<ProjectOrder> orders = projectOrderRepo.findByProjectMonthBetween(startMonth, endMonth);
+        List<CollaborationTracking> orders = trackingRepo.findByPublishMonthBetween(startMonth, endMonth);
         BigDecimal rate = rateForRange(endMonth);
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
         Map<String, Long> counted = new LinkedHashMap<>();
-        for (ProjectOrder o : orders) {
+        for (CollaborationTracking o : orders) {
             BigDecimal execCostRmb = safe(o.getInternalExecutionCost());
             String key;
             switch (dimension) {
@@ -274,7 +275,7 @@ public class DashboardStatsService {
                     key = managerNameOf(o.getProjectManagerId());
             }
             grouped.merge(key, execCostRmb, BigDecimal::add);
-            // 笔数只统计实际填了内部执行成本的订单，跟金额是不是0保持同一个口径
+            // 笔数只统计实际填了内部执行成本的记录，跟金额是不是0保持同一个口径
             if (execCostRmb.compareTo(BigDecimal.ZERO) > 0) counted.merge(key, 1L, Long::sum);
         }
         // 金额是0的不用展示——比如某个项目负责人压根没有任何执行人员记录，
@@ -301,13 +302,13 @@ public class DashboardStatsService {
     // ============ 下钻：负责人提成合计（仅按负责人） ============
 
     public DashboardDrilldownResponse drilldownCommission(String startMonth, String endMonth, String currency) {
-        List<ProjectOrder> orders = projectOrderRepo.findByProjectMonthBetween(startMonth, endMonth);
+        List<CollaborationTracking> orders = trackingRepo.findByPublishMonthBetween(startMonth, endMonth);
         BigDecimal rate = rateForRange(endMonth);
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
         Map<String, Long> counted = new LinkedHashMap<>();
-        for (ProjectOrder o : orders) {
+        for (CollaborationTracking o : orders) {
             Computed c = compute(o);
             String managerName = managerNameOf(o.getProjectManagerId());
             grouped.merge(managerName, c.commissionAmount, BigDecimal::add);
@@ -337,13 +338,13 @@ public class DashboardStatsService {
             String startMonth, String endMonth, String currency,
             java.util.function.Function<Computed, BigDecimal> extractor) {
 
-        List<ProjectOrder> orders = projectOrderRepo.findByProjectMonthBetween(startMonth, endMonth);
+        List<CollaborationTracking> orders = trackingRepo.findByPublishMonthBetween(startMonth, endMonth);
         BigDecimal rate = rateForRange(endMonth);
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
         Map<String, Long> counted = new LinkedHashMap<>();
-        for (ProjectOrder o : orders) {
+        for (CollaborationTracking o : orders) {
             Computed c = compute(o);
             String brandName = brandNameOf(o.getBrandId());
             String teamLabel = teamNameOf(o.getTeam());
@@ -377,13 +378,13 @@ public class DashboardStatsService {
             String startMonth, String endMonth, String currency, String dimension,
             java.util.function.Function<Computed, BigDecimal> extractor) {
 
-        List<ProjectOrder> orders = projectOrderRepo.findByProjectMonthBetween(startMonth, endMonth);
+        List<CollaborationTracking> orders = trackingRepo.findByPublishMonthBetween(startMonth, endMonth);
         BigDecimal rate = rateForRange(endMonth);
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
         Map<String, Long> counted = new LinkedHashMap<>();
-        for (ProjectOrder o : orders) {
+        for (CollaborationTracking o : orders) {
             Computed c = compute(o);
             String key;
             switch (dimension) {
@@ -394,7 +395,8 @@ public class DashboardStatsService {
                     key = o.getInfluencer() != null ? o.getInfluencer().getAccountName() : "未知账号";
                     break;
                 case "type":
-                    key = o.getProjectType() != null ? o.getProjectType().getLabel() : "未知类型";
+                    key = (o.getInfluencer() != null && o.getInfluencer().getInfluencerType() != null)
+                            ? o.getInfluencer().getInfluencerType().getLabel() : "未知类型";
                     break;
                 case "brand_team":
                     key = brandNameOf(o.getBrandId()) + " - " + teamNameOf(o.getTeam());
@@ -432,16 +434,16 @@ public class DashboardStatsService {
 
     // ============ 工具方法 ============
 
-    /** 计算一条项目订单的各项金额，逻辑与 ProfitCalculator 保持一致 */
-    private Computed compute(ProjectOrder o) {
-        BigDecimal clientPrice  = safe(o.getClientPrice());
+    /** 计算一条红人合作跟踪记录的各项金额，逻辑与 ProfitCalculator 保持一致 */
+    private Computed compute(CollaborationTracking o) {
+        BigDecimal clientPrice  = safe(parseAmount(o.getClientPrice()));
         BigDecimal otherCostRmb = safe(o.getOtherExternalCost());
         BigDecimal execCostRmb  = safe(o.getInternalExecutionCost());
         BigDecimal rate         = safe(o.getCommissionRate());
         BigDecimal orderRate    = safe(o.getExchangeRate());
 
         // 其他外部成本、内部执行成本这两个字段填的是人民币，客户合作价格/项目毛利
-        // 都是美元计价，不能直接相减，要先按这条订单自己的汇率换算成美元再参与后面的计算
+        // 都是美元计价，不能直接相减，要先按这条记录自己的汇率换算成美元再参与后面的计算
         // （Computed 结构体里仍然保留人民币原值，供"其他外部成本合计"这类单独汇总展示用，
         // 不要跟这里参与利润计算用的美元换算值搞混）
         BigDecimal otherCostUsd = orderRate.compareTo(BigDecimal.ZERO) > 0
@@ -451,8 +453,8 @@ public class DashboardStatsService {
         // 内部执行成本只有项目负责人是"管理层"的时候才真的从利润里扣，规则跟 ProfitCalculator 一致
         BigDecimal execCostUsd = profitCalculator.isManagementOrder(o) ? execCostUsdRaw : BigDecimal.ZERO;
 
-        // 红人成本：不分红人类型，一律取录入的实际值（直填），不再按类型强制 65% 自动计算
-        BigDecimal influencerCost = safe(o.getInfluencerCost());
+        // 红人成本：不分红人类型，一律取录入的实际值
+        BigDecimal influencerCost = safe(parseAmount(o.getInfluencerCost()));
 
         BigDecimal grossProfit = clientPrice.subtract(influencerCost).subtract(otherCostUsd)
                 .setScale(SCALE, RoundingMode.HALF_UP);
@@ -483,7 +485,15 @@ public class DashboardStatsService {
         BigDecimal companyProfit;
     }
 
-
+    /** 把金额文本解析成 BigDecimal，非数字（如"价格待定"）按 null 处理（参与计算时当0） */
+    private BigDecimal parseAmount(String s) {
+        if (s == null || s.trim().isEmpty()) return null;
+        try {
+            return new BigDecimal(s.trim().replaceAll(",", ""));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
 
     private String brandNameOf(Long brandId) {
         if (brandId == null) return "未指定品牌";

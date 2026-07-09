@@ -1,10 +1,10 @@
 package com.lusuoria.settlement.service.impl;
 
 import com.lusuoria.settlement.dto.response.ExchangeRateInfo;
+import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.ExchangeRateCache;
-import com.lusuoria.settlement.entity.ProjectOrder;
+import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.ExchangeRateCacheRepository;
-import com.lusuoria.settlement.repository.ProjectOrderRepository;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,7 +23,9 @@ import java.util.List;
  * 故汇率改为完全人工维护：管理员对照中国银行官网手动填写每月汇率。
  *
  * 关键行为：
- *   1. 修改某月汇率会强制覆盖该月所有已存在项目订单的 exchangeRate 字段
+ *   1. 修改某月汇率会强制覆盖该月所有已存在红人合作跟踪记录的 exchangeRate 字段
+ *      （2026-07 随"项目订单"模块废弃从那边迁移过来，月份口径从"项目建立月份"
+ *      改成"发布时间"，与看板的月份口径保持一致）
  *   2. 看板/合作跟踪查询某月汇率时，若该月还未维护，返回 isMissing=true，
  *      由调用方决定如何提示，不再有兜底默认值，避免用一个虚假汇率误导业务决策
  */
@@ -33,7 +35,7 @@ public class ExchangeRateService {
     private static final Logger log = LoggerFactory.getLogger(ExchangeRateService.class);
 
     @Autowired private ExchangeRateCacheRepository rateRepo;
-    @Autowired private ProjectOrderRepository projectOrderRepo;
+    @Autowired private CollaborationTrackingRepository trackingRepo;
 
     /** 查询某月汇率（看板、合作跟踪生成订单等场景调用） */
     public ExchangeRateInfo getRateForMonth(String yearMonth) {
@@ -61,7 +63,7 @@ public class ExchangeRateService {
 
     /**
      * 新增或修改某月汇率（仅 ADMIN 可调用，权限校验在 Controller 层做）。
-     * 会强制覆盖该月所有已存在项目订单的 exchangeRate 字段。
+     * 会强制覆盖该月（按"发布时间"匹配）所有已存在红人合作跟踪记录的 exchangeRate 字段。
      */
     @Transactional
     public ExchangeRateCache saveRate(String yearMonth, BigDecimal newRate) {
@@ -85,15 +87,15 @@ public class ExchangeRateService {
         }
         ExchangeRateCache saved = rateRepo.save(cache);
 
-        // 强制覆盖该月所有已存在项目订单的汇率
-        List<ProjectOrder> orders = projectOrderRepo.findByProjectMonth(yearMonth);
+        // 强制覆盖该月（按发布时间匹配）所有已存在红人合作跟踪记录的汇率
+        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
         int updated = 0;
-        for (ProjectOrder o : orders) {
+        for (CollaborationTracking o : orders) {
             o.setExchangeRate(newRate);
-            projectOrderRepo.save(o);
+            trackingRepo.save(o);
             updated++;
         }
-        log.info("汇率维护：月份={}，操作人={}，{} -> {}，已回填项目订单 {} 条",
+        log.info("汇率维护：月份={}，操作人={}，{} -> {}，已回填红人合作跟踪 {} 条",
                 yearMonth, operator, oldRate, newRate, updated);
 
         return saved;

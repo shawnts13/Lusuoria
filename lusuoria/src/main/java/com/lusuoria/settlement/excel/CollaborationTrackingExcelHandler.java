@@ -401,7 +401,7 @@ public class CollaborationTrackingExcelHandler {
             if ("执行人员".equals(role)) executorCandidates.add(e);
         }
 
-        int processedCount = 0, createdCount = 0, updatedCount = 0, projectOrderLinked = 0;
+        int processedCount = 0, createdCount = 0, updatedCount = 0;
         SimpleDateFormat[] dateFormats = {
             new SimpleDateFormat("yyyy-MM-dd"),
             new SimpleDateFormat("yyyy/MM/dd"),
@@ -578,9 +578,8 @@ public class CollaborationTrackingExcelHandler {
                         isUpdate = true;
                     }
                 }
-                // 注：如果这行数据想改一条已经有关联项目订单的记录的"客户方的项目订单"，
-                // service.saveBulk() 会直接拒绝（LinkedOrderExistsException），走到下面的 catch 里，
-                // 记一条"第X行导入失败"，不会静默覆盖或出现异常行为
+                // 注："客户方的项目订单"现在就是一个普通的录入字段（"项目订单"模块已废弃），
+                // 改这个字段不再有任何联动限制
 
                 // ---- 视频项目进度"倒退"保护：这条记录红人结款进度已有值，且这行想把视频项目进度
                 //      改成不满足前置条件的另一个状态 —— 这种改动必须走"状态流转"功能提交管理员审核，
@@ -595,10 +594,9 @@ public class CollaborationTrackingExcelHandler {
 
                 // 内部项目编号：新建时会自动生成一次（走内存里的编号池，不查库）；
                 // 命中更新分支时 id 不为空，会保留数据库里原有的编号，不会重新生成
-                CollaborationTracking savedTracking = trackingService.saveBulk(req, influencer, existingOrNull, bulkCtx);
+                trackingService.saveBulk(req, influencer, existingOrNull, bulkCtx);
 
                 if (isUpdate) updatedCount++; else createdCount++;
-                if (savedTracking.getGeneratedProjectOrderId() != null) projectOrderLinked++;
             } catch (Exception e) {
                 log.error("合作跟踪导入第{}行失败：{}", (i + 1), e.getMessage(), e);
                 errors.add("第" + (i + 1) + "行导入失败：" + e.getMessage());
@@ -608,7 +606,7 @@ public class CollaborationTrackingExcelHandler {
         workbook.close();
 
         errors.add(0, "新增 " + createdCount + " 条，更新 " + updatedCount + " 条，失败 " + (errors.size())
-                + " 条（共处理 " + processedCount + " 行）；关联项目订单 " + projectOrderLinked + " 条");
+                + " 条（共处理 " + processedCount + " 行）");
         return errors;
         } finally {
             FORMULA_EVALUATOR.remove();

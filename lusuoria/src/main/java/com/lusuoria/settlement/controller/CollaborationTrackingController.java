@@ -6,6 +6,7 @@ import com.lusuoria.settlement.dto.request.CollaborationTrackingStatusRequest;
 import com.lusuoria.settlement.dto.request.DeleteRequestReasonRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.dto.response.CollaborationStatusUpdateResult;
+import com.lusuoria.settlement.dto.response.ExecutorCostSuggestionResponse;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.ImportBatch;
 import com.lusuoria.settlement.entity.PendingApproval;
@@ -18,6 +19,7 @@ import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.ImportBatchRepository;
 import com.lusuoria.settlement.repository.PendingApprovalRepository;
 import com.lusuoria.settlement.service.impl.CollaborationTrackingService;
+import com.lusuoria.settlement.util.ProjectFieldVisibility;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,14 +41,12 @@ import java.util.Set;
  * 红人合作跟踪
  *
  * 特殊响应码：
- *   4090 - 已存在关联的项目订单，不能改/清空客户方订单号（需要先删除那条项目订单）
  *   4091 - 去重命中（前端提示，不重试）
  */
 @RestController
 @RequestMapping("/api/collaboration-trackings")
 public class CollaborationTrackingController {
 
-    public static final int CODE_LINKED_ORDER_EXISTS = 4090;
     public static final int CODE_DUPLICATE           = 4091;
 
     @Autowired private CollaborationTrackingRepository trackingRepo;
@@ -55,6 +55,7 @@ public class CollaborationTrackingController {
     @Autowired private ImportBatchRepository importBatchRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private PendingApprovalRepository pendingApprovalRepo;
+    @Autowired private ProjectFieldVisibility fieldVisibility;
 
     @GetMapping
     public ApiResponse<Page<CollaborationTracking>> list(
@@ -98,8 +99,11 @@ public class CollaborationTrackingController {
             t.setHasPendingRollbackRequest(pendingRollbackIds.contains(t.getId()));
         });
 
-        if (!RoleUtil.canViewBaselineFinancials()) {
-            return ApiResponse.success(result.map(this::maskSensitive));
+        // 字段级可见性统一走 ProjectFieldVisibility：FULL（ADMIN/管理层/财务/AUDITOR）看全部，
+        // 其余角色（含 GUEST）按分级规则脱敏，applyFieldVisibility 内部已经处理了所有分级
+        ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
+        if (!ctx.isFull()) {
+            return ApiResponse.success(result.map(t -> applyFieldVisibility(t, ctx)));
         }
         return ApiResponse.success(result);
     }
@@ -108,7 +112,8 @@ public class CollaborationTrackingController {
     public ApiResponse<CollaborationTracking> getById(@PathVariable Long id) {
         CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("跟踪记录不存在"));
-        if (!RoleUtil.canViewBaselineFinancials()) t = maskSensitive(t);
+        ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
+        if (!ctx.isFull()) t = applyFieldVisibility(t, ctx);
         return ApiResponse.success(t);
     }
 
@@ -117,10 +122,9 @@ public class CollaborationTrackingController {
     public ApiResponse<CollaborationTracking> save(@Valid @RequestBody CollaborationTrackingRequest req) {
         try {
             CollaborationTracking saved = trackingService.save(req);
-            CollaborationTracking out = RoleUtil.canViewBaselineFinancials() ? saved : maskSensitive(saved);
+            ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
+            CollaborationTracking out = ctx.isFull() ? saved : applyFieldVisibility(saved, ctx);
             return ApiResponse.success(out);
-        } catch (CollaborationTrackingService.LinkedOrderExistsException e) {
-            return ApiResponse.error(CODE_LINKED_ORDER_EXISTS, e.getMessage());
         } catch (CollaborationTrackingService.DuplicateTrackingException e) {
             return ApiResponse.error(CODE_DUPLICATE, e.getMessage());
         }
@@ -150,10 +154,38 @@ public class CollaborationTrackingController {
     public ApiResponse<CollaborationStatusUpdateResult> updateStatus(
             @PathVariable Long id, @RequestBody CollaborationTrackingStatusRequest req) {
         CollaborationStatusUpdateResult result = trackingService.updateStatus(id, req);
-        if (!RoleUtil.canViewBaselineFinancials()) {
-            result.setTracking(maskSensitive(result.getTracking()));
+        ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
+        if (!ctx.isFull()) {
+            result.setTracking(applyFieldVisibility(result.getTracking(), ctx));
         }
         return ApiResponse.success(result);
+    }
+
+    /**
+     * 内部执行成本弹窗打开时调用：只读，算出默认建议金额 + 算出来的依据说明，不修改任何数据。
+     */
+    @GetMapping("/{id}/executor-cost-suggestion")
+    public ApiResponse<ExecutorCostSuggestionResponse> suggestExecutorCost(@PathVariable Long id) {
+        return ApiResponse.success(trackingService.suggestExecutorCost(id));
+    }
+
+    /**
+     * 内部执行成本弹窗确认时调用：保存金额，跟状态流转是分开的两步操作。
+     */
+    @PatchMapping("/{id}/executor-cost")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    public ApiResponse<CollaborationTracking> setExecutorCost(
+            @PathVariable Long id, @RequestBody ExecutorCostRequest req) {
+        CollaborationTracking saved = trackingService.setExecutorCost(id, req.getAmount());
+        ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
+        CollaborationTracking out = ctx.isFull() ? saved : applyFieldVisibility(saved, ctx);
+        return ApiResponse.success(out);
+    }
+
+    /** 内部执行成本保存请求体 */
+    @lombok.Data
+    public static class ExecutorCostRequest {
+        private java.math.BigDecimal amount;
     }
 
     // ============ Excel ============
@@ -206,11 +238,53 @@ public class CollaborationTrackingController {
         return ApiResponse.success(batch.getId());
     }
 
-    private CollaborationTracking maskSensitive(CollaborationTracking t) {
+    /**
+     * 按当前登录账号的字段可见等级，对一条跟踪记录做脱敏（返回一个新副本，不改动原对象）。
+     * 规则跟原来"项目订单"模块的 ProjectFieldVisibility 完全一致：
+     *   - 红人成本/客户合作价格：GUEST 之外都能看
+     *   - 其他外部成本：FULL 都能看；项目负责人仅自己负责的记录能看，其余脱敏
+     *   - 内部执行成本：FULL 都能看；项目负责人/执行人员仅自己相关的记录能看，其余脱敏
+     *   - 提成比例/提成金额：FULL 都能看；项目负责人仅自己负责的记录只读可见，其余脱敏
+     *   - 项目毛利/可分配利润/公司利润(美金/人民币)：仅 FULL 可见
+     *   - 汇率：非敏感字段，所有角色都能看（不脱敏）
+     */
+    private CollaborationTracking applyFieldVisibility(CollaborationTracking t, ProjectFieldVisibility.Context ctx) {
         CollaborationTracking copy = new CollaborationTracking();
         BeanUtils.copyProperties(t, copy);
-        copy.setInfluencerCost(null);
-        copy.setClientPrice(null);
+
+        boolean isOwnManager = ctx.employeeId != null && t.getProjectManagerId() != null
+                && ctx.employeeId.equals(t.getProjectManagerId());
+        boolean isOwnExecutor = ctx.employeeId != null && t.getExecutorId() != null
+                && ctx.employeeId.equals(t.getExecutorId());
+        boolean isManagerTier  = ctx.tier == ProjectFieldVisibility.Tier.PROJECT_MANAGER;
+        boolean isExecutorTier = ctx.tier == ProjectFieldVisibility.Tier.EXECUTOR;
+
+        boolean canSeeBaseline = ctx.tier != ProjectFieldVisibility.Tier.GUEST;
+        if (!canSeeBaseline) {
+            copy.setInfluencerCost(null);
+            copy.setClientPrice(null);
+        }
+
+        if (!(ctx.isFull() || (isManagerTier && isOwnManager))) {
+            copy.setOtherExternalCost(null);
+        }
+
+        if (!(ctx.isFull() || (isManagerTier && isOwnManager) || (isExecutorTier && isOwnExecutor))) {
+            copy.setInternalExecutionCost(null);
+        }
+
+        if (!(ctx.isFull() || (isManagerTier && isOwnManager))) {
+            copy.setCommissionRate(null);
+            copy.setCommissionAmount(null);
+        }
+
+        if (!ctx.isFull()) {
+            copy.setGrossProfit(null);
+            copy.setDistributableProfit(null);
+            copy.setCompanyNetProfit(null);
+            copy.setRmbRevenue(null);
+        }
+
         return copy;
     }
 }

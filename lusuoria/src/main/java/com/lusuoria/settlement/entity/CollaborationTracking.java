@@ -156,11 +156,10 @@ public class CollaborationTracking extends BaseEntity {
     private Employee executor;
 
     /**
-     * 本跟踪记录已生成的项目订单 id（防止重复生成）。
-     * 为空表示还未生成过项目订单。
+     * 品牌方/团队/负责人/汇率等这类"跟客户方订单号联动"的逻辑，随着"项目订单"模块
+     * 在 2026-07 整体废弃而一并移除；clientOrderId 现在就是一个普通的录入字段，
+     * 不再触发任何自动生成/联动逻辑。
      */
-    @Column(name = "generated_project_order_id")
-    private Long generatedProjectOrderId;
 
     // ===== 基础财务字段（GUEST 之外都可见）=====
     /** 红人视频制作与发布成本（美金） */
@@ -174,6 +173,45 @@ public class CollaborationTracking extends BaseEntity {
     /** 备注：记录一些特殊情况 */
     @Column(name = "notes", columnDefinition = "TEXT")
     private String notes;
+
+    // ===== 以下字段 2026-07 从"项目订单"模块迁移过来（该模块已废弃），权限可见性
+    // 沿用原来的分级规则，具体由 ProjectFieldVisibility 在 Controller 层判定 =====
+
+    /** 汇率（人民币/美元）。仅 ADMIN 可修改，其他角色只读展示 */
+    @Column(name = "exchange_rate", precision = 10, scale = 4)
+    private java.math.BigDecimal exchangeRate;
+
+    /** 其他外部成本（人民币）。FULL 都能看/改；项目负责人仅自己负责的记录能看/改 */
+    @Column(name = "other_external_cost", precision = 15, scale = 2)
+    private java.math.BigDecimal otherExternalCost;
+
+    /** 内部执行成本（人民币）。FULL 都能看/改；项目负责人/执行人员仅自己相关的记录能看/改 */
+    @Column(name = "internal_execution_cost", precision = 15, scale = 2)
+    private java.math.BigDecimal internalExecutionCost;
+
+    /** 项目毛利（美金，自动计算）。仅 FULL（ADMIN/管理层/财务）可见 */
+    @Column(name = "gross_profit", precision = 15, scale = 2)
+    private java.math.BigDecimal grossProfit;
+
+    /** 可分配利润（美金，自动计算）。仅 FULL 可见 */
+    @Column(name = "distributable_profit", precision = 15, scale = 2)
+    private java.math.BigDecimal distributableProfit;
+
+    /** 提成比例。FULL 可见可改；项目负责人仅自己负责的记录只读可见 */
+    @Column(name = "commission_rate", precision = 5, scale = 4)
+    private java.math.BigDecimal commissionRate;
+
+    /** 提成金额（美金，自动计算）。FULL 可见；项目负责人仅自己负责的记录只读可见 */
+    @Column(name = "commission_amount", precision = 15, scale = 2)
+    private java.math.BigDecimal commissionAmount;
+
+    /** 公司利润（美金，自动计算）。仅 FULL 可见 */
+    @Column(name = "company_net_profit", precision = 15, scale = 2)
+    private java.math.BigDecimal companyNetProfit;
+
+    /** 公司利润（人民币，自动计算）。仅 FULL 可见 */
+    @Column(name = "rmb_revenue", precision = 15, scale = 2)
+    private java.math.BigDecimal rmbRevenue;
 
     /**
      * 当前是否有一条"待审核"的删除申请（有的话前端删除按钮要显示"审核中"）。

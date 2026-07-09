@@ -62,6 +62,13 @@ public class CollaborationTrackingRequest {
     private String influencerCost;
     private String clientPrice;
 
+    // ===== 以下字段 2026-07 从"项目订单"模块迁移过来，写权限由 service 层按
+    // ProjectFieldVisibility 分级校验（不满足条件时忽略请求体里的值，保留数据库原值）=====
+    private java.math.BigDecimal exchangeRate;
+    private java.math.BigDecimal otherExternalCost;
+    private java.math.BigDecimal internalExecutionCost;
+    private java.math.BigDecimal commissionRate;
+
     /** 备注：记录一些特殊情况 */
     private String notes;
 }

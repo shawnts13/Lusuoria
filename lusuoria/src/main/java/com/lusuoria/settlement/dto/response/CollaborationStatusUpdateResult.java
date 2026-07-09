@@ -15,4 +15,11 @@ import lombok.Data;
 public class CollaborationStatusUpdateResult {
     private CollaborationTracking tracking;
     private boolean pendingApproval;
+
+    /**
+     * true 表示这次状态流转触发了"设置内部执行成本"的条件（视频项目进度达到前置条件，
+     * 或红人结款进度被设置了值），且这条记录有执行人员、还没设置过内部执行成本，
+     * 前端收到这个标记后应该紧接着弹出"设置内部执行成本"弹窗。
+     */
+    private boolean needExecutorCost;
 }

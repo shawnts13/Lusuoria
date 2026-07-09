@@ -16,9 +16,9 @@ import com.lusuoria.settlement.entity.InfluencerBrandTeamView;
 import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.enums.ProjectType;
 import com.lusuoria.settlement.excel.InfluencerExcelHandler;
+import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
-import com.lusuoria.settlement.repository.ProjectOrderRepository;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -43,7 +43,7 @@ public class InfluencerController {
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private InfluencerBrandTeamRepository influencerBrandTeamRepo;
     @Autowired private InfluencerExcelHandler excelHandler;
-    @Autowired private ProjectOrderRepository projectOrderRepo;
+    @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private DomainCache domainCache;
@@ -131,11 +131,16 @@ public class InfluencerController {
         return ApiResponse.success(result);
     }
 
+    /**
+     * 红人合作次数：原来统计的是"已生成项目订单"的数量，2026-07 随"项目订单"模块废弃
+     * 改成直接统计红人合作跟踪记录数（口径更直观：有多少条合作记录就是合作了多少次，
+     * 不再要求必须填了"客户方的项目订单"才算数）。
+     */
     @PostMapping("/project-counts")
     public ApiResponse<Map<Long, Long>> projectCounts(@RequestBody List<Long> influencerIds) {
         Map<Long, Long> result = new java.util.LinkedHashMap<Long, Long>();
         for (Long id : influencerIds) result.put(id, 0L);
-        projectOrderRepo.countByInfluencerIds(influencerIds)
+        trackingRepo.countByInfluencerIds(influencerIds)
                 .forEach(row -> result.put((Long) row[0], (Long) row[1]));
         return ApiResponse.success(result);
     }

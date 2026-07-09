@@ -58,12 +58,12 @@ public class InfluencerPaymentExcelHandler {
         XSSFCellStyle nor   = createNormalStyle(wb);
 
         // 列定义：(标题, 是否敏感)
+        // 原来这里还有"红人团队"、"关联项目编号"两列，数据来自"项目订单"关联，
+        // 随着该模块在 2026-07 整体废弃一并移除（前端从未实际使用过这个关联，不涉及数据迁移）
         List<String[]> cols = new ArrayList<String[]>();
         cols.add(new String[]{"结款单号",     "0"});
         cols.add(new String[]{"结算月份",     "0"});
-        cols.add(new String[]{"红人团队",     "0"});
         cols.add(new String[]{"红人社媒完整名字",     "0"});
-        cols.add(new String[]{"关联项目编号", "0"});
         cols.add(new String[]{"合作内容",     "0"});
         cols.add(new String[]{"合作数量",     "0"});
         cols.add(new String[]{"红人单价",     "0"});
@@ -97,10 +97,7 @@ public class InfluencerPaymentExcelHandler {
 
             setCellStr(row, c++, p.getPaymentNo(), nor);
             setCellStr(row, c++, p.getSettlementMonth(), nor);
-            setCellStr(row, c++, p.getProjectOrder() != null && p.getProjectOrder().getTeam() != null
-                    ? p.getProjectOrder().getTeam().getName() : "", nor);
             setCellStr(row, c++, p.getInfluencer() != null ? p.getInfluencer().getAccountName() : "", nor);
-            setCellStr(row, c++, p.getProjectOrder() != null ? p.getProjectOrder().getInternalProjectNo() : "", nor);
             setCellStr(row, c++, p.getCooperationContent(), nor);
             setCellNum(row, c++, p.getCooperationQuantity() != null ? (double) p.getCooperationQuantity() : null, nor);
             setCellMoney(row, c++, p.getInfluencerUnitPrice(), money);

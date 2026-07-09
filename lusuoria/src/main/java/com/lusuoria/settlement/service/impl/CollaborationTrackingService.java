@@ -5,12 +5,12 @@ import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.dto.request.CollaborationTrackingRequest;
 import com.lusuoria.settlement.dto.request.CollaborationTrackingStatusRequest;
 import com.lusuoria.settlement.dto.response.CollaborationStatusUpdateResult;
+import com.lusuoria.settlement.dto.response.ExecutorCostSuggestionResponse;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.PendingApproval;
-import com.lusuoria.settlement.entity.ProjectOrder;
 import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.PendingApprovalModule;
@@ -18,12 +18,12 @@ import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
-import com.lusuoria.settlement.repository.ProjectOrderRepository;
 import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.entity.InfluencerBrandTeam;
 import com.lusuoria.settlement.util.ProjectNoAllocator;
 import com.lusuoria.settlement.util.ProjectNoGenerator;
 import com.lusuoria.settlement.util.ProfitCalculator;
+import com.lusuoria.settlement.util.ProjectFieldVisibility;
 import com.lusuoria.settlement.util.RoleUtil;
 import com.lusuoria.settlement.util.UrlNormalizer;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,6 +31,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
@@ -45,14 +46,12 @@ import java.util.Set;
  * 关键逻辑：
  *  1. 保存时从红人库拷贝 teamName / countryMarket 快照
  *  2. 去重：influencerId + publishLink + publishDate 三者完全相同视为重复（链接和日期均空时不去重）
- *  3. 订单ID联动项目订单：
- *     - 空 -> 有值：自动新增一条项目订单
- *     - 没变：不重复生成
- *     - 改成另一个值 / 清空：如果这条记录已经有关联的项目订单，直接拒绝这次修改，
- *       提示需要先把那条项目订单删除（走审核流程）才能改。不再有"自动删旧建新"的后门，
- *       因为那样等于绕开了项目订单的删除审核。
- *  4. 删除：项目订单、红人合作跟踪都不再直接删除，而是生成一条"待处理"审核事项，
+ *  3. 删除：不直接删除，而是生成一条"待处理"审核事项，
  *     由 ADMIN 在"待处理"模块里同意后才真正执行删除（见 PendingApprovalService）。
+ *  4. 2026-07："项目订单"模块整体废弃，原来那边的成本/利润字段（其他外部成本、
+ *     内部执行成本、项目毛利、可分配利润、提成、公司利润等）以及对应的权限分级
+ *     （ProjectFieldVisibility）、"设置内部执行成本"流程，全部搬到了这个模块里。
+ *     "客户方的项目订单"字段不再触发任何自动生成/联动逻辑，纯粹是一个录入字段。
  *
  * 性能说明（2026-07）：
  *  单条保存（表单编辑）跟 Excel 批量导入，校验规则必须完全一致，所以核心逻辑抽成了
@@ -68,23 +67,17 @@ public class CollaborationTrackingService {
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private InfluencerBrandTeamRepository influencerBrandTeamRepo;
     @Autowired private InfluencerTeamCache teamCache;
-    @Autowired private ProjectOrderRepository projectOrderRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private ProjectNoAllocator projectNoAllocator;
     @Autowired private ProjectNoGenerator projectNoGenerator;
     @Autowired private ProfitCalculator profitCalculator;
-    @Autowired private ExchangeRateService exchangeRateService;
     @Autowired private PendingApprovalService pendingApprovalService;
+    @Autowired private ProjectFieldVisibility fieldVisibility;
 
     /** 自定义异常：去重命中 */
     public static class DuplicateTrackingException extends RuntimeException {
         public DuplicateTrackingException(String msg) { super(msg); }
-    }
-
-    /** 自定义异常：已有关联项目订单，不能直接改/清空订单ID */
-    public static class LinkedOrderExistsException extends RuntimeException {
-        public LinkedOrderExistsException(String msg) { super(msg); }
     }
 
     /** 自定义异常：采买旧视频的原链接查重命中 */
@@ -234,11 +227,9 @@ public class CollaborationTrackingService {
                                           Influencer influencer, CollaborationTracking existingOrNull,
                                           LookupContext ctx) {
         CollaborationTracking tracking;
-        String oldOrderId = null;
 
         if (existingOrNull != null) {
             tracking = existingOrNull;
-            oldOrderId = tracking.getClientOrderId();
         } else {
             tracking = new CollaborationTracking();
             tracking.setIsDeleted(false);
@@ -353,12 +344,49 @@ public class CollaborationTrackingService {
             tracking.setExecutor(null);
         }
 
+        // ===== 2026-07 从"项目订单"模块迁移过来的成本/利润字段，写权限沿用原来的分级规则 =====
+        // 当前登录账号的字段可见/可编辑等级（FULL / 项目负责人 / 执行人员 / 基础），下面多处要用
+        ProjectFieldVisibility.Context fvCtx = fieldVisibility.resolve();
+        boolean isOwnManager = fvCtx.employeeId != null && tracking.getProjectManager() != null
+                && fvCtx.employeeId.equals(tracking.getProjectManager().getId());
+        boolean isOwnExecutor = fvCtx.employeeId != null && tracking.getExecutor() != null
+                && fvCtx.employeeId.equals(tracking.getExecutor().getId());
+
+        // 提成比例：换了新的项目负责人、且请求体没带提成比例时，自动带入该负责人的默认提成比例
+        if (req.getProjectManagerId() != null && req.getCommissionRate() == null && fvCtx.isFull()) {
+            Employee manager = employeeCache.findById(req.getProjectManagerId());
+            if (manager != null && manager.getDefaultCommissionRate() != null) {
+                tracking.setCommissionRate(manager.getDefaultCommissionRate());
+            }
+        }
+        if (req.getCommissionRate() != null && fvCtx.isFull()) {
+            tracking.setCommissionRate(req.getCommissionRate());
+        }
+
+        // 汇率仅 ADMIN 可修改：非 ADMIN 提交的 exchangeRate 会被忽略，保留数据库原值
+        if (RoleUtil.canEditExchangeRate()) {
+            tracking.setExchangeRate(req.getExchangeRate());
+        }
+
+        // 其他外部成本 / 内部执行成本：按角色 + 是否本人负责/执行 决定能不能改
+        // （不满足条件时忽略请求体里的值，保留数据库原值，不报错，简单地"改了也不生效"）
+        if (fvCtx.isFull() || (fvCtx.tier == ProjectFieldVisibility.Tier.PROJECT_MANAGER && isOwnManager)) {
+            tracking.setOtherExternalCost(req.getOtherExternalCost());
+        }
+        if (fvCtx.isFull()
+                || (fvCtx.tier == ProjectFieldVisibility.Tier.PROJECT_MANAGER && isOwnManager)
+                || (fvCtx.tier == ProjectFieldVisibility.Tier.EXECUTOR && isOwnExecutor)) {
+            tracking.setInternalExecutionCost(req.getInternalExecutionCost());
+        }
+
         if (RoleUtil.canViewBaselineFinancials()) {
             tracking.setInfluencerCost(req.getInfluencerCost());
             tracking.setClientPrice(req.getClientPrice());
         }
 
-        String newOrderId = emptyToNull(req.getClientOrderId());
+        // 毛利/可分配利润/提成金额/公司利润这些自动计算字段，每次保存都重新算一遍，
+        // 保证跟上面刚写入的红人成本/客户价/汇率/成本/提成比例这些原始值同步
+        profitCalculator.calculate(tracking);
 
         // ---- 去重判断（仅当链接和日期都非空时）----
         if (tracking.getPublishLink() != null && tracking.getPublishDate() != null) {
@@ -373,48 +401,12 @@ public class CollaborationTrackingService {
             }
         }
 
-        // ---- 订单ID联动项目订单 ----
-        boolean fromEmptyToValue = (oldOrderId == null && newOrderId != null);
-        boolean changedToAnother  = (oldOrderId != null && newOrderId != null && !oldOrderId.equals(newOrderId));
-        boolean clearedToEmpty    = (oldOrderId != null && newOrderId == null);
-
-        // 已经有关联的项目订单时，不允许改成另一个订单号、也不允许清空——
-        // 必须先把那条项目订单删掉（走删除审核流程）才能再改这个字段，
-        // 不再有"自动删旧建新"的后门（那样等于绕开了项目订单的删除审核）
-        if ((changedToAnother || clearedToEmpty) && tracking.getGeneratedProjectOrderId() != null) {
-            ProjectOrder linkedOrder = projectOrderRepo.findByIdAndIsDeletedFalse(tracking.getGeneratedProjectOrderId())
-                    .orElse(null);
-            String linkedNo = linkedOrder != null ? linkedOrder.getInternalProjectNo() : "（编号未知）";
-            throw new LinkedOrderExistsException(
-                    "已经存在内部项目编号为 " + linkedNo + " 的项目订单，请先将其删除后再修改");
-        }
-
-        tracking.setClientOrderId(newOrderId);
+        // "客户方的项目订单"现在就是一个普通的录入字段：随着"项目订单"模块整体废弃，
+        // 不再触发任何自动生成/联动逻辑，也不再限制怎么改
+        tracking.setClientOrderId(emptyToNull(req.getClientOrderId()));
 
         CollaborationTracking saved = trackingRepo.save(tracking);
-
-        // 空->有值：为本条记录生成一条独立的项目订单
-        if (fromEmptyToValue) {
-            Long newOrderPk = createProjectOrderFromTracking(saved, influencer, newOrderId);
-            saved.setGeneratedProjectOrderId(newOrderPk);
-            saved = trackingRepo.save(saved);
-        } else if (saved.getGeneratedProjectOrderId() != null) {
-            // 已经关联了项目订单：内部执行人员、发布时间(->项目视频发布时间) 每次保存都同步过去
-            syncToLinkedOrder(saved);
-        }
-
         return saved;
-    }
-
-    /** 把跟踪记录的品牌方、团队、执行人员、发布时间同步到已关联的项目订单（两边共用同一个内部项目编号） */
-    private void syncToLinkedOrder(CollaborationTracking t) {
-        projectOrderRepo.findByIdAndIsDeletedFalse(t.getGeneratedProjectOrderId()).ifPresent(order -> {
-            order.setBrand(t.getBrand());
-            order.setTeam(t.getTeam());
-            order.setExecutor(t.getExecutor());
-            order.setVideoPublishDate(t.getPublishDate());
-            projectOrderRepo.save(order);
-        });
     }
 
     /**
@@ -485,65 +477,165 @@ public class CollaborationTrackingService {
         CollaborationTracking saved = trackingRepo.save(t);
         result.setTracking(saved);
         result.setPendingApproval(false);
+
+        // 内部执行成本设置流程触发：视频项目进度改成达到前置条件的状态、或者红人结款进度
+        // 被设置/修改了值，这两种情况下，如果这条记录有内部执行人员、且还没设置过内部执行成本，
+        // 就需要触发一次"设置内部执行成本"，由前端弹窗让用户确认/填写金额
+        // （已经设置过的不会再触发，那种情况直接去编辑表单或用手动入口改这个金额字段）
+        boolean triggered = (newProgress != null && newProgress.allowsPaymentProgress()) || newPayment != null;
+        if (triggered && saved.getExecutorId() != null && saved.getInternalExecutionCost() == null) {
+            result.setNeedExecutorCost(true);
+        }
         return result;
     }
 
     /**
-     * 根据跟踪记录自动新增一条项目订单，返回新订单的主键 id。
-     * 同一订单ID允许多条（每个视频各一条），不再按订单号防重复。
+     * 内部执行成本弹窗用：根据执行人员的费率档位，算出这笔记录默认应该填多少钱，
+     * 以及算出这个金额的依据说明。只读计算，不修改任何数据。
+     * 2026-07 从 ProjectOrderServiceImpl 迁移过来，逻辑完全不变，只是计算对象换成了
+     * CollaborationTracking，月份口径从"项目视频发布时间"改叫"发布时间"（本来就是同一个字段）。
+     *
+     * 旧素材重发的分档规则（跟员工管理里维护的费率字段说明完全一致）：
+     *   第1-50条一个价，第51-100条一个价，第101条及以上一个价，且第101条以上
+     *   这部分的当月累计金额有封顶。"第几条"是按这个执行人员在这个发布月份下，
+     *   已经赋值过内部执行成本的旧素材重发记录数量 + 1 来算的——没赋值的记录不算数。
      */
-    public Long createProjectOrderFromTracking(CollaborationTracking t, Influencer influencer, String clientOrderId) {
-        ProjectOrder order = new ProjectOrder();
-        order.setIsDeleted(false);
-        order.setClientOrderNo(clientOrderId);          // 跟踪表"客户方的项目订单" -> 项目订单"甲方订单"
+    @Transactional(readOnly = true)
+    public ExecutorCostSuggestionResponse suggestExecutorCost(Long id) {
+        CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
+                .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
+        ExecutorCostSuggestionResponse resp = new ExecutorCostSuggestionResponse();
 
-        // projectMonth：优先用发布时间所在月份，否则用当前月
-        Date base = t.getPublishDate() != null ? t.getPublishDate() : new Date();
-        String projectMonth = new SimpleDateFormat("yyyyMM").format(base);
-        order.setProjectMonth(projectMonth);
-
-        // projectType：跟随红人类型
-        order.setProjectType(influencer.getInfluencerType());
-
-        // 品牌方（项目订单要求 NOT NULL，跟踪记录必须有品牌方才能生成）
-        if (t.getBrand() == null) {
-            throw new RuntimeException("生成项目订单失败：该跟踪记录未填写品牌方");
+        if (t.getExecutorId() == null) {
+            resp.setBreakdown("该记录没有内部执行人员，无需设置内部执行成本");
+            return resp;
         }
-        order.setBrand(t.getBrand());
-        order.setInfluencer(influencer);
-        order.setCooperationContent(t.getDemandContent());
-        order.setVideoType(t.getVideoType());
-
-        // 项目负责人 + 提成比例（从员工管理里该员工的默认提成比例带入）
-        if (t.getProjectManager() != null) {
-            order.setProjectManager(t.getProjectManager());
-            order.setCommissionRate(t.getProjectManager().getDefaultCommissionRate());
+        Employee executor = employeeCache.findById(t.getExecutorId());
+        if (executor == null) {
+            resp.setBreakdown("执行人员信息不存在，请手动填写金额");
+            return resp;
+        }
+        if (t.getPublishDate() == null) {
+            resp.setBreakdown("该记录尚未填写\"发布时间\"，无法按月计算，请手动填写金额");
+            return resp;
+        }
+        if (t.getProjectManagerId() == null) {
+            resp.setBreakdown("该记录尚未填写\"项目负责人\"，无法判断计算规则，请手动填写金额");
+            return resp;
+        }
+        VideoType videoType = t.getVideoType();
+        if (videoType == null) {
+            resp.setBreakdown("该记录尚未填写\"项目视频类型\"，无法计算，请手动填写金额");
+            return resp;
         }
 
-        // 内部执行人员、红人团队、项目视频发布时间：从跟踪记录带过来，以后跟踪记录改了会自动同步
-        order.setExecutor(t.getExecutor());
-        order.setTeam(t.getTeam());
-        order.setVideoPublishDate(t.getPublishDate());
+        String month = new SimpleDateFormat("yyyyMM").format(t.getPublishDate());
+        String monthLabel = Integer.parseInt(month.substring(4)) + "月";
 
-        // 汇率：按"上个月最后一个工作日"的中国银行/Frankfurter 汇率（与数据看板逻辑一致）
-        // 有发布日期：用发布日期所在月份；没有发布日期：用当前日期所在月份
-        Date rateBaseDate = t.getPublishDate() != null ? t.getPublishDate() : new Date();
-        String rateMonth = new SimpleDateFormat("yyyyMM").format(rateBaseDate);
-        order.setExchangeRate(exchangeRateService.getRateForMonth(rateMonth).getUsdToCny());
+        // 关键业务规则：内部执行成本是不是按员工管理里维护的费率梯度算，取决于这条记录
+        // 的项目负责人是不是"管理层"（目前系统里只有一个人是管理层）——
+        //   - 是管理层：按费率梯度自动算出建议金额，这部分成本会影响公司利润
+        //   - 不是管理层：说明这个执行人员的工资是这个项目负责人自己掏钱付的，
+        //     系统不知道他们之间是怎么谈的价格，默认给0让他自己填，只是告诉他
+        //     "这个执行人员这个月已经帮你结算过多少笔、分别是什么类型"作为参考，
+        //     这部分金额不会影响公司利润（在 ProfitCalculator 里已经处理）
+        if (!profitCalculator.isManagementOrder(t)) {
+            resp.setSuggestedAmount(java.math.BigDecimal.ZERO);
+            resp.setRateBasedSuggestion(false);
+            List<CollaborationTracking> costed = trackingRepo.findCostedOrdersForExecutorAndManager(
+                    executor.getId(), t.getProjectManagerId(), month);
+            Map<VideoType, Long> countByType = new java.util.EnumMap<>(VideoType.class);
+            for (CollaborationTracking c : costed) {
+                if (c.getVideoType() != null) countByType.merge(c.getVideoType(), 1L, Long::sum);
+            }
+            StringBuilder sb = new StringBuilder();
+            sb.append(monthLabel).append("该执行人员已为你结算：");
+            if (countByType.isEmpty()) {
+                sb.append("暂无记录");
+            } else {
+                List<String> parts = new ArrayList<>();
+                for (Map.Entry<VideoType, Long> e : countByType.entrySet()) {
+                    parts.add(e.getKey().getLabel() + " " + e.getValue() + " 笔");
+                }
+                sb.append(String.join("、", parts));
+            }
+            sb.append("，共计 ").append(costed.size()).append(" 笔。");
+            sb.append("工资由你自行支付和约定，请手动填写金额。");
+            resp.setBreakdown(sb.toString());
+            return resp;
+        }
 
-        // 金额：把跟踪记录的成本/客户价带到项目订单（解析成数字，解析失败则留空）
-        order.setClientPrice(parseAmount(t.getClientPrice()));
-        order.setInfluencerCost(parseAmount(t.getInfluencerCost()));
+        resp.setRateBasedSuggestion(true);
+        switch (videoType) {
+            case REAL_SHOT_NEW: {
+                java.math.BigDecimal rate = executor.getRateRealShotNew();
+                resp.setSuggestedAmount(rate);
+                resp.setBreakdown(monthLabel + "该执行人员处理实拍新视频：¥" + fmtAmount(rate));
+                break;
+            }
+            case REAL_SHOT_NEW_PHOTO: {
+                resp.setSuggestedAmount(null);
+                resp.setBreakdown("\"实拍新图片\"这个视频类型目前还没有配置对应的费率，请手动填写金额");
+                break;
+            }
+            case AI_NEW_MATERIAL: {
+                java.math.BigDecimal rate = executor.getRateAiNewMaterial();
+                resp.setSuggestedAmount(rate);
+                resp.setBreakdown(monthLabel + "该执行人员处理AI新素材：¥" + fmtAmount(rate));
+                break;
+            }
+            case OLD_MATERIAL_REPOST: {
+                List<CollaborationTracking> costed = trackingRepo
+                        .findCostedOldMaterialOrdersForExecutor(executor.getId(), t.getProjectManagerId(), month);
+                int countSoFar = costed.size();
+                int thisOrderNumber = countSoFar + 1;
+                java.math.BigDecimal rate;
+                String tierLabel;
+                if (thisOrderNumber <= 50) {
+                    rate = executor.getRateOldMaterialTier1();
+                    tierLabel = "1-50";
+                } else if (thisOrderNumber <= 100) {
+                    rate = executor.getRateOldMaterialTier2();
+                    tierLabel = "51-100";
+                } else {
+                    rate = executor.getRateOldMaterialTier3();
+                    tierLabel = "101及以上";
+                    java.math.BigDecimal cap = executor.getOldMaterialMonthlyCap();
+                    if (cap != null && rate != null) {
+                        // 累计"第101条及以上"这部分已经挣到的钱（在这批已赋值的记录里，
+                        // 排在第101个及以后的才算，前100个属于tier1/tier2，不计入这个封顶）
+                        java.math.BigDecimal tier3EarnedSoFar = java.math.BigDecimal.ZERO;
+                        for (int idx = 100; idx < costed.size(); idx++) {
+                            java.math.BigDecimal c = costed.get(idx).getInternalExecutionCost();
+                            if (c != null) tier3EarnedSoFar = tier3EarnedSoFar.add(c);
+                        }
+                        java.math.BigDecimal remaining = cap.subtract(tier3EarnedSoFar);
+                        if (remaining.compareTo(java.math.BigDecimal.ZERO) < 0) remaining = java.math.BigDecimal.ZERO;
+                        if (rate.compareTo(remaining) > 0) rate = remaining;
+                    }
+                }
+                resp.setSuggestedAmount(rate);
+                resp.setBreakdown(monthLabel + "该执行人员已经处理了" + countSoFar + "笔旧素材重发记录，该笔(第"
+                        + thisOrderNumber + "笔)旧素材重发(" + tierLabel + ")：¥" + fmtAmount(rate));
+                break;
+            }
+        }
+        return resp;
+    }
 
-        // 项目编号：直接复用跟踪记录已生成的编号（跟踪记录新建时就已经分配好了）
-        order.setInternalProjectNo(t.getInternalProjectNo());
+    private String fmtAmount(java.math.BigDecimal v) {
+        return v == null ? "0.00" : v.setScale(2, java.math.RoundingMode.HALF_UP).toString();
+    }
 
-        // 计算毛利/可分配利润/提成/公司利润（之前漏调用，导致列表显示"—"，
-        // 编辑弹窗才显示正常是因为前端实时算了一遍，但数据库里其实是空的）
-        profitCalculator.calculate(order);
-
-        ProjectOrder savedOrder = projectOrderRepo.save(order);
-        return savedOrder.getId();
+    /** 保存内部执行成本（跟状态流转分开，是独立的一步操作） */
+    @Transactional
+    public CollaborationTracking setExecutorCost(Long id, java.math.BigDecimal amount) {
+        CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
+                .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
+        t.setInternalExecutionCost(amount);
+        // 内部执行成本变了，项目毛利往下的可分配利润/负责人提成/公司利润这些都要跟着重新算一遍
+        profitCalculator.calculate(t);
+        return trackingRepo.save(t);
     }
 
     /** 把金额文本解析成 BigDecimal，非数字（如"价格待定"）返回 null */

@@ -17,7 +17,6 @@ public class InfluencerPaymentRequest {
     @NotNull(message = "红人不能为空")
     private Long influencerId;
 
-    private Long projectOrderId;
     private String cooperationContent;
     private Integer cooperationQuantity;
     private BigDecimal influencerUnitPrice;

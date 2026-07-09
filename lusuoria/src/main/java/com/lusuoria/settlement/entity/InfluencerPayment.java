@@ -31,13 +31,10 @@ public class InfluencerPayment extends BaseEntity {
     @JoinColumn(name = "influencer_id", nullable = false)
     private Influencer influencer;
 
-    @Column(name = "project_order_id", insertable = false, updatable = false)
-    private Long projectOrderId;
-
-    @JsonIgnore
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "project_order_id")
-    private ProjectOrder projectOrder;
+    /**
+     * 原来这里有一个可选的"关联项目订单"字段，随着"项目订单"模块在 2026-07 整体废弃
+     * 一并移除（前端从未实际使用过这个字段，不涉及数据迁移）。
+     */
 
     @Column(name = "cooperation_content", length = 200)
     private String cooperationContent;

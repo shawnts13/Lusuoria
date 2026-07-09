@@ -5,12 +5,10 @@ import com.lusuoria.settlement.dto.request.InfluencerPaymentStatusRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.InfluencerPayment;
 import com.lusuoria.settlement.entity.Influencer;
-import com.lusuoria.settlement.entity.ProjectOrder;
 import com.lusuoria.settlement.enums.InfluencerPaymentStatus;
 import com.lusuoria.settlement.excel.InfluencerPaymentExcelHandler;
 import com.lusuoria.settlement.repository.InfluencerPaymentRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
-import com.lusuoria.settlement.repository.ProjectOrderRepository;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
@@ -33,7 +31,6 @@ public class InfluencerPaymentController {
 
     @Autowired private InfluencerPaymentRepository paymentRepo;
     @Autowired private InfluencerRepository influencerRepo;
-    @Autowired private ProjectOrderRepository projectOrderRepo;
     @Autowired private InfluencerPaymentExcelHandler excelHandler;
 
     @GetMapping
@@ -98,11 +95,6 @@ public class InfluencerPaymentController {
         Influencer influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getInfluencerId())
                 .orElseThrow(() -> new RuntimeException("红人不存在"));
         payment.setInfluencer(influencer);
-        if (req.getProjectOrderId() != null) {
-            ProjectOrder order = projectOrderRepo.findByIdAndIsDeletedFalse(req.getProjectOrderId())
-                    .orElseThrow(() -> new RuntimeException("项目订单不存在"));
-            payment.setProjectOrder(order);
-        }
         payment.setCooperationContent(req.getCooperationContent());
         payment.setCooperationQuantity(req.getCooperationQuantity());
         payment.setInfluencerUnitPrice(req.getInfluencerUnitPrice());
