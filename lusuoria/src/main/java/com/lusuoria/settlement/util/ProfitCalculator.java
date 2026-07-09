@@ -25,9 +25,8 @@ import java.math.RoundingMode;
  *     不是公司出的钱，所以哪怕这个字段填了金额，也不能从公司利润里扣
  * 其他外部成本不受这条规则影响，不管谁是项目负责人都正常扣减。
  *
- * 注意3：红人成本/客户合作价格在 CollaborationTracking 上是文本字段（历史上允许填
- * "价格待定"这类非数字备注），参与计算前需要先解析成数字，解析不出来的按0处理，
- * 但不会反过来改写这两个文本字段本身的显示内容。
+ * 注意3：红人成本/客户合作价格 2026-07 起是严格数字字段（numeric(15,2)），不再像
+ * 以前那样允许"价格待定"这类文本备注，所以这里不需要再做任何文本解析。
  *
  * 红人成本一律以"实际值"为准（红人合作跟踪 Excel 导入 / 前端录入进来的值直填），
  * 不分红人类型：
@@ -49,7 +48,7 @@ public class ProfitCalculator {
     public static final String MANAGEMENT_ROLE = "管理层";
 
     public void calculate(CollaborationTracking t) {
-        BigDecimal clientPrice   = safe(parseAmount(t.getClientPrice()));
+        BigDecimal clientPrice   = safe(t.getClientPrice());
         BigDecimal commissionRate = safe(t.getCommissionRate());
         BigDecimal exchangeRate  = safe(t.getExchangeRate());
 
@@ -63,7 +62,7 @@ public class ProfitCalculator {
         BigDecimal execCost = isManagementOrder(t) ? execCostRaw : BigDecimal.ZERO;
 
         // 红人成本：不分红人类型，一律取录入的实际值（直填）
-        BigDecimal influencerCost = safe(parseAmount(t.getInfluencerCost()));
+        BigDecimal influencerCost = safe(t.getInfluencerCost());
 
         // 项目毛利 = 客户合作价格 - 红人成本 - 其他外部成本（不分红人类型，口径一致）
         BigDecimal grossProfit = clientPrice
@@ -104,16 +103,6 @@ public class ProfitCalculator {
     private BigDecimal toUsd(BigDecimal rmbAmount, BigDecimal exchangeRate) {
         if (exchangeRate == null || exchangeRate.compareTo(BigDecimal.ZERO) <= 0) return BigDecimal.ZERO;
         return rmbAmount.divide(exchangeRate, SCALE, RoundingMode.HALF_UP);
-    }
-
-    /** 把金额文本解析成 BigDecimal，非数字（如"价格待定"）按 null 处理（参与计算时当0） */
-    private BigDecimal parseAmount(String s) {
-        if (s == null || s.trim().isEmpty()) return null;
-        try {
-            return new BigDecimal(s.trim().replaceAll(",", ""));
-        } catch (NumberFormatException e) {
-            return null;
-        }
     }
 
     private BigDecimal safe(BigDecimal v) {

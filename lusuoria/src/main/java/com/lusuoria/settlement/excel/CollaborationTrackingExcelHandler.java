@@ -114,6 +114,10 @@ public class CollaborationTrackingExcelHandler {
         "该字段默认为空，且只有当\"视频项目进度\"为\"已发布（未结算）\"、\"已加入客户未结算列表\"、"
         + "\"客户已结算\"时，该字段才会被启用";
 
+    /** 模板里两个金额列表头的提示语（Excel 原生批注，鼠标悬停可见） */
+    private static final String MONEY_FIELD_HINT =
+        "该字段必须是数字，支持公式（只要算出来的结果是数字即可），不支持填写文本备注";
+
     private static final String[] VIDEO_TYPE_LABELS = {
         "实拍新视频", "实拍新图片", "AI新素材", "旧素材重发"
     };
@@ -126,7 +130,6 @@ public class CollaborationTrackingExcelHandler {
         XSSFCellStyle hdrN = headerStyle(wb, false);
         XSSFCellStyle hdrS = headerStyle(wb, true);
         XSSFCellStyle wrap = wrapStyle(wb);
-        XSSFCellStyle red  = redStyle(wb);
 
         // 表头
         Row header = sheet.createRow(0);
@@ -180,8 +183,8 @@ public class CollaborationTrackingExcelHandler {
             setCellStr(row, c++, t.getClientOrderId(),     wrap);
             setCellStr(row, c++, t.getClientPaymentBatch(), wrap);
             if (canViewSensitive) {
-                setCellStrColored(row, c++, t.getInfluencerCost(), wrap, red);
-                setCellStrColored(row, c++, t.getClientPrice(),    wrap, red);
+                setCellMoney(row, c++, t.getInfluencerCost(), wrap);
+                setCellMoney(row, c++, t.getClientPrice(),    wrap);
             }
             setCellStr(row, c++, t.getNotes(), wrap);
         }
@@ -219,6 +222,9 @@ public class CollaborationTrackingExcelHandler {
 
         // "红人结款进度"表头加一条批注提示前置条件，避免误填
         addHeaderComment(sheet, wb, colIdxMap, "红人结款进度", PAYMENT_PROGRESS_HINT);
+        // 两个金额列加批注提示必须是数字，避免误填文本备注
+        addHeaderComment(sheet, wb, colIdxMap, "红人视频制作与发布成本（美金）", MONEY_FIELD_HINT);
+        addHeaderComment(sheet, wb, colIdxMap, "客户合作价格（美金）", MONEY_FIELD_HINT);
 
         // 示例行
         Map<String, String> ex = new HashMap<String, String>();
@@ -552,16 +558,23 @@ public class CollaborationTrackingExcelHandler {
                     req.setExecutorId(executor.getId());
                 }
 
-                // 敏感字段
+                // 敏感字段：2026-07 起这两个字段是严格数字，不再允许"价格待定"这类文本备注，
+                // 支持公式（只要算出来的结果是数字），单元格留空仍然允许（这两个字段本身选填）
                 if (canViewSensitive) {
-                    req.setInfluencerCost(firstNonNull(
-                            getStr(row, colMap, "红人视频制作与发布成本（美金）"),
-                            getStr(row, colMap, "红人成本$"),
-                            getStr(row, colMap, "红人成本")));
-                    req.setClientPrice(firstNonNull(
-                            getStr(row, colMap, "客户合作价格（美金）"),
-                            getStr(row, colMap, "客户合作价格$"),
-                            getStr(row, colMap, "客户合作价格")));
+                    try {
+                        req.setInfluencerCost(getMoneyCell(row, colMap,
+                                "红人视频制作与发布成本（美金）", "红人成本$", "红人成本"));
+                    } catch (NumberFormatException e) {
+                        errors.add("第" + (i + 1) + "行：红人视频制作与发布成本（美金）必须是数字");
+                        continue;
+                    }
+                    try {
+                        req.setClientPrice(getMoneyCell(row, colMap,
+                                "客户合作价格（美金）", "客户合作价格$", "客户合作价格"));
+                    } catch (NumberFormatException e) {
+                        errors.add("第" + (i + 1) + "行：客户合作价格（美金）必须是数字");
+                        continue;
+                    }
                 }
                 req.setNotes(getStr(row, colMap, "备注"));
 
@@ -705,16 +718,39 @@ public class CollaborationTrackingExcelHandler {
             if (value == null) return null;
             switch (value.getCellType()) {
                 case STRING:  return value.getStringValue().trim();
-                case NUMERIC: return String.valueOf((long) value.getNumberValue());
+                case NUMERIC: return formatNumericCell(value.getNumberValue());
                 case BOOLEAN: return String.valueOf(value.getBooleanValue());
                 default:      return null; // 公式出错(ERROR)或者算出来是空的
             }
         }
         switch (cell.getCellType()) {
             case STRING:  return cell.getStringCellValue().trim();
-            case NUMERIC: return String.valueOf((long) cell.getNumericCellValue());
+            case NUMERIC: return formatNumericCell(cell.getNumericCellValue());
             default:      return null;
         }
+    }
+
+    /**
+     * 把 Excel 数字单元格的值转成字符串，不丢小数位。
+     *
+     * 之前这里是 String.valueOf((long) d)，强制转 long 会把小数部分直接砍掉——
+     * 这就是"客户合作价格 266.6 导入后变成 266"这个 bug 的根因：只要红人合作跟踪的
+     * Excel 里这一列被 Excel 存成"数字"类型（而不是"文本"类型），小数点后的内容
+     * 就会在导入这一步被无声地丢弃，写进数据库的从一开始就是被砍过的整数。
+     *
+     * 整数单元格（比如 400）依然按整数展示成 "400"，不会因为改了这个方法就
+     * 无缘无故多出一个 ".0" 尾巴，保持跟以前一样的展示习惯。
+     */
+    private String formatNumericCell(double d) {
+        if (Double.isNaN(d) || Double.isInfinite(d)) return null;
+        if (d == Math.rint(d)) {
+            return String.valueOf((long) d);
+        }
+        // 用 BigDecimal.valueOf(double) 而不是 new BigDecimal(double)：
+        // 后者会把 266.6 这种数暴露出 double 本身的二进制表示误差，变成
+        // 266.60000000000002273737 这类垃圾精度；BigDecimal.valueOf 是基于
+        // Double.toString 的最短可回读表示来构造，能得到干净的 "266.6"。
+        return java.math.BigDecimal.valueOf(d).stripTrailingZeros().toPlainString();
     }
 
     /**
@@ -848,17 +884,16 @@ public class CollaborationTrackingExcelHandler {
         cell.setCellStyle(style);
     }
 
-    private void setCellStrColored(Row row, int col, String value,
-                                   CellStyle normalStyle, CellStyle redStyle) {
+    /**
+     * 写数字类型的金额单元格（红人视频制作与发布成本 / 客户合作价格专用）。
+     * 2026-07 起这两个字段是严格数字，不再有"价格待定"这类文本备注，
+     * 所以导出也改成写真正的 Excel 数字单元格（不再是文本+红色高亮），
+     * 方便用户在 Excel 里直接拿这两列做后续计算。
+     */
+    private void setCellMoney(Row row, int col, java.math.BigDecimal value, CellStyle style) {
         Cell cell = row.createCell(col);
-        cell.setCellValue(value != null ? value : "");
-        cell.setCellStyle(isRemark(value) ? redStyle : normalStyle);
-    }
-
-    private boolean isRemark(String value) {
-        if (value == null || value.trim().isEmpty()) return false;
-        try { Double.parseDouble(value.trim().replaceAll(",", "")); return false; }
-        catch (NumberFormatException e) { return true; }
+        if (value != null) cell.setCellValue(value.doubleValue());
+        cell.setCellStyle(style);
     }
 
     private String getStr(Row row, Map<String, Integer> map, String header) {
@@ -866,6 +901,49 @@ public class CollaborationTrackingExcelHandler {
         if (idx == null) return null;
         Cell cell = row.getCell(idx);
         return getStrByIdx(cell);
+    }
+
+    /**
+     * 读取"必须是数字"的金额列（红人视频制作与发布成本 / 客户合作价格专用，2026-07 起
+     * 这两个字段不再允许"价格待定"这类文本备注）。
+     *
+     * 支持多个候选表头（兼容旧列名），支持公式（只要算出来的结果是数字）。
+     * 单元格为空 -> 返回 null（这两个字段本身是选填的，可以不填）。
+     * 单元格有内容但读不出数字（比如填了"价格待定"这种文本，或者公式算出来是文本/报错）
+     * -> 抛 NumberFormatException，调用方捕获后报"第X行：xxx必须是数字"，不会静默接受成 0 或空。
+     */
+    private java.math.BigDecimal getMoneyCell(Row row, Map<String, Integer> colMap, String... headers) {
+        Integer idx = firstNonNullIdx(colMap, headers);
+        if (idx == null) return null;
+        Cell cell = row.getCell(idx);
+        if (cell == null) return null;
+
+        if (cell.getCellType() == CellType.FORMULA) {
+            FormulaEvaluator evaluator = FORMULA_EVALUATOR.get();
+            if (evaluator == null) return null;
+            CellValue value = evaluator.evaluate(cell);
+            if (value == null) return null;
+            switch (value.getCellType()) {
+                case NUMERIC: return java.math.BigDecimal.valueOf(value.getNumberValue());
+                case BLANK:   return null;
+                case STRING: {
+                    String s = value.getStringValue().trim();
+                    if (s.isEmpty()) return null;
+                    return new java.math.BigDecimal(s.replaceAll(",", "")); // 解析不出数字会抛 NumberFormatException
+                }
+                default: throw new NumberFormatException("公式结果不是数字");
+            }
+        }
+        switch (cell.getCellType()) {
+            case NUMERIC: return java.math.BigDecimal.valueOf(cell.getNumericCellValue());
+            case BLANK:   return null;
+            case STRING: {
+                String s = cell.getStringCellValue().trim();
+                if (s.isEmpty()) return null;
+                return new java.math.BigDecimal(s.replaceAll(",", "")); // 解析不出数字会抛 NumberFormatException
+            }
+            default: throw new NumberFormatException("不是数字");
+        }
     }
 
     private boolean isRowEmpty(Row row) {
@@ -941,16 +1019,6 @@ public class CollaborationTrackingExcelHandler {
         XSSFCellStyle style = wb.createCellStyle();
         style.setWrapText(true);
         style.setVerticalAlignment(VerticalAlignment.TOP);
-        return style;
-    }
-
-    private XSSFCellStyle redStyle(XSSFWorkbook wb) {
-        XSSFCellStyle style = wb.createCellStyle();
-        style.setWrapText(true);
-        style.setVerticalAlignment(VerticalAlignment.TOP);
-        XSSFFont font = wb.createFont();
-        font.setColor(new XSSFColor(new byte[]{(byte)192,(byte)0,(byte)0}, null));
-        style.setFont(font);
         return style;
     }
 }

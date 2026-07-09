@@ -436,7 +436,7 @@ public class DashboardStatsService {
 
     /** 计算一条红人合作跟踪记录的各项金额，逻辑与 ProfitCalculator 保持一致 */
     private Computed compute(CollaborationTracking o) {
-        BigDecimal clientPrice  = safe(parseAmount(o.getClientPrice()));
+        BigDecimal clientPrice  = safe(o.getClientPrice());
         BigDecimal otherCostRmb = safe(o.getOtherExternalCost());
         BigDecimal execCostRmb  = safe(o.getInternalExecutionCost());
         BigDecimal rate         = safe(o.getCommissionRate());
@@ -454,7 +454,7 @@ public class DashboardStatsService {
         BigDecimal execCostUsd = profitCalculator.isManagementOrder(o) ? execCostUsdRaw : BigDecimal.ZERO;
 
         // 红人成本：不分红人类型，一律取录入的实际值
-        BigDecimal influencerCost = safe(parseAmount(o.getInfluencerCost()));
+        BigDecimal influencerCost = safe(o.getInfluencerCost());
 
         BigDecimal grossProfit = clientPrice.subtract(influencerCost).subtract(otherCostUsd)
                 .setScale(SCALE, RoundingMode.HALF_UP);
@@ -483,16 +483,6 @@ public class DashboardStatsService {
         BigDecimal distributableProfit;
         BigDecimal commissionAmount;
         BigDecimal companyProfit;
-    }
-
-    /** 把金额文本解析成 BigDecimal，非数字（如"价格待定"）按 null 处理（参与计算时当0） */
-    private BigDecimal parseAmount(String s) {
-        if (s == null || s.trim().isEmpty()) return null;
-        try {
-            return new BigDecimal(s.trim().replaceAll(",", ""));
-        } catch (NumberFormatException e) {
-            return null;
-        }
     }
 
     private String brandNameOf(Long brandId) {

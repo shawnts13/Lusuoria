@@ -59,8 +59,8 @@ public class CollaborationTrackingRequest {
     private Long executorId;
 
     // 敏感字段
-    private String influencerCost;
-    private String clientPrice;
+    private java.math.BigDecimal influencerCost;
+    private java.math.BigDecimal clientPrice;
 
     // ===== 以下字段 2026-07 从"项目订单"模块迁移过来，写权限由 service 层按
     // ProjectFieldVisibility 分级校验（不满足条件时忽略请求体里的值，保留数据库原值）=====

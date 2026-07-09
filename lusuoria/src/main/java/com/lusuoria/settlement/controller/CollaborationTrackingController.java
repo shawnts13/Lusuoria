@@ -188,6 +188,18 @@ public class CollaborationTrackingController {
         private java.math.BigDecimal amount;
     }
 
+    /**
+     * 批量重新计算所有记录的毛利/可分配利润/提成/公司利润（仅 ADMIN）。
+     * 用途见 CollaborationTrackingService.recomputeAllProfits() 的说明——主要是给"有人绕过
+     * 系统直接改了数据库里的红人成本/客户合作价格之类原始值"这种情况做善后。
+     */
+    @PostMapping("/recompute-profits")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ApiResponse<String> recomputeProfits() {
+        int count = trackingService.recomputeAllProfits();
+        return ApiResponse.success("已重新计算 " + count + " 条记录");
+    }
+
     // ============ Excel ============
     @GetMapping("/export/excel")
     public void exportExcel(

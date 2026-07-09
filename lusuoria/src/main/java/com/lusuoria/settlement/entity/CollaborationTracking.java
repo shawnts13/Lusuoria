@@ -162,13 +162,16 @@ public class CollaborationTracking extends BaseEntity {
      */
 
     // ===== 基础财务字段（GUEST 之外都可见）=====
-    /** 红人视频制作与发布成本（美金） */
-    @Column(name = "influencer_cost", columnDefinition = "TEXT")
-    private String influencerCost;
+    /**
+     * 红人视频制作与发布成本（美金）。2026-07 起改成严格数字类型，不再支持"价格待定"
+     * 这类文本备注（之前是 TEXT，允许填备注；现在数据库层面就不允许存非数字内容了）。
+     */
+    @Column(name = "influencer_cost", precision = 15, scale = 2)
+    private java.math.BigDecimal influencerCost;
 
-    /** 客户合作价格（美金） */
-    @Column(name = "client_price", columnDefinition = "TEXT")
-    private String clientPrice;
+    /** 客户合作价格（美金）。同上，2026-07 起改成严格数字类型 */
+    @Column(name = "client_price", precision = 15, scale = 2)
+    private java.math.BigDecimal clientPrice;
 
     /** 备注：记录一些特殊情况 */
     @Column(name = "notes", columnDefinition = "TEXT")

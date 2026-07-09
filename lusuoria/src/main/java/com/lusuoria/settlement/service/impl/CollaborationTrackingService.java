@@ -638,14 +638,25 @@ public class CollaborationTrackingService {
         return trackingRepo.save(t);
     }
 
-    /** 把金额文本解析成 BigDecimal，非数字（如"价格待定"）返回 null */
-    private java.math.BigDecimal parseAmount(String s) {
-        if (s == null || s.trim().isEmpty()) return null;
-        try {
-            return new java.math.BigDecimal(s.trim().replaceAll(",", ""));
-        } catch (NumberFormatException e) {
-            return null;
+    /**
+     * 批量重新计算所有未删除记录的毛利/可分配利润/提成/公司利润这些自动计算字段。
+     *
+     * 用途：项目毛利这些字段是"保存时计算好存进数据库"的，不是每次读取都现算——正常情况下
+     * 每次保存都会重新算一遍，跟红人成本/客户合作价格这些原始值保持同步；但如果有人绕过
+     * 系统直接在数据库里改了 influencer_cost/client_price 之类的原始值（没有走保存接口），
+     * 存好的毛利等字段就不会跟着更新，直到这条记录下次被保存。这个方法就是用来处理这种
+     * "数据库改了原始值、但没走保存流程"之后的手动补算，仅 ADMIN 可调用。
+     *
+     * @return 实际处理的记录数
+     */
+    @Transactional
+    public int recomputeAllProfits() {
+        List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
+        for (CollaborationTracking t : all) {
+            profitCalculator.calculate(t);
+            trackingRepo.save(t);
         }
+        return all.size();
     }
 
     private String emptyToNull(String s) {
