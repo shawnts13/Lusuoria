@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.*;
 
 import javax.persistence.*;
+import java.util.Date;
 
 @Entity
 @Table(name = "sys_users")
@@ -48,4 +49,14 @@ public class SysUser extends BaseEntity {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "employee_id")
     private Employee employee;
+
+    /**
+     * 最后一次看到"进度提醒"登录弹窗的时间（2026-07 新增）。
+     * 每天北京时间 12点/18点/22点这三个节点，只要这个时间戳早于"最近一个已过去的节点时刻"，
+     * 下次登录/进入系统时就会再弹一次（见 ProgressReminderService.shouldShowPopup）。
+     * 用户点弹窗上的按钮（跳转待处理/我知道了）后更新为当前时间。
+     */
+    @Temporal(TemporalType.TIMESTAMP)
+    @Column(name = "last_seen_reminder_popup_at")
+    private Date lastSeenReminderPopupAt;
 }

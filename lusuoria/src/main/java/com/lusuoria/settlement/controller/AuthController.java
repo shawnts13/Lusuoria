@@ -27,6 +27,7 @@ public class AuthController {
     @Autowired private SysUserRepository userRepo;
     @Autowired private PasswordEncoder passwordEncoder;
     @Autowired private EmployeeCache employeeCache;
+    @Autowired private com.lusuoria.settlement.service.impl.ProgressReminderService progressReminderService;
 
     @PostMapping("/login")
     public ApiResponse<Map<String, Object>> login(@Valid @RequestBody LoginRequest req) {
@@ -47,6 +48,9 @@ public class AuthController {
         result.put("username",    user.getUsername());
         result.put("displayName", displayName);
         result.put("role",        user.getRole());
+        // "进度提醒"功能受众：看登录账号关联的员工角色是不是"管理层"，跟登录账号本身的
+        // ADMIN/STAFF/AUDITOR/GUEST 角色无关（见 ProgressReminderService.isManagementEmployee）
+        result.put("isManagement", progressReminderService.isManagementEmployee(user.getEmployeeId()));
 
         return ApiResponse.success(result);
     }
