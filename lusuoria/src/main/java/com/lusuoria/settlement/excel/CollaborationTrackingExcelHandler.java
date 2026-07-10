@@ -614,14 +614,16 @@ public class CollaborationTrackingExcelHandler {
                 // 注："客户方的项目订单"现在就是一个普通的录入字段（"项目订单"模块已废弃），
                 // 改这个字段不再有任何联动限制
 
-                // ---- "已纳入红人结款批次"这两个状态只能由红人结款模块内部设置——但只拦"改成"
-                //      这两个值，如果这一行对应的已有记录本来就是这个值且没有变化（比如重新导入
-                //      同一批已经纳入结款批次的数据），不算手动设置，放行，否则已纳入批次的记录
-                //      会连别的字段都没法再通过Excel更新。必须放在查重之后，因为要跟已有记录的
-                //      原值比较 ----
-                if (req.getInfluencerPaymentProgress() != null && req.getInfluencerPaymentProgress().isSystemManagedOnly()
-                        && (existingOrNull == null
-                            || req.getInfluencerPaymentProgress() != existingOrNull.getInfluencerPaymentProgress())) {
+                // ---- "已纳入红人结款批次"这两个状态只能由红人结款模块内部设置——不管是这一行想把
+                //      它改成这两个值之一，还是这一行对应的已有记录本来就是这两个值之一、这一行
+                //      想把它改离开（比如列清空了），都拒绝；值没变（比如重新导入同一批已经纳入
+                //      结款批次的数据，这一列还是原来的文案）不算，放行，否则已纳入批次的记录会连
+                //      别的字段都没法再通过Excel更新。必须放在查重之后，因为要跟已有记录的原值比较 ----
+                InfluencerPaymentProgress currentPayment = existingOrNull != null ? existingOrNull.getInfluencerPaymentProgress() : null;
+                InfluencerPaymentProgress requestedPayment = req.getInfluencerPaymentProgress();
+                boolean currentIsManaged = currentPayment != null && currentPayment.isSystemManagedOnly();
+                boolean requestedIsManaged = requestedPayment != null && requestedPayment.isSystemManagedOnly();
+                if ((currentIsManaged || requestedIsManaged) && requestedPayment != currentPayment) {
                     errors.add("第" + (i + 1) + "行：" + InfluencerPaymentProgress.SYSTEM_MANAGED_ERROR);
                     continue;
                 }

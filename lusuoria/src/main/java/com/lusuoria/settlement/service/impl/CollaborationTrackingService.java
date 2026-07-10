@@ -304,12 +304,11 @@ public class CollaborationTrackingService {
         // 这里是单条保存/批量落库共用的最终防线）
         if (existingOrNull == null || allowStatusUpdateOnEdit) {
             InfluencerPaymentProgress newPayment = req.getInfluencerPaymentProgress();
-            // 只拒绝"改成"这两个系统值——如果本来就是这个值且没有变化（比如 Excel 重新导入同一批
-            // 已经纳入结款批次的记录），不算手动设置，放行，不然已纳入批次的记录会连别的字段
-            // 都没法再更新了
-            boolean isChangingToSystemManaged = newPayment != null && newPayment.isSystemManagedOnly()
-                    && newPayment != tracking.getInfluencerPaymentProgress();
-            if (isChangingToSystemManaged) {
+            // 拒绝任何会改动这两个系统值的操作——不管是"改成"这两个值，还是记录当前已经是
+            // 这两个值之一、想手动"改离开"（那样会跟红人结款那边的批次记录对不上）。
+            // 唯一放行的例外：值压根没变（比如 Excel 重新导入同一批已经纳入结款批次的记录，
+            // 或者这次保存根本没碰这个字段），不然已纳入批次的记录会连别的字段都没法再更新了
+            if (isSystemManagedChange(tracking.getInfluencerPaymentProgress(), newPayment)) {
                 throw new RuntimeException(InfluencerPaymentProgress.SYSTEM_MANAGED_ERROR);
             }
             if (newPayment != null && (tracking.getProgress() == null || !tracking.getProgress().allowsPaymentProgress())) {
@@ -458,20 +457,16 @@ public class CollaborationTrackingService {
         CollaborationProgress newProgress = req.getProgress();
         InfluencerPaymentProgress newPayment = req.getInfluencerPaymentProgress();
 
-        // "已纳入红人结款批次"这两个状态只能由红人结款模块内部设置，状态流转接口不接受直接选中——
-        // 但只拦"改成"这两个值，本来就是（弹窗没改这个字段、原样提交回去）不算，否则已经纳入
-        // 批次的记录会连"视频项目进度"都没法再通过状态流转调整
-        if (newPayment != null && newPayment.isSystemManagedOnly() && newPayment != t.getInfluencerPaymentProgress()) {
-            throw new RuntimeException(InfluencerPaymentProgress.SYSTEM_MANAGED_ERROR);
-        }
-
         // 基本前置条件校验：想设置红人结款进度的值，视频项目进度必须已经达到要求
         if (newPayment != null && (newProgress == null || !newProgress.allowsPaymentProgress())) {
             throw new RuntimeException(InfluencerPaymentProgress.PRECONDITION_ERROR);
         }
 
         // 倒退检测：红人结款进度当前已有值 + 视频项目进度当前满足条件 + 这次要改成不满足条件的
-        // 另一个状态 —— 这种改动需要走管理员审核，不能直接生效
+        // 另一个状态 —— 这种改动需要走管理员审核，不能直接生效。这条路径本身已经是一个受控动作
+        // （必须填写理由 + 管理员审核才会真正落地，审核通过时红人结款进度固定清空，不看这次请求
+        // 传的 newPayment），所以不受下面"系统状态只能内部设置"限制的约束——那条限制针对的是
+        // "直接选中/直接改动"这种没有审核环节的操作
         boolean isRollback = t.getInfluencerPaymentProgress() != null
                 && t.getProgress() != null && t.getProgress().allowsPaymentProgress()
                 && newProgress != null && !newProgress.allowsPaymentProgress()
@@ -494,6 +489,14 @@ public class CollaborationTrackingService {
             result.setTracking(t);
             result.setPendingApproval(true);
             return result;
+        }
+
+        // "已纳入红人结款批次"这两个状态只能由红人结款模块内部设置，状态流转接口的"直接生效"这条
+        // 路径不接受手动改动——既不能改成这两个值，也不能把记录从这两个值手动改离开（那样会跟
+        // 红人结款那边的批次记录对不上）。值没变（弹窗没碰这个字段、原样提交回去）不算，放行，
+        // 不然已经纳入批次的记录会连"视频项目进度"都没法再通过状态流转调整
+        if (isSystemManagedChange(t.getInfluencerPaymentProgress(), newPayment)) {
+            throw new RuntimeException(InfluencerPaymentProgress.SYSTEM_MANAGED_ERROR);
         }
 
         // 视频发布时间自动填写：视频项目进度这次是从"不满足前置条件"变为"满足前置条件"
@@ -696,5 +699,17 @@ public class CollaborationTrackingService {
 
     private String emptyToNull(String s) {
         return (s == null || s.trim().isEmpty()) ? null : s.trim();
+    }
+
+    /**
+     * 是否是一次涉及"已纳入红人结款批次"这两个系统值的手动改动——不管是改成这两个值之一，
+     * 还是记录当前就是这两个值之一、想手动改离开，都算；值没变（不管是不是系统值）不算。
+     * 这两个值只能由 InfluencerPaymentService 内部直接操作实体来设置/清空。
+     */
+    private boolean isSystemManagedChange(InfluencerPaymentProgress current, InfluencerPaymentProgress next) {
+        if (next == current) return false;
+        boolean currentManaged = current != null && current.isSystemManagedOnly();
+        boolean nextManaged = next != null && next.isSystemManagedOnly();
+        return currentManaged || nextManaged;
     }
 }
