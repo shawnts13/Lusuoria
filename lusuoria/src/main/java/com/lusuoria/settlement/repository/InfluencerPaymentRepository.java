@@ -10,8 +10,6 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
-import java.math.BigDecimal;
-import java.util.List;
 import java.util.Optional;
 
 @Repository
@@ -19,38 +17,33 @@ public interface InfluencerPaymentRepository extends JpaRepository<InfluencerPay
 
     Optional<InfluencerPayment> findByIdAndIsDeletedFalse(Long id);
 
-    @EntityGraph(attributePaths = {"influencer", "projectOrder"})
+    @EntityGraph(attributePaths = {"brand", "team"})
     @Query("SELECT ip FROM InfluencerPayment ip " +
            "WHERE ip.isDeleted = false " +
            "AND (:settlementMonth IS NULL OR ip.settlementMonth = :settlementMonth) " +
-           "AND (:influencerId IS NULL OR ip.influencer.id = :influencerId) " +
+           "AND (:brandId IS NULL OR ip.brandId = :brandId) " +
+           "AND (:teamId IS NULL OR ip.teamId = :teamId) " +
            "AND (:paymentStatus IS NULL OR ip.paymentStatus = :paymentStatus) " +
-           "ORDER BY ip.settlementMonth DESC, ip.influencer.accountName ASC")
+           "ORDER BY ip.settlementMonth DESC, ip.paymentNo ASC")
     Page<InfluencerPayment> findByFilters(
             @Param("settlementMonth") String settlementMonth,
-            @Param("influencerId") Long influencerId,
+            @Param("brandId") Long brandId,
+            @Param("teamId") Long teamId,
             @Param("paymentStatus") InfluencerPaymentStatus paymentStatus,
             Pageable pageable);
 
-    List<InfluencerPayment> findBySettlementMonthAndIsDeletedFalse(String month);
-
-    @Query("SELECT SUM(ip.payableAmount) FROM InfluencerPayment ip " +
-           "WHERE ip.isDeleted = false " +
-           "AND ip.settlementMonth = :month " +
-           "AND ip.influencer.id = :influencerId")
-    BigDecimal sumPayableByMonthAndInfluencer(@Param("month") String month,
-                                              @Param("influencerId") Long influencerId);
-
     /**
-     * 导入去重：结算月份 + 红人 + 合作内容
+     * 导出用：open-in-view 已关闭（application.yml），brand/team 是懒加载关联，
+     * 离开这次查询的事务边界后再访问会抛 LazyInitializationException，
+     * 所以导出场景都要带上 @EntityGraph 预先抓取。
      */
-    @Query("SELECT COUNT(ip) > 0 FROM InfluencerPayment ip " +
-           "WHERE ip.isDeleted = false " +
-           "AND ip.settlementMonth = :month " +
-           "AND ip.influencer.id = :influencerId " +
-           "AND (:cooperationContent IS NULL OR ip.cooperationContent = :cooperationContent)")
-    boolean existsByMonthInfluencerContent(
-            @Param("month") String month,
-            @Param("influencerId") Long influencerId,
-            @Param("cooperationContent") String cooperationContent);
+    @EntityGraph(attributePaths = {"brand", "team"})
+    java.util.List<InfluencerPayment> findBySettlementMonthAndIsDeletedFalse(String month);
+
+    @EntityGraph(attributePaths = {"brand", "team"})
+    java.util.List<InfluencerPayment> findByIsDeletedFalse();
+
+    /** 结款单号分配用：统计某"品牌-团队-结算月份-"前缀已用了多少个（作为序号起点） */
+    @Query("SELECT COUNT(ip) FROM InfluencerPayment ip WHERE ip.paymentNo LIKE :prefixPattern")
+    long countByPaymentNoPrefix(@Param("prefixPattern") String prefixPattern);
 }

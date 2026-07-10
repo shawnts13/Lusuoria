@@ -164,4 +164,24 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND FUNCTION('to_char', c.publishDate, 'YYYYMM') = :month")
     List<CollaborationTracking> findCostedOrdersForExecutorAndManager(
             @Param("executorId") Long executorId, @Param("managerId") Long managerId, @Param("month") String month);
+
+    // ===== 2026-07 红人结款模块重构新增 =====
+
+    /**
+     * 红人结款 - "选择涉及的红人视频项目"候选列表：某品牌+团队（团队可为空）下，
+     * 还没被纳入任何结款批次的记录。teamId 传 null 时匹配"该品牌下没有团队"的记录，
+     * 不是"忽略团队条件"。
+     */
+    @Query("SELECT c FROM CollaborationTracking c WHERE c.isDeleted = false " +
+           "AND c.brandId = :brandId " +
+           "AND ((:teamId IS NULL AND c.teamId IS NULL) OR c.teamId = :teamId) " +
+           "AND c.influencerPaymentProgress IS NOT NULL " +
+           "AND c.influencerPaymentProgress <> com.lusuoria.settlement.enums.InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH")
+    List<CollaborationTracking> findPaymentCandidates(@Param("brandId") Long brandId, @Param("teamId") Long teamId);
+
+    /** 红人结款 - 某条结款记录已纳入的红人合作跟踪明细 */
+    List<CollaborationTracking> findByInfluencerPaymentIdAndIsDeletedFalse(Long influencerPaymentId);
+
+    /** 红人结款 - 创建/编辑时校验勾选的 id 是否都合法可用（属于该品牌+团队、且未被其他批次占用） */
+    List<CollaborationTracking> findByIdInAndIsDeletedFalse(List<Long> ids);
 }

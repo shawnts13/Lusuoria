@@ -51,6 +51,9 @@ public class AuthController {
         // "进度提醒"功能受众：看登录账号关联的员工角色是不是"管理层"，跟登录账号本身的
         // ADMIN/STAFF/AUDITOR/GUEST 角色无关（见 ProgressReminderService.isManagementEmployee）
         result.put("isManagement", progressReminderService.isManagementEmployee(user.getEmployeeId()));
+        // "红人结款"模块受众：登录账号关联的员工角色（管理层/财务/法务才能看到，仅管理层能新增），
+        // 同样跟 SysUser.role 无关，见 PaymentAccessUtil
+        result.put("employeeRole", emp != null ? emp.getRole() : null);
 
         return ApiResponse.success(result);
     }

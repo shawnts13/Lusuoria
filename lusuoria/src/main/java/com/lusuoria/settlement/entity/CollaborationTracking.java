@@ -225,6 +225,25 @@ public class CollaborationTracking extends BaseEntity {
     private java.math.BigDecimal rmbRevenue;
 
     /**
+     * 关联的红人结款记录 id（非空表示已被纳入某条结款批次）。2026-07 红人结款模块重构新增。
+     * 纳入批次时由 InfluencerPaymentService 写入，同时把当时的 influencerPaymentProgress
+     * 快照到 preBatchPaymentProgress；移出批次（编辑"待付款"结款记录时取消勾选）时，
+     * influencerPaymentProgress 从快照恢复，这两个字段一起清空。
+     */
+    @Column(name = "influencer_payment_id", insertable = false, updatable = false)
+    private Long influencerPaymentId;
+
+    @JsonIgnore
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "influencer_payment_id")
+    private InfluencerPayment influencerPayment;
+
+    /** 纳入结款批次前的 influencerPaymentProgress 快照，仅在 influencerPaymentId 非空时有意义 */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "pre_batch_payment_progress")
+    private InfluencerPaymentProgress preBatchPaymentProgress;
+
+    /**
      * 当前是否有一条"待审核"的删除申请（有的话前端删除按钮要显示"审核中"）。
      * 瞬态字段，不落库，由 Controller 在返回列表时批量查出来再赋值。
      */
