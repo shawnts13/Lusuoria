@@ -331,8 +331,16 @@ public class ProgressReminderService {
 
     // ============ 日期工具 ============
 
+    /**
+     * @Temporal(TemporalType.DATE) 字段（比如 publishDate）落库读出来时，JDBC 驱动给的实际运行时类型
+     * 是 java.sql.Date（java.util.Date 的子类），而 java.sql.Date 把 toInstant() 重写成了直接抛
+     * UnsupportedOperationException（因为纯日期没有时分秒，语义上转不成一个具体时刻）——
+     * 不能直接 d.toInstant()。这里统一先包一层 new java.sql.Date(d.getTime())，用它自带的
+     * toLocalDate()（按 JVM 默认时区取年月日，已经是北京时间）来转换，不会有这个问题，
+     * 不管传进来的实际是 java.util.Date 还是 java.sql.Date 都能正常工作。
+     */
     private LocalDate toLocalDate(Date d) {
-        return d.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
+        return new java.sql.Date(d.getTime()).toLocalDate();
     }
 
     private Date toDate(LocalDate d) {
