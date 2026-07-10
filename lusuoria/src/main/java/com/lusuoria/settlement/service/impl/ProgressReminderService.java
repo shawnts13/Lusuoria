@@ -21,6 +21,8 @@ import com.lusuoria.settlement.repository.ProgressReminderDetailRepository;
 import com.lusuoria.settlement.repository.ProgressReminderRepository;
 import com.lusuoria.settlement.repository.SysUserRepository;
 import com.lusuoria.settlement.util.RoleUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -56,6 +58,8 @@ import java.util.*;
 @Service
 public class ProgressReminderService {
 
+    private static final Logger log = LoggerFactory.getLogger(ProgressReminderService.class);
+
     private static final String MANAGEMENT_ROLE = "管理层";
     private static final int[] CHECKPOINT_HOURS = {12, 18, 22};
     /** 品牌方月结回溯月份数的技术兜底（不是业务规则）：纯粹防止极端脏数据导致死循环 */
@@ -75,14 +79,21 @@ public class ProgressReminderService {
     @Scheduled(cron = "0 0 3 * * *")
     @Transactional
     public void runBatch() {
-        detailRepo.deleteAllInBatch();
-        reminderRepo.deleteAllInBatch();
+        try {
+            detailRepo.deleteAllInBatch();
+            reminderRepo.deleteAllInBatch();
 
-        LocalDate today = LocalDate.now(ZoneId.systemDefault());
-        Date batchDate = toDate(today);
+            LocalDate today = LocalDate.now(ZoneId.systemDefault());
+            Date batchDate = toDate(today);
 
-        runCollabPaymentDue(today, batchDate);
-        runBrandMonthEndPaymentDue(today, batchDate);
+            runCollabPaymentDue(today, batchDate);
+            runBrandMonthEndPaymentDue(today, batchDate);
+        } catch (RuntimeException e) {
+            // GlobalExceptionHandler 只会把异常包成 400 返回给前端，不会打印堆栈，
+            // 排查问题时看不到具体原因，这里手动记一下，方便去 Render 日志里查
+            log.error("进度提醒跑批失败：{}", e.toString(), e);
+            throw e;
+        }
     }
 
     /** Part A：品牌方付款周期=按红人成本阈值分档 */
