@@ -1,8 +1,11 @@
 package com.lusuoria.settlement.excel;
 
+import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.entity.InfluencerPayment;
+import com.lusuoria.settlement.entity.InfluencerTeam;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.*;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import javax.servlet.http.HttpServletResponse;
@@ -19,6 +22,8 @@ import java.util.List;
  */
 @Component
 public class InfluencerPaymentExcelHandler {
+
+    @Autowired private InfluencerTeamCache teamCache;
 
     public void export(List<InfluencerPayment> payments, HttpServletResponse response) throws IOException {
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
@@ -66,7 +71,7 @@ public class InfluencerPaymentExcelHandler {
 
             setCellStr(row, c++, p.getPaymentNo(), nor);
             setCellStr(row, c++, p.getBrand() != null ? p.getBrand().getName() : "", nor);
-            setCellStr(row, c++, p.getTeam() != null ? p.getTeam().getName() : "", nor);
+            setCellStr(row, c++, teamNamesLabel(p), nor);
             setCellStr(row, c++, p.getSettlementMonth(), nor);
             setCellNum(row, c++, p.getCooperationQuantity() != null ? (double) p.getCooperationQuantity() : null, nor);
             setCellMoney(row, c++, p.getPayableAmount(), money);
@@ -83,6 +88,22 @@ public class InfluencerPaymentExcelHandler {
         sheet.createFreezePane(0, 1);
         wb.write(response.getOutputStream());
         wb.close();
+    }
+
+    /** 涉及的团队可能有多个（跨团队合并结款），拼成逗号分隔的名字，"不选团队"显示为"（不选团队）" */
+    private String teamNamesLabel(InfluencerPayment p) {
+        if (p.getTeamIds() == null || p.getTeamIds().isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (Long teamId : p.getTeamIds()) {
+            if (sb.length() > 0) sb.append("、");
+            if (teamId == null) {
+                sb.append("（不选团队）");
+            } else {
+                InfluencerTeam team = teamCache.findById(teamId);
+                sb.append(team != null ? team.getName() : teamId);
+            }
+        }
+        return sb.toString();
     }
 
     private void setCellStr(Row row, int col, String value, CellStyle style) {

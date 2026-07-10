@@ -8,6 +8,7 @@ import com.lusuoria.settlement.entity.InfluencerPayment;
 import com.lusuoria.settlement.enums.InfluencerPaymentStatus;
 import com.lusuoria.settlement.excel.InfluencerPaymentExcelHandler;
 import com.lusuoria.settlement.repository.InfluencerPaymentRepository;
+import com.lusuoria.settlement.repository.InfluencerPaymentTeamRepository;
 import com.lusuoria.settlement.service.impl.InfluencerPaymentService;
 import com.lusuoria.settlement.util.PaymentAccessUtil;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,6 +22,7 @@ import javax.validation.Valid;
 import java.io.IOException;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 
@@ -33,6 +35,7 @@ import java.util.List;
 public class InfluencerPaymentController {
 
     @Autowired private InfluencerPaymentRepository paymentRepo;
+    @Autowired private InfluencerPaymentTeamRepository paymentTeamRepo;
     @Autowired private InfluencerPaymentService paymentService;
     @Autowired private InfluencerPaymentExcelHandler excelHandler;
     @Autowired private PaymentAccessUtil accessUtil;
@@ -46,26 +49,38 @@ public class InfluencerPaymentController {
             @RequestParam(defaultValue = "0")  int page,
             @RequestParam(defaultValue = "20") int size) {
         if (!accessUtil.canView()) return ApiResponse.error(403, "无权限查看红人结款");
+        // "涉及哪些团队"现在是关联表，不是这张表自己的列，按团队筛选先查出符合条件的结款记录 id。
+        // matchingIds 恒不为空——JPQL 的 IN 子句绑定空集合在部分 Hibernate 版本下会报错，
+        // 不筛选团队或者查不到匹配结果时都传占位不存在的 id，交给 filterByTeam 决定要不要用它
+        boolean filterByTeam = teamId != null;
+        List<Long> matchingIds = filterByTeam ? paymentTeamRepo.findPaymentIdsByTeamId(teamId) : Collections.emptyList();
+        if (matchingIds.isEmpty()) matchingIds = Collections.singletonList(-1L);
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "settlementMonth"));
-        return ApiResponse.success(paymentRepo.findByFilters(settlementMonth, brandId, teamId, paymentStatus, pageable));
+        Page<InfluencerPayment> result = paymentRepo.findByFilters(
+                settlementMonth, brandId, filterByTeam, matchingIds, paymentStatus, pageable);
+        paymentService.attachTeamIds(result.getContent());
+        return ApiResponse.success(result);
     }
 
     @GetMapping("/{id}")
     public ApiResponse<InfluencerPayment> getById(@PathVariable Long id) {
         if (!accessUtil.canView()) return ApiResponse.error(403, "无权限查看红人结款");
-        return ApiResponse.success(paymentRepo.findByIdAndIsDeletedFalse(id)
-                .orElseThrow(() -> new RuntimeException("结款记录不存在")));
+        InfluencerPayment payment = paymentRepo.findByIdAndIsDeletedFalse(id)
+                .orElseThrow(() -> new RuntimeException("结款记录不存在"));
+        paymentService.attachTeamIds(Collections.singletonList(payment));
+        return ApiResponse.success(payment);
     }
 
     /** "选择涉及的红人视频项目"弹窗 - 候选列表 */
     @GetMapping("/candidates")
     public ApiResponse<List<PaymentCandidateItem>> candidates(
             @RequestParam Long brandId,
-            @RequestParam(required = false) Long teamId,
+            @RequestParam(required = false) List<Long> teamIds,
+            @RequestParam(defaultValue = "false") boolean includeNoTeam,
             @RequestParam(required = false) String reconcileDate) {
         if (!accessUtil.canView()) return ApiResponse.error(403, "无权限查看红人结款");
         Date parsed = parseDate(reconcileDate);
-        return ApiResponse.success(paymentService.listCandidates(brandId, teamId, parsed));
+        return ApiResponse.success(paymentService.listCandidates(brandId, teamIds, includeNoTeam, parsed));
     }
 
     /** 某条结款记录已纳入的红人合作跟踪明细 */
@@ -83,6 +98,7 @@ public class InfluencerPaymentController {
         List<InfluencerPayment> payments = settlementMonth != null && !settlementMonth.isEmpty()
                 ? paymentRepo.findBySettlementMonthAndIsDeletedFalse(settlementMonth)
                 : paymentRepo.findByIsDeletedFalse();
+        paymentService.attachTeamIds(payments);
         excelHandler.export(payments, response);
     }
 

@@ -10,7 +10,7 @@ import java.util.List;
 
 /**
  * 红人结款 - 新建/编辑请求。
- * brandId/teamId/settlementMonth 创建后不可再改（编辑时会被忽略）。
+ * brandId/teamIds/settlementMonth 创建后不可再改（编辑时会被忽略）。
  * cooperationQuantity/payableAmount/currency/rmbAmount 不接受前端传入，
  * 由服务端根据 collaborationTrackingIds 算出来，防止绕过校验直接篡改金额。
  */
@@ -21,7 +21,13 @@ public class InfluencerPaymentRequest {
     @NotNull(message = "品牌方不能为空")
     private Long brandId;
 
-    private Long teamId;
+    /**
+     * 这次结款涉及的团队范围（支持跨团队合并结算），可能包含 null 元素代表"不选团队"
+     * 也在范围内。只在新建时有意义——编辑时这个范围本身不可再改，只能在范围内调整
+     * collaborationTrackingIds。
+     */
+    @NotEmpty(message = "请至少选择一个红人团队（或「不选团队」）")
+    private List<Long> teamIds;
 
     @NotEmpty(message = "结算月份不能为空")
     private String settlementMonth;

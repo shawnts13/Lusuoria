@@ -168,16 +168,19 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     // ===== 2026-07 红人结款模块重构新增 =====
 
     /**
-     * 红人结款 - "选择涉及的红人视频项目"候选列表：某品牌+团队（团队可为空）下，
-     * 还没被纳入任何结款批次的记录。teamId 传 null 时匹配"该品牌下没有团队"的记录，
-     * 不是"忽略团队条件"。
+     * 红人结款 - "选择涉及的红人视频项目"候选列表：某品牌下、属于给定团队集合（可能还包括
+     * "不选团队"）、还没被纳入任何结款批次的记录（支持跨团队合并结款，2026-07 起）。
+     * teamIds 为空列表时只按 includeNoTeam 决定要不要匹配"没有团队"的记录。
      */
     @Query("SELECT c FROM CollaborationTracking c WHERE c.isDeleted = false " +
            "AND c.brandId = :brandId " +
-           "AND ((:teamId IS NULL AND c.teamId IS NULL) OR c.teamId = :teamId) " +
+           "AND ((:includeNoTeam = true AND c.teamId IS NULL) OR c.teamId IN :teamIds) " +
            "AND c.influencerPaymentProgress IS NOT NULL " +
            "AND c.influencerPaymentProgress <> com.lusuoria.settlement.enums.InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH")
-    List<CollaborationTracking> findPaymentCandidates(@Param("brandId") Long brandId, @Param("teamId") Long teamId);
+    List<CollaborationTracking> findPaymentCandidatesByTeams(
+            @Param("brandId") Long brandId,
+            @Param("teamIds") List<Long> teamIds,
+            @Param("includeNoTeam") boolean includeNoTeam);
 
     /** 红人结款 - 某条结款记录已纳入的红人合作跟踪明细 */
     List<CollaborationTracking> findByInfluencerPaymentIdAndIsDeletedFalse(Long influencerPaymentId);

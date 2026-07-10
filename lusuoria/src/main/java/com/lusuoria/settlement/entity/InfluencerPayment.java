@@ -7,12 +7,16 @@ import lombok.*;
 import javax.persistence.*;
 import java.math.BigDecimal;
 import java.util.Date;
+import java.util.List;
 
 /**
- * 红人结款：一条结款记录 = 一个"品牌方-红人团队-结算月份"批次，
- * 对应多条红人合作跟踪记录（见 CollaborationTracking.influencerPaymentId）。
+ * 红人结款：一条结款记录 = 一个"品牌方-结算月份"批次，可以跨多个红人团队合并结算
+ * （2026-07 起支持），对应多条红人合作跟踪记录（见 CollaborationTracking.influencerPaymentId）。
  * 合作数量/应付金额 由勾选的红人合作跟踪记录带出来，创建/调整勾选后由后端算好存库，
  * 不接受前端直接传入覆盖。
+ *
+ * "涉及哪些团队"不再是这个实体自己的固定列，改成一张单独的关联表
+ * InfluencerPaymentTeam 记录创建时选定的范围（可能包含"不选团队"）。
  */
 @Entity
 @Table(name = "influencer_payments")
@@ -23,7 +27,7 @@ import java.util.Date;
 @Builder
 public class InfluencerPayment extends BaseEntity {
 
-    /** 结款单号，创建时立即生成，格式见 PaymentNoGenerator */
+    /** 结款单号，创建时立即生成，格式见 PaymentNoGenerator（不再包含团队，因为可能涉及多个团队） */
     @Column(name = "payment_no", unique = true, length = 100)
     private String paymentNo;
 
@@ -38,14 +42,13 @@ public class InfluencerPayment extends BaseEntity {
     @JoinColumn(name = "brand_id", nullable = false)
     private Brand brand;
 
-    /** 红人团队，可为空（品牌方下没有配团队的情况） */
-    @Column(name = "team_id", insertable = false, updatable = false)
-    private Long teamId;
-
-    @JsonIgnore
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "team_id")
-    private InfluencerTeam team;
+    /**
+     * 这条结款记录创建时选定的团队范围（见 InfluencerPaymentTeam），可能包含 null
+     * （代表"不选团队"也在范围内）。瞬态字段，不落库，由 Controller/Service 批量查出来再赋值，
+     * 供列表页展示"红人团队"列（多个团队名拼接）、导出用。
+     */
+    @Transient
+    private List<Long> teamIds;
 
     /** 合作数量：勾选的红人合作跟踪条目数，只读，由后端算出来存库 */
     @Column(name = "cooperation_quantity")

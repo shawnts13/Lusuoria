@@ -10,6 +10,7 @@ import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.ExchangeRateCache;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.InfluencerPayment;
+import com.lusuoria.settlement.entity.InfluencerPaymentTeam;
 import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.InfluencerPaymentStatus;
@@ -18,6 +19,7 @@ import com.lusuoria.settlement.repository.BrandRepository;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.ExchangeRateCacheRepository;
 import com.lusuoria.settlement.repository.InfluencerPaymentRepository;
+import com.lusuoria.settlement.repository.InfluencerPaymentTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.InfluencerTeamRepository;
 import com.lusuoria.settlement.util.PaymentNoGenerator;
@@ -30,10 +32,12 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -49,6 +53,7 @@ import java.util.stream.Collectors;
 public class InfluencerPaymentService {
 
     @Autowired private InfluencerPaymentRepository paymentRepo;
+    @Autowired private InfluencerPaymentTeamRepository paymentTeamRepo;
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private BrandRepository brandRepo;
     @Autowired private InfluencerTeamRepository teamRepo;
@@ -60,12 +65,31 @@ public class InfluencerPaymentService {
 
     // ============ 查询：选择弹窗 ============
 
+    /**
+     * @param teamIds 要包含的团队 id（不含"不选团队"这一项，那个用 includeNoTeam 单独表示）
+     */
     @Transactional(readOnly = true)
-    public List<PaymentCandidateItem> listCandidates(Long brandId, Long teamId, Date reconcileDate) {
+    public List<PaymentCandidateItem> listCandidates(
+            Long brandId, List<Long> teamIds, boolean includeNoTeam, Date reconcileDate) {
         Brand brand = brandCache.findById(brandId);
         if (brand == null) throw new RuntimeException("品牌方不存在");
-        List<CollaborationTracking> candidates = trackingRepo.findPaymentCandidates(brandId, teamId);
+        // JPQL 的 IN 子句不能绑定空集合，传个占位不存在的 id，交给 includeNoTeam 单独决定是否命中"没有团队"的记录
+        List<Long> safeTeamIds = (teamIds != null && !teamIds.isEmpty()) ? teamIds : Collections.singletonList(-1L);
+        List<CollaborationTracking> candidates = trackingRepo.findPaymentCandidatesByTeams(brandId, safeTeamIds, includeNoTeam);
         return buildItems(candidates, brand, reconcileDate);
+    }
+
+    /** 批量填充结款记录的"涉及团队"瞬态字段（列表/详情/导出用），避免逐条查询 */
+    public void attachTeamIds(List<InfluencerPayment> payments) {
+        if (payments.isEmpty()) return;
+        List<Long> paymentIds = payments.stream().map(InfluencerPayment::getId).collect(Collectors.toList());
+        Map<Long, List<Long>> byPaymentId = new HashMap<>();
+        for (InfluencerPaymentTeam row : paymentTeamRepo.findByInfluencerPaymentIdIn(paymentIds)) {
+            byPaymentId.computeIfAbsent(row.getInfluencerPaymentId(), k -> new ArrayList<>()).add(row.getTeamId());
+        }
+        for (InfluencerPayment p : payments) {
+            p.setTeamIds(byPaymentId.getOrDefault(p.getId(), Collections.emptyList()));
+        }
     }
 
     @Transactional(readOnly = true)
@@ -176,19 +200,23 @@ public class InfluencerPaymentService {
     public InfluencerPayment create(InfluencerPaymentRequest req) {
         Brand brand = brandRepo.findByIdAndIsDeletedFalse(req.getBrandId())
                 .orElseThrow(() -> new RuntimeException("品牌方不存在"));
-        InfluencerTeam team = null;
-        if (req.getTeamId() != null) {
-            team = teamRepo.findById(req.getTeamId())
-                    .orElseThrow(() -> new RuntimeException("红人团队不存在"));
+
+        // teamIds 可能包含 null 元素（代表"不选团队"也在这次结款范围内）
+        List<Long> realTeamIds = new ArrayList<>();
+        boolean includeNoTeam = false;
+        for (Long teamId : req.getTeamIds()) {
+            if (teamId == null) includeNoTeam = true; else realTeamIds.add(teamId);
+        }
+        for (Long teamId : realTeamIds) {
+            if (!teamRepo.findById(teamId).isPresent()) throw new RuntimeException("红人团队不存在：" + teamId);
         }
 
         List<CollaborationTracking> items = loadAndValidateItems(
-                req.getCollaborationTrackingIds(), req.getBrandId(), req.getTeamId(), null);
+                req.getCollaborationTrackingIds(), req.getBrandId(), realTeamIds, includeNoTeam, null);
 
         InfluencerPayment payment = new InfluencerPayment();
         payment.setIsDeleted(false);
         payment.setBrand(brand);
-        payment.setTeam(team);
         payment.setSettlementMonth(req.getSettlementMonth());
         payment.setReconcileDate(req.getReconcileDate());
         payment.setExpectedPaymentDate(req.getExpectedPaymentDate());
@@ -210,14 +238,27 @@ public class InfluencerPaymentService {
                 .ifPresent(payment::setExchangeRate);
         recomputeRmb(payment);
 
-        String teamName = team != null ? team.getName() : null;
-        String prefix = paymentNoGenerator.buildPrefix(brand.getName(), teamName, req.getSettlementMonth());
+        String prefix = paymentNoGenerator.buildPrefix(brand.getName(), req.getSettlementMonth());
         long seq = paymentRepo.countByPaymentNoPrefix(prefix + "%");
-        payment.setPaymentNo(paymentNoGenerator.generate(brand.getName(), teamName, req.getSettlementMonth(), seq));
+        payment.setPaymentNo(paymentNoGenerator.generate(brand.getName(), req.getSettlementMonth(), seq));
 
         payment = paymentRepo.save(payment);
         linkItems(payment, items);
+        saveTeamScope(payment.getId(), req.getTeamIds());
         return payment;
+    }
+
+    /** 创建时选定的团队范围落库，去重后一个团队（或"不选团队"）存一行 */
+    private void saveTeamScope(Long paymentId, List<Long> teamIds) {
+        List<InfluencerPaymentTeam> rows = new ArrayList<>();
+        for (Long teamId : new LinkedHashSet<>(teamIds)) {
+            InfluencerPaymentTeam row = new InfluencerPaymentTeam();
+            row.setIsDeleted(false);
+            row.setInfluencerPaymentId(paymentId);
+            row.setTeamId(teamId);
+            rows.add(row);
+        }
+        paymentTeamRepo.saveAll(rows);
     }
 
     @Transactional
@@ -225,8 +266,15 @@ public class InfluencerPaymentService {
         InfluencerPayment payment = paymentRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("结款记录不存在"));
 
+        // 团队范围创建后不可再改，用持久化的范围校验，忽略请求体里的 teamIds
+        List<Long> realTeamIds = new ArrayList<>();
+        boolean includeNoTeam = false;
+        for (InfluencerPaymentTeam row : paymentTeamRepo.findByInfluencerPaymentIdAndIsDeletedFalse(id)) {
+            if (row.getTeamId() == null) includeNoTeam = true; else realTeamIds.add(row.getTeamId());
+        }
+
         List<CollaborationTracking> newItems = loadAndValidateItems(
-                req.getCollaborationTrackingIds(), payment.getBrandId(), payment.getTeamId(), payment.getId());
+                req.getCollaborationTrackingIds(), payment.getBrandId(), realTeamIds, includeNoTeam, payment.getId());
         List<CollaborationTracking> currentItems = trackingRepo.findByInfluencerPaymentIdAndIsDeletedFalse(payment.getId());
 
         Set<Long> newIds = newItems.stream().map(CollaborationTracking::getId).collect(Collectors.toSet());
@@ -280,6 +328,9 @@ public class InfluencerPaymentService {
         InfluencerPayment payment = paymentRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("结款记录不存在"));
         unlinkItems(trackingRepo.findByInfluencerPaymentIdAndIsDeletedFalse(id));
+        List<InfluencerPaymentTeam> scopeRows = paymentTeamRepo.findByInfluencerPaymentIdAndIsDeletedFalse(id);
+        for (InfluencerPaymentTeam row : scopeRows) row.setIsDeleted(true);
+        paymentTeamRepo.saveAll(scopeRows);
         payment.setIsDeleted(true);
         paymentRepo.save(payment);
     }
@@ -287,7 +338,7 @@ public class InfluencerPaymentService {
     // ============ 内部辅助 ============
 
     private List<CollaborationTracking> loadAndValidateItems(
-            List<Long> ids, Long brandId, Long teamId, Long excludePaymentId) {
+            List<Long> ids, Long brandId, List<Long> realTeamIds, boolean includeNoTeam, Long excludePaymentId) {
         if (ids == null || ids.isEmpty()) throw new RuntimeException("请至少选择一条涉及的红人视频项目");
         List<CollaborationTracking> items = trackingRepo.findByIdInAndIsDeletedFalse(ids);
         if (items.size() != new HashSet<>(ids).size()) {
@@ -297,9 +348,9 @@ public class InfluencerPaymentService {
             if (!brandId.equals(t.getBrandId())) {
                 throw new RuntimeException("勾选的记录里有不属于所选品牌方的条目：" + t.getInternalProjectNo());
             }
-            boolean teamMatches = teamId == null ? t.getTeamId() == null : teamId.equals(t.getTeamId());
+            boolean teamMatches = t.getTeamId() == null ? includeNoTeam : realTeamIds.contains(t.getTeamId());
             if (!teamMatches) {
-                throw new RuntimeException("勾选的记录里有不属于所选红人团队的条目：" + t.getInternalProjectNo());
+                throw new RuntimeException("勾选的记录里有不属于所选团队范围的条目：" + t.getInternalProjectNo());
             }
             boolean alreadyBatched = t.getInfluencerPaymentProgress() == InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH;
             boolean belongsToThisPayment = excludePaymentId != null && excludePaymentId.equals(t.getInfluencerPaymentId());
