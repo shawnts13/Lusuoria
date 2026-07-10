@@ -1,11 +1,15 @@
 package com.lusuoria.settlement.controller;
 
 import com.lusuoria.settlement.config.BrandCache;
+import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.dto.request.BrandRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
+import com.lusuoria.settlement.dto.response.BrandTeamOption;
 import com.lusuoria.settlement.entity.Brand;
+import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.excel.BrandExcelHandler;
 import com.lusuoria.settlement.repository.BrandRepository;
+import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -14,6 +18,7 @@ import org.springframework.web.multipart.MultipartFile;
 import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 @RestController
@@ -23,10 +28,33 @@ public class BrandController {
     @Autowired private BrandRepository brandRepo;
     @Autowired private BrandExcelHandler excelHandler;
     @Autowired private BrandCache brandCache;
+    @Autowired private InfluencerBrandTeamRepository influencerBrandTeamRepo;
+    @Autowired private InfluencerTeamCache teamCache;
 
     @GetMapping
     public ApiResponse<List<Brand>> list() {
         return ApiResponse.success(brandCache.getAll());
+    }
+
+    /**
+     * 该品牌方下（不限具体红人）出现过的团队选项，供"红人结款"新建结款记录时
+     * "先选品牌方，再选该品牌方下的红人团队"级联选择用。
+     */
+    @GetMapping("/{id}/team-options")
+    public ApiResponse<List<BrandTeamOption>> teamOptions(@PathVariable Long id) {
+        List<BrandTeamOption> result = new ArrayList<>();
+        boolean hasNoTeamOption = false;
+        for (Long teamId : influencerBrandTeamRepo.findDistinctTeamIdsByBrandId(id)) {
+            if (teamId == null) {
+                hasNoTeamOption = true;
+                continue;
+            }
+            InfluencerTeam team = teamCache.findById(teamId);
+            if (team != null) result.add(new BrandTeamOption(team.getId(), team.getName()));
+        }
+        result.sort((a, b) -> a.getTeamName().compareTo(b.getTeamName()));
+        if (hasNoTeamOption) result.add(new BrandTeamOption(null, null));
+        return ApiResponse.success(result);
     }
 
     @GetMapping("/{id}")

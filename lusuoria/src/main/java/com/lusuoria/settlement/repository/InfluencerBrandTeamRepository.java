@@ -24,4 +24,13 @@ public interface InfluencerBrandTeamRepository extends JpaRepository<InfluencerB
             @Param("influencerId") Long influencerId, @Param("brandId") Long brandId);
 
     boolean existsByInfluencerIdAndBrandId(Long influencerId, Long brandId);
+
+    /**
+     * 某品牌方下（不限红人）出现过的所有团队 id，去重。
+     * 结果可能包含 null——代表这个品牌方下有红人没配团队，"不选团队"本身也是一个合法选项
+     * （红人结款新建结款记录时，品牌方-团队级联选择要用）。
+     */
+    @Query("SELECT DISTINCT ibt.teamId FROM InfluencerBrandTeam ibt " +
+           "WHERE ibt.brandId = :brandId AND ibt.isDeleted = false")
+    List<Long> findDistinctTeamIdsByBrandId(@Param("brandId") Long brandId);
 }
