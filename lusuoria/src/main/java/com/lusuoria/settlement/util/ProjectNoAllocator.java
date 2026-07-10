@@ -19,13 +19,13 @@ public class ProjectNoAllocator {
     @Autowired private CollaborationTrackingRepository trackingRepo;
 
     /** 生成一个在"红人合作跟踪"表里不重复的内部项目编号 */
-    public String allocate(String brandName, String month, String accountName) {
-        String prefixPattern = generator.buildPrefix(brandName, month, accountName) + "%";
+    public String allocate(String brandName, String teamName, String month, String accountName) {
+        String prefixPattern = generator.buildPrefix(brandName, teamName, month, accountName) + "%";
         long count = trackingRepo.countByInternalProjectNoPrefix(prefixPattern);
 
         String candidate;
         do {
-            candidate = generator.generate(brandName, month, accountName, count);
+            candidate = generator.generate(brandName, teamName, month, accountName, count);
             count++;
         } while (trackingRepo.existsByInternalProjectNo(candidate));
 

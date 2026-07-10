@@ -29,7 +29,7 @@ public class CollaborationTracking extends BaseEntity {
 
     /**
      * 内部项目编号（自动生成，创建时一次性生成，前端只读不可编辑）。
-     * 格式复用 ProjectNoGenerator：品牌-月份-红人账号-序号。
+     * 格式复用 ProjectNoGenerator：品牌方-红人团队-月份-红人账号-序号（没有团队时省略团队这一段）。
      * 月份固定用"创建时间当月"，不随后续填写的发布时间变化。
      * 联动生成项目订单时，项目订单直接复用这个值，不再重新生成。
      */

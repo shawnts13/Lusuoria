@@ -113,7 +113,7 @@ public class ProgressReminderService {
         for (CollaborationTracking t : trackingRepo.findByIsDeletedFalse()) {
             if (t.getBrandId() == null || !qualifyingBrands.containsKey(t.getBrandId())) continue;
             if (t.getPublishDate() == null) continue;
-            if (t.getInfluencerPaymentProgress() == InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH) continue;
+            if (t.getInfluencerPaymentProgress() != null && t.getInfluencerPaymentProgress().isIncludedInBatch()) continue;
             if (t.getInfluencerCost() == null) continue; // 没有成本没法判断走哪个天数档位，跳过
             candidates.add(t);
         }

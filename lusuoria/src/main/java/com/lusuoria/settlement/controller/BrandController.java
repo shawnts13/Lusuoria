@@ -10,8 +10,8 @@ import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.excel.BrandExcelHandler;
 import com.lusuoria.settlement.repository.BrandRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
+import com.lusuoria.settlement.util.EmployeeRoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -21,6 +21,12 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * 品牌方管理。查询类接口（list/getById/export/team-options）对所有登录角色开放——
+ * 红人合作跟踪、红人结款等模块的下拉框/筛选都要读品牌方这份基础数据，不能锁死。
+ * 新增/编辑/删除/导入这几个写操作严格按员工角色限制，只有"管理层"能做（2026-07 起，
+ * 不再是 ADMIN/STAFF 这种 SysUser.role 判断，参照红人结款模块 PaymentAccessUtil 的同款设计）。
+ */
 @RestController
 @RequestMapping("/api/brands")
 public class BrandController {
@@ -30,6 +36,11 @@ public class BrandController {
     @Autowired private BrandCache brandCache;
     @Autowired private InfluencerBrandTeamRepository influencerBrandTeamRepo;
     @Autowired private InfluencerTeamCache teamCache;
+    @Autowired private EmployeeRoleUtil employeeRoleUtil;
+
+    private boolean canManage() {
+        return "管理层".equals(employeeRoleUtil.getCurrentEmployeeRole());
+    }
 
     @GetMapping
     public ApiResponse<List<Brand>> list() {
@@ -75,8 +86,8 @@ public class BrandController {
     }
 
     @PostMapping("/import/excel")
-    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<List<String>> importExcel(@RequestParam("file") MultipartFile file) throws IOException {
+        if (!canManage()) return ApiResponse.error(403, "无权限导入品牌方");
         if (file.isEmpty()) return ApiResponse.error(400, "请选择要上传的文件");
         String fn = file.getOriginalFilename();
         if (fn == null || (!fn.endsWith(".xlsx") && !fn.endsWith(".xls")))
@@ -87,8 +98,8 @@ public class BrandController {
     }
 
     @PostMapping
-    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Brand> save(@Valid @RequestBody BrandRequest req) {
+        if (!canManage()) return ApiResponse.error(403, req.getId() == null ? "无权限新增品牌方" : "无权限编辑品牌方");
         Brand brand;
         if (req.getId() != null) {
             brand = brandRepo.findByIdAndIsDeletedFalse(req.getId())
@@ -116,8 +127,8 @@ public class BrandController {
     }
 
     @DeleteMapping("/{id}")
-    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Void> delete(@PathVariable Long id) {
+        if (!canManage()) return ApiResponse.error(403, "无权限删除品牌方");
         Brand brand = brandRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("品牌方不存在"));
         brand.setIsDeleted(true);

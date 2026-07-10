@@ -105,8 +105,13 @@ public class CollaborationTrackingExcelHandler {
         "已发布（未结算）", "已加入客户未结算列表", "客户已结算", "折损"
     };
 
+    /**
+     * "已纳入红人结款批次"/"已纳入红人结款批次（缺少invoice）"这两个状态只能由红人结款模块内部
+     * 设置（见 InfluencerPaymentProgress.isSystemManagedOnly()），模板下拉框不提供这两个选项，
+     * 就算手填了这两个文本值，导入时也会被 isSystemManagedOnly() 校验拦下来
+     */
     private static final String[] PAYMENT_PROGRESS_LABELS = {
-        "待红人发送invoice", "红人已提供invoice", "待结款（不涉及invoice）", "已纳入红人结款批次"
+        "待红人发送invoice", "红人已提供invoice", "待结款（不涉及invoice）"
     };
 
     /** 模板里"红人结款进度"表头的提示语（Excel 原生批注，鼠标悬停可见） */
@@ -608,6 +613,18 @@ public class CollaborationTrackingExcelHandler {
                 }
                 // 注："客户方的项目订单"现在就是一个普通的录入字段（"项目订单"模块已废弃），
                 // 改这个字段不再有任何联动限制
+
+                // ---- "已纳入红人结款批次"这两个状态只能由红人结款模块内部设置——但只拦"改成"
+                //      这两个值，如果这一行对应的已有记录本来就是这个值且没有变化（比如重新导入
+                //      同一批已经纳入结款批次的数据），不算手动设置，放行，否则已纳入批次的记录
+                //      会连别的字段都没法再通过Excel更新。必须放在查重之后，因为要跟已有记录的
+                //      原值比较 ----
+                if (req.getInfluencerPaymentProgress() != null && req.getInfluencerPaymentProgress().isSystemManagedOnly()
+                        && (existingOrNull == null
+                            || req.getInfluencerPaymentProgress() != existingOrNull.getInfluencerPaymentProgress())) {
+                    errors.add("第" + (i + 1) + "行：" + InfluencerPaymentProgress.SYSTEM_MANAGED_ERROR);
+                    continue;
+                }
 
                 // ---- 视频项目进度"倒退"保护：这条记录红人结款进度已有值，且这行想把视频项目进度
                 //      改成不满足前置条件的另一个状态 —— 这种改动必须走"状态流转"功能提交管理员审核，

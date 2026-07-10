@@ -176,7 +176,9 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND c.brandId = :brandId " +
            "AND ((:includeNoTeam = true AND c.teamId IS NULL) OR c.teamId IN :teamIds) " +
            "AND c.influencerPaymentProgress IS NOT NULL " +
-           "AND c.influencerPaymentProgress <> com.lusuoria.settlement.enums.InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH")
+           "AND c.influencerPaymentProgress NOT IN (" +
+           "  com.lusuoria.settlement.enums.InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH, " +
+           "  com.lusuoria.settlement.enums.InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH_MISSING_INVOICE)")
     List<CollaborationTracking> findPaymentCandidatesByTeams(
             @Param("brandId") Long brandId,
             @Param("teamIds") List<Long> teamIds,

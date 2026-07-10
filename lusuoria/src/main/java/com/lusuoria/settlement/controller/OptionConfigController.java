@@ -54,10 +54,14 @@ public class OptionConfigController {
                              "待草稿", "待红人修改", "待发布",
                              "已发布（未结算）", "已加入客户未结算列表", "客户已结算", "折损"}));
 
-        // 红人合作跟踪 - 红人结款进度
+        // 红人合作跟踪 - 红人结款进度。注意："已纳入红人结款批次"/"已纳入红人结款批次（缺少invoice）"
+        // 这两个值只用于展示（列表页标签、状态流转弹窗禁用态回显），不应该出现在任何可选的下拉框里——
+        // 前端状态流转/新建表单要自己把这两个值从下拉选项里过滤掉，见 CollaborationStatusModal/CollaborationFormModal
         result.put("influencer_payment_progress", toOptions(
-                new String[]{"PENDING_INVOICE", "INVOICE_PROVIDED", "PENDING_SETTLEMENT_NO_INVOICE", "INCLUDED_IN_PAYMENT_BATCH"},
-                new String[]{"待红人发送invoice", "红人已提供invoice", "待结款（不涉及invoice）", "已纳入红人结款批次"}));
+                new String[]{"PENDING_INVOICE", "INVOICE_PROVIDED", "PENDING_SETTLEMENT_NO_INVOICE",
+                             "INCLUDED_IN_PAYMENT_BATCH", "INCLUDED_IN_PAYMENT_BATCH_MISSING_INVOICE"},
+                new String[]{"待红人发送invoice", "红人已提供invoice", "待结款（不涉及invoice）",
+                             "已纳入红人结款批次", "已纳入红人结款批次（缺少invoice）"}));
 
         // 项目视频类型
         result.put("video_type", toOptions(

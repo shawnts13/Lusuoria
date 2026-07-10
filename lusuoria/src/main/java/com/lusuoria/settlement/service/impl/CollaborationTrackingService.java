@@ -97,7 +97,7 @@ public class CollaborationTrackingService {
         /** 这个归一化后的旧素材链接是否已经被别的记录占用（excludeId 排除自身） */
         boolean isOldMaterialLinkTaken(String normalizedLink, Long excludeId);
         /** 分配一个没被占用的内部项目编号 */
-        String allocateInternalProjectNo(String brandName, String month, String accountName);
+        String allocateInternalProjectNo(String brandName, String teamName, String month, String accountName);
     }
 
     /** 单条保存用：每一步都直接查数据库，简单可靠 */
@@ -112,8 +112,8 @@ public class CollaborationTrackingService {
         public boolean isOldMaterialLinkTaken(String normalizedLink, Long excludeId) {
             return !trackingRepo.findByOldMaterialSourceLinkNormalized(normalizedLink, excludeId).isEmpty();
         }
-        public String allocateInternalProjectNo(String brandName, String month, String accountName) {
-            return projectNoAllocator.allocate(brandName, month, accountName);
+        public String allocateInternalProjectNo(String brandName, String teamName, String month, String accountName) {
+            return projectNoAllocator.allocate(brandName, teamName, month, accountName);
         }
     }
 
@@ -157,13 +157,13 @@ public class CollaborationTrackingService {
         }
 
         @Override
-        public String allocateInternalProjectNo(String brandName, String month, String accountName) {
-            String prefix = generator.buildPrefix(brandName, month, accountName);
+        public String allocateInternalProjectNo(String brandName, String teamName, String month, String accountName) {
+            String prefix = generator.buildPrefix(brandName, teamName, month, accountName);
             long count = 0;
             for (String s : usedProjectNos) if (s.startsWith(prefix)) count++;
             String candidate;
             do {
-                candidate = generator.generate(brandName, month, accountName, count);
+                candidate = generator.generate(brandName, teamName, month, accountName, count);
                 count++;
             } while (usedProjectNos.contains(candidate));
             usedProjectNos.add(candidate);
@@ -304,6 +304,14 @@ public class CollaborationTrackingService {
         // 这里是单条保存/批量落库共用的最终防线）
         if (existingOrNull == null || allowStatusUpdateOnEdit) {
             InfluencerPaymentProgress newPayment = req.getInfluencerPaymentProgress();
+            // 只拒绝"改成"这两个系统值——如果本来就是这个值且没有变化（比如 Excel 重新导入同一批
+            // 已经纳入结款批次的记录），不算手动设置，放行，不然已纳入批次的记录会连别的字段
+            // 都没法再更新了
+            boolean isChangingToSystemManaged = newPayment != null && newPayment.isSystemManagedOnly()
+                    && newPayment != tracking.getInfluencerPaymentProgress();
+            if (isChangingToSystemManaged) {
+                throw new RuntimeException(InfluencerPaymentProgress.SYSTEM_MANAGED_ERROR);
+            }
             if (newPayment != null && (tracking.getProgress() == null || !tracking.getProgress().allowsPaymentProgress())) {
                 throw new RuntimeException(InfluencerPaymentProgress.PRECONDITION_ERROR);
             }
@@ -329,9 +337,10 @@ public class CollaborationTrackingService {
         // （月份固定用"创建时间当月"，不随后续填写的发布时间变化）
         if (existingOrNull == null) {
             String brandName = tracking.getBrand() != null ? tracking.getBrand().getName() : null;
+            String teamName = tracking.getTeam() != null ? tracking.getTeam().getName() : null;
             String createMonth = new SimpleDateFormat("yyyyMM").format(new Date());
             tracking.setInternalProjectNo(
-                    ctx.allocateInternalProjectNo(brandName, createMonth, influencer.getAccountName()));
+                    ctx.allocateInternalProjectNo(brandName, teamName, createMonth, influencer.getAccountName()));
         }
 
         // 项目负责人
@@ -448,6 +457,13 @@ public class CollaborationTrackingService {
 
         CollaborationProgress newProgress = req.getProgress();
         InfluencerPaymentProgress newPayment = req.getInfluencerPaymentProgress();
+
+        // "已纳入红人结款批次"这两个状态只能由红人结款模块内部设置，状态流转接口不接受直接选中——
+        // 但只拦"改成"这两个值，本来就是（弹窗没改这个字段、原样提交回去）不算，否则已经纳入
+        // 批次的记录会连"视频项目进度"都没法再通过状态流转调整
+        if (newPayment != null && newPayment.isSystemManagedOnly() && newPayment != t.getInfluencerPaymentProgress()) {
+            throw new RuntimeException(InfluencerPaymentProgress.SYSTEM_MANAGED_ERROR);
+        }
 
         // 基本前置条件校验：想设置红人结款进度的值，视频项目进度必须已经达到要求
         if (newPayment != null && (newProgress == null || !newProgress.allowsPaymentProgress())) {

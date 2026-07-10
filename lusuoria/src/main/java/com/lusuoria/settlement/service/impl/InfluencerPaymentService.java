@@ -158,7 +158,9 @@ public class InfluencerPaymentService {
 
             result.add(item);
         }
-        result.sort(Comparator.comparing(PaymentCandidateItem::getDeadlineDate,
+        // 默认按红人社媒完整名字排序，方便管理层按红人扫视整批候选记录
+        // （前端另外支持按这个维度筛选，筛选前的默认顺序也是这个）
+        result.sort(Comparator.comparing(PaymentCandidateItem::getAccountName,
                 Comparator.nullsLast(Comparator.naturalOrder())));
         return result;
     }
@@ -352,7 +354,7 @@ public class InfluencerPaymentService {
             if (!teamMatches) {
                 throw new RuntimeException("勾选的记录里有不属于所选团队范围的条目：" + t.getInternalProjectNo());
             }
-            boolean alreadyBatched = t.getInfluencerPaymentProgress() == InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH;
+            boolean alreadyBatched = t.getInfluencerPaymentProgress() != null && t.getInfluencerPaymentProgress().isIncludedInBatch();
             boolean belongsToThisPayment = excludePaymentId != null && excludePaymentId.equals(t.getInfluencerPaymentId());
             if (alreadyBatched && !belongsToThisPayment) {
                 throw new RuntimeException("勾选的记录里有已被其他结款批次纳入的条目：" + t.getInternalProjectNo());
@@ -361,11 +363,18 @@ public class InfluencerPaymentService {
         return items;
     }
 
+    /**
+     * 纳入批次时，原状态是"待红人发送invoice"的记录改成专门的"已纳入红人结款批次（缺少invoice）"，
+     * 而不是笼统的"已纳入红人结款批次"——避免这个信息被悄悄抹掉，管理层日后还能一眼看出
+     * 这条记录当初纳入结款批次时其实还没拿到 invoice。
+     */
     private void linkItems(InfluencerPayment payment, List<CollaborationTracking> items) {
         if (items.isEmpty()) return;
         for (CollaborationTracking t : items) {
             t.setPreBatchPaymentProgress(t.getInfluencerPaymentProgress());
-            t.setInfluencerPaymentProgress(InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH);
+            t.setInfluencerPaymentProgress(t.getInfluencerPaymentProgress() == InfluencerPaymentProgress.PENDING_INVOICE
+                    ? InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH_MISSING_INVOICE
+                    : InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH);
             t.setInfluencerPayment(payment);
         }
         trackingRepo.saveAll(items);
