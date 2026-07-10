@@ -109,6 +109,7 @@ public class InfluencerPaymentService {
             InfluencerPaymentProgress preBatch = t != null ? t.getPreBatchPaymentProgress() : null;
             item.setInvoiceWarning(preBatch == InfluencerPaymentProgress.PENDING_INVOICE);
             item.setPaymentProgressLabel(preBatch != null ? preBatch.getLabel() : null);
+            item.setPaymentProgress(preBatch != null ? preBatch.name() : null);
         }
         return result;
     }
@@ -140,6 +141,7 @@ public class InfluencerPaymentService {
             item.setInfluencerCost(t.getInfluencerCost());
             item.setProgressLabel(t.getProgress() != null ? t.getProgress().getLabel() : null);
             item.setPaymentProgressLabel(t.getInfluencerPaymentProgress() != null ? t.getInfluencerPaymentProgress().getLabel() : null);
+            item.setPaymentProgress(t.getInfluencerPaymentProgress() != null ? t.getInfluencerPaymentProgress().name() : null);
             item.setPublishDate(t.getPublishDate());
             item.setInvoiceWarning(t.getInfluencerPaymentProgress() == InfluencerPaymentProgress.PENDING_INVOICE);
 
