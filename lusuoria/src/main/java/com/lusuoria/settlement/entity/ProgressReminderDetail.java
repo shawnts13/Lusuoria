@@ -4,6 +4,7 @@ import lombok.Getter;
 import lombok.Setter;
 
 import javax.persistence.*;
+import java.math.BigDecimal;
 import java.util.Date;
 
 /**
@@ -41,6 +42,10 @@ public class ProgressReminderDetail extends BaseEntity {
 
     @Column(name = "demand_content", columnDefinition = "TEXT")
     private String demandContent;
+
+    /** 红人视频制作与发布成本（美金）快照 */
+    @Column(name = "influencer_cost", precision = 15, scale = 2)
+    private BigDecimal influencerCost;
 
     /** 视频项目进度中文标签快照（不存枚举，因为跑批之后这条记录的进度可能会变） */
     @Column(name = "progress_label")

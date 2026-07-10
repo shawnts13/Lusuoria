@@ -152,6 +152,7 @@ public class ProgressReminderService {
             detail.setTeamName(team != null ? team.getName() : null);
             detail.setAccountName(accountNameById.get(t.getInfluencerId()));
             detail.setDemandContent(t.getDemandContent());
+            detail.setInfluencerCost(t.getInfluencerCost());
             detail.setProgressLabel(t.getProgress() != null ? t.getProgress().getLabel() : null);
             detail.setPublishDate(t.getPublishDate());
             detail.setCycleDays(cycleDays);
