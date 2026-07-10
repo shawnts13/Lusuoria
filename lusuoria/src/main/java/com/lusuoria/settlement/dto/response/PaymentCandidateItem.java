@@ -16,6 +16,8 @@ public class PaymentCandidateItem {
     private String internalProjectNo;
     private String brandName;
     private String teamName;
+    /** 团队原始 id（null 代表这条记录没有团队），前端用来在确认勾选后修正"红人团队"范围 */
+    private Long teamId;
     private String accountName;
     private String demandContent;
     private BigDecimal influencerCost;

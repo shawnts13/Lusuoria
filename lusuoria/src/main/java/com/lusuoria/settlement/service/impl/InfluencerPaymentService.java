@@ -136,6 +136,7 @@ public class InfluencerPaymentService {
             item.setBrandName(brand != null ? brand.getName() : null);
             InfluencerTeam team = t.getTeamId() != null ? teamCache.findById(t.getTeamId()) : null;
             item.setTeamName(team != null ? team.getName() : null);
+            item.setTeamId(t.getTeamId());
             item.setAccountName(accountNameById.get(t.getInfluencerId()));
             item.setDemandContent(t.getDemandContent());
             item.setInfluencerCost(t.getInfluencerCost());
