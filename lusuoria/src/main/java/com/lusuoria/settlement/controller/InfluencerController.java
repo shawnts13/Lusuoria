@@ -169,7 +169,6 @@ public class InfluencerController {
         inf.setEmail(req.getEmail());
         inf.setContacts(req.getContacts());
         inf.setContactStatus(req.getContactStatus());
-        inf.setPaymentCycle(req.getPaymentCycle());
         inf.setFollowerPerson(req.getFollowerPerson());
         inf.setNotes(req.getNotes());
 

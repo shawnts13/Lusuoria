@@ -9,7 +9,7 @@ import java.util.Optional;
 
 public interface ImportBatchRepository extends JpaRepository<ImportBatch, Long> {
 
-    Page<ImportBatch> findByModuleOrderByCreatedAtDesc(String module, Pageable pageable);
+    Page<ImportBatch> findByModuleAndIsDeletedFalseOrderByCreatedAtDesc(String module, Pageable pageable);
 
-    Optional<ImportBatch> findById(Long id);
+    Optional<ImportBatch> findByIdAndIsDeletedFalse(Long id);
 }

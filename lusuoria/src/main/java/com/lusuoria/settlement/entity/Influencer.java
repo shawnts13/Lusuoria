@@ -79,9 +79,6 @@ public class Influencer extends BaseEntity {
     @Column(name = "contact_status", length = 30)
     private InfluencerContactStatus contactStatus;
 
-    @Column(name = "payment_cycle", length = 20)
-    private String paymentCycle;
-
     @Column(name = "follower_person")
     private String followerPerson;
 

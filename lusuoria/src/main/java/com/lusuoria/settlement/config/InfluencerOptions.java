@@ -17,10 +17,6 @@ public class InfluencerOptions {
         "未开发", "已回复开发信", "有合作意愿", "正在合作", "已合作过"
     };
 
-    public static final String[] PAYMENT_CYCLES = {
-        "7天", "14天", "30天"
-    };
-
     /** 视频投流期限 / 视频版权期限 共用此选项 */
     public static final String[] TERMS = {
         "1年", "3年", "永久"

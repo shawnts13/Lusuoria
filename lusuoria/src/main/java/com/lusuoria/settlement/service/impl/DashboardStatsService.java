@@ -188,7 +188,7 @@ public class DashboardStatsService {
                 grouped.merge(key, 1L, Long::sum);
             }
         } else {
-            // 默认：按品牌方 + 红人团队分组（没关联团队的记录统一归到"未指定团队"）
+            // 默认：按品牌方 + 红人团队分组（没关联团队的记录，团队部分留空，展示成"品牌方 - "）
             dimensionType = "brand_team";
             for (CollaborationTracking o : orders) {
                 String brandName = brandNameOf(o.getBrandId());
@@ -389,7 +389,7 @@ public class DashboardStatsService {
             String key;
             switch (dimension) {
                 case "team":
-                    key = teamNameOf(o.getTeam());
+                    key = teamDisplayName(o.getTeam());
                     break;
                 case "account":
                     key = o.getInfluencer() != null ? o.getInfluencer().getAccountName() : "未知账号";
@@ -503,9 +503,16 @@ public class DashboardStatsService {
         return e != null ? e.getName() : "未知执行人员";
     }
 
+    /** 用于"品牌方 - 团队"这类拼接展示：没有团队时留空，拼出来是"品牌方 - "，团队部分直接占空 */
     private String teamNameOf(InfluencerTeam team) {
-        if (team == null || team.getName() == null || team.getName().trim().isEmpty()) return "未指定团队";
+        if (team == null || team.getName() == null || team.getName().trim().isEmpty()) return "";
         return team.getName();
+    }
+
+    /** 用于单独按"红人团队"下钻展示：没有团队时显示明确提示语，而不是留空 */
+    private String teamDisplayName(InfluencerTeam team) {
+        String name = teamNameOf(team);
+        return name.isEmpty() ? "（红人无所属团队）" : name;
     }
 
     /** 下钻接口统一用范围终止月份对应的汇率（即查看的最新月份的"上月最后工作日"汇率） */

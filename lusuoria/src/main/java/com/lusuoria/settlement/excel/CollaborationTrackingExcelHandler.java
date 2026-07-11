@@ -86,7 +86,7 @@ public class CollaborationTrackingExcelHandler {
         {"项目视频类型",               "0", "0"},
         {"采买旧视频的原链接",         "0", "0"},
         {"项目负责人",                 "0", "0"},
-        {"内部执行人员",               "0", "0"},
+        {"内部执行人员（可选）",       "0", "0"},
         {"客户方的项目订单",           "0", "0"},
         {"客户方付款批次",             "0", "0"},
         {"红人视频制作与发布成本（美金）", "1", "0"},
@@ -250,9 +250,9 @@ public class CollaborationTrackingExcelHandler {
         ex.put("项目视频类型", "实拍新视频");
         ex.put("采买旧视频的原链接", "");  // 仅"项目视频类型"为"旧素材重发"时才填写，其余情况留空
         ex.put("项目负责人", "梁珈绫 Charlene");
-        ex.put("内部执行人员", "梁珈绫 Charlene");
+        ex.put("内部执行人员（可选）", "");
         ex.put("客户方的项目订单", "6004980428");
-        ex.put("客户方付款批次", "已加入未结算列表");
+        ex.put("客户方付款批次", "");
         ex.put("红人视频制作与发布成本（美金）", "550");
         ex.put("客户合作价格（美金）", "800");
         ex.put("红人团队", "");  // 该红人在选中的品牌方下只有0/1个团队时可以留空，多个团队时必须填写
@@ -568,7 +568,9 @@ public class CollaborationTrackingExcelHandler {
                 }
 
                 // 内部执行人员：只能是"执行人员"角色的员工；同样的模糊匹配规则
-                String executorRaw = getStr(row, colMap, "内部执行人员");
+                String executorRaw = firstNonNull(
+                        getStr(row, colMap, "内部执行人员（可选）"),
+                        getStr(row, colMap, "内部执行人员"));
                 if (executorRaw != null && !executorRaw.trim().isEmpty()) {
                     Employee executor = matchEmployeeFuzzy(executorRaw, executorCandidates);
                     if (executor == null) {
@@ -821,7 +823,7 @@ public class CollaborationTrackingExcelHandler {
             {"项目视频类型"},
             {"采买旧视频的原链接"},
             {"项目负责人"},
-            {"内部执行人员"},
+            {"内部执行人员（可选）", "内部执行人员"},
             {"客户方的项目订单", "客户系统的订单ID", "订单ID"},
             {"客户方付款批次", "客户付款批次"},
             {"备注"},

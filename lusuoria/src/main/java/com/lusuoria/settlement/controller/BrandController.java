@@ -112,7 +112,6 @@ public class BrandController {
         }
         brand.setName(req.getName());
         brand.setCountryMarket(req.getCountryMarket());
-        brand.setCooperationType(req.getCooperationType());
         brand.setContactPerson(req.getContactPerson());
         brand.setSettlementCurrency(req.getSettlementCurrency());
         brand.setPaymentCycleType(req.getPaymentCycleType());

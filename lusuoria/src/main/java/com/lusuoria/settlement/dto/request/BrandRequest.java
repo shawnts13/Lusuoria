@@ -10,7 +10,6 @@ public class BrandRequest {
     @NotBlank(message = "品牌方名称不能为空")
     private String name;
     private String countryMarket;
-    private String cooperationType;
     private String contactPerson;
     private String settlementCurrency;
 

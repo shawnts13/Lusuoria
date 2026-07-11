@@ -40,7 +40,6 @@ public class InfluencerRequest {
     private String contacts;         // 直接传 JSON 字符串
 
     private InfluencerContactStatus contactStatus;
-    private String paymentCycle;
     private String followerPerson;
 
     // 敏感字段

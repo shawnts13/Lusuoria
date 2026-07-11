@@ -19,9 +19,6 @@ public class Brand extends BaseEntity {
     @Column(name = "country_market")
     private String countryMarket;        // 国家/市场
 
-    @Column(name = "cooperation_type")
-    private String cooperationType;      // 合作类型
-
     @Column(name = "contact_person")
     private String contactPerson;        // 联系人
 

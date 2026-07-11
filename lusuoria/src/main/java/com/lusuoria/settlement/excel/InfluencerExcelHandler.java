@@ -94,7 +94,6 @@ public class InfluencerExcelHandler {
         cols.add(new String[]{"红人Line",            "0"});
         cols.add(new String[]{"红人Telegram",        "0"});
         cols.add(new String[]{"已签署合同链接",      "0"});
-        cols.add(new String[]{"付款周期",            "0"});
 
         Row headerRow = sheet.createRow(0);
         int colIdx = 0;
@@ -135,7 +134,6 @@ public class InfluencerExcelHandler {
             setCellStr(row, c++, contacts.getOrDefault("line",     ""), wrap);  // 红人Line
             setCellStr(row, c++, contacts.getOrDefault("telegram", ""), wrap);  // 红人Telegram
             setCellStr(row, c++, inf.getContractLink(),  wrap);                 // 已签署合同链接
-            setCellStr(row, c++, inf.getPaymentCycle(),  wrap);                 // 付款周期
         }
 
         sheet.createFreezePane(0, 1);
@@ -198,7 +196,6 @@ public class InfluencerExcelHandler {
         cols.add(new String[]{"红人Line",                 "0"});
         cols.add(new String[]{"红人Telegram",             "0"});
         cols.add(new String[]{"已签署合同链接",           "0"});
-        cols.add(new String[]{"付款周期",                 "0"});
 
         Row headerRow = sheet.createRow(0);
         int colIdx = 0;
@@ -220,7 +217,6 @@ public class InfluencerExcelHandler {
         String[] contactStatuses = java.util.Arrays.stream(InfluencerOptions.CONTACT_STATUSES)
                 .filter(s -> !s.isEmpty()).toArray(String[]::new);
         addDropdown(sheet, dv, colIdxMap, "建联情况", contactStatuses);
-        addDropdown(sheet, dv, colIdxMap, "付款周期",       InfluencerOptions.PAYMENT_CYCLES);
         addFormulaDropdown(sheet, dv, colIdxMap, "服务国家/市场",
                 "_lists!$A$1:$A$" + InfluencerOptions.COUNTRIES.length);
         // 品牌方改为多选（换行/逗号分隔），不再用单选下拉
@@ -245,7 +241,6 @@ public class InfluencerExcelHandler {
         examples.put("红人Line",                 "lineID_xxx");
         examples.put("红人Telegram",             "@telegram_xxx");
         examples.put("建联情况",                 "有合作意愿");
-        examples.put("付款周期",                 "30天");
         examples.put("跟进人",                   "Charlene");
         examples.put("红人视频制作与发布成本（美金）", "500");
         examples.put("视频投流成本（美金）",           "200");
@@ -294,7 +289,6 @@ public class InfluencerExcelHandler {
             {"已签署合同链接"},
             {"粉丝量"},
             {"建联情况"},
-            {"付款周期"},
             {"跟进人"},
             {"红人电话"},
             {"红人WhatsApp"},
@@ -498,8 +492,6 @@ public class InfluencerExcelHandler {
                 if (hasValue(contactStatusStr)) {
                     inf.setContactStatus(parseContactStatus(contactStatusStr));
                 }
-
-                setIfPresent(inf::setPaymentCycle, getStr(row, colMap, "付款周期"));
 
                 // 跟进人
                 String followerPersonName = getStr(row, colMap, "跟进人");
@@ -736,7 +728,6 @@ public class InfluencerExcelHandler {
             || !eq(original.getContacts(),       updated.getContacts())
             || !eq(original.getContactStatus() != null ? original.getContactStatus().name() : null,
                    updated.getContactStatus()   != null ? updated.getContactStatus().name()   : null)
-            || !eq(original.getPaymentCycle(),   updated.getPaymentCycle())
             || !eq(original.getFollowerPerson(), updated.getFollowerPerson())
             || !eq(original.getNotes(),          updated.getNotes())
             || !eq(original.getInfluencerCost(), updated.getInfluencerCost())

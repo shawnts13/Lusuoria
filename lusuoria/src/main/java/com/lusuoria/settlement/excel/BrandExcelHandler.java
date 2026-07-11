@@ -38,7 +38,7 @@ public class BrandExcelHandler {
         XSSFCellStyle nor  = createNormalStyle(wb);
 
         String[] headers = {
-            "品牌方名称", "国家/市场", "合作类型", "联系人", "结算币种",
+            "品牌方名称", "国家/市场", "联系人", "结算币种",
             "付款周期类型", "阈值分档-成本阈值", "阈值分档-阈值以内天数", "阈值分档-阈值以上天数", "月结-对账日后天数",
             "备注"
         };
@@ -56,7 +56,6 @@ public class BrandExcelHandler {
             int c    = 0;
             setCellStr(row, c++, b.getName(),              nor);
             setCellStr(row, c++, b.getCountryMarket(),     nor);
-            setCellStr(row, c++, b.getCooperationType(),   nor);
             setCellStr(row, c++, b.getContactPerson(),     nor);
             setCellStr(row, c++, b.getSettlementCurrency(), nor);
             setCellStr(row, c++, b.getPaymentCycleType() != null ? b.getPaymentCycleType().getLabel() : "", nor);
@@ -84,7 +83,7 @@ public class BrandExcelHandler {
         XSSFCellStyle hdr  = createHeaderStyle(wb);
 
         String[] headers = {
-            "品牌方名称(必填)", "国家/市场", "合作类型", "联系人", "结算币种(USD/RMB)",
+            "品牌方名称(必填)", "国家/市场", "联系人", "结算币种(USD/RMB)",
             "付款周期类型(按红人成本阈值分档/月底对账日后N天结款)",
             "阈值分档-成本阈值", "阈值分档-阈值以内天数", "阈值分档-阈值以上天数", "月结-对账日后天数",
             "备注"
@@ -101,7 +100,7 @@ public class BrandExcelHandler {
         DataValidationHelper dvHelper = sheet.getDataValidationHelper();
         DataValidation currencyDv = dvHelper.createValidation(
                 dvHelper.createExplicitListConstraint(new String[]{"USD", "RMB", "EUR"}),
-                new CellRangeAddressList(1, 1000, 4, 4));
+                new CellRangeAddressList(1, 1000, 3, 3));
         currencyDv.setShowErrorBox(true);
         sheet.addValidationData(currencyDv);
 
@@ -109,7 +108,7 @@ public class BrandExcelHandler {
         String[] cycleTypeLabels = { PaymentCycleType.COST_THRESHOLD.getLabel(), PaymentCycleType.MONTH_END.getLabel() };
         DataValidation cycleTypeDv = dvHelper.createValidation(
                 dvHelper.createExplicitListConstraint(cycleTypeLabels),
-                new CellRangeAddressList(1, 1000, 5, 5));
+                new CellRangeAddressList(1, 1000, 4, 4));
         cycleTypeDv.setShowErrorBox(true);
         sheet.addValidationData(cycleTypeDv);
 
@@ -117,15 +116,14 @@ public class BrandExcelHandler {
         Row ex = sheet.createRow(1);
         ex.createCell(0).setCellValue("TEMU");
         ex.createCell(1).setCellValue("美国");
-        ex.createCell(2).setCellValue("达人营销");
-        ex.createCell(3).setCellValue("张三");
-        ex.createCell(4).setCellValue("USD");
-        ex.createCell(5).setCellValue(PaymentCycleType.COST_THRESHOLD.getLabel());
-        ex.createCell(6).setCellValue("1000");
-        ex.createCell(7).setCellValue("30");
-        ex.createCell(8).setCellValue("60");
-        ex.createCell(9).setCellValue("");
-        ex.createCell(10).setCellValue("示例数据，填完后请删除");
+        ex.createCell(2).setCellValue("张三");
+        ex.createCell(3).setCellValue("USD");
+        ex.createCell(4).setCellValue(PaymentCycleType.COST_THRESHOLD.getLabel());
+        ex.createCell(5).setCellValue("1000");
+        ex.createCell(6).setCellValue("30");
+        ex.createCell(7).setCellValue("60");
+        ex.createCell(8).setCellValue("");
+        ex.createCell(9).setCellValue("示例数据，填完后请删除");
 
         wb.write(response.getOutputStream());
         wb.close();
@@ -160,7 +158,7 @@ public class BrandExcelHandler {
         // 表头完整性校验：少了关键列（比如表头被误改）直接拒绝整个文件，不再是
         // "这一列找不到就当作没填"这种静默处理
         String[] requiredHeaders = {
-            "品牌方名称(必填)", "国家/市场", "合作类型", "联系人", "结算币种(USD/RMB)",
+            "品牌方名称(必填)", "国家/市场", "联系人", "结算币种(USD/RMB)",
             "付款周期类型(按红人成本阈值分档/月底对账日后N天结款)",
             "阈值分档-成本阈值", "阈值分档-阈值以内天数", "阈值分档-阈值以上天数", "月结-对账日后天数",
             "备注"
@@ -194,7 +192,6 @@ public class BrandExcelHandler {
                 brand.setIsDeleted(false);
                 brand.setName(name);
                 brand.setCountryMarket(getStr(row, colMap, "国家/市场"));
-                brand.setCooperationType(getStr(row, colMap, "合作类型"));
                 brand.setContactPerson(getStr(row, colMap, "联系人"));
                 brand.setSettlementCurrency(getStr(row, colMap, "结算币种(USD/RMB)"));
 
