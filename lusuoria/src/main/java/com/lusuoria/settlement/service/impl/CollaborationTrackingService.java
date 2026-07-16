@@ -523,7 +523,7 @@ public class CollaborationTrackingService {
         // 很多时候恰恰是流转到这几个状态时才第一次考虑要不要安排内部执行人员）。
         // 已经设置过金额、或已确认不涉及的，不会再触发
         boolean triggered = (newProgress != null && newProgress.allowsPaymentProgress()) || newPayment != null;
-        if (triggered && !saved.isExecutorCostNotApplicable() && saved.getInternalExecutionCost() == null) {
+        if (triggered && !Boolean.TRUE.equals(saved.getExecutorCostNotApplicable()) && saved.getInternalExecutionCost() == null) {
             result.setNeedExecutorCost(true);
         }
         return result;

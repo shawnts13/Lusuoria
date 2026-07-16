@@ -205,9 +205,12 @@ public class CollaborationTracking extends BaseEntity {
      * 在"设置内部执行成本"弹窗里选择这个选项后置为 true，之后视频项目进度/红人结款进度再怎么
      * 流转，也不会再对这条记录自动弹出该弹窗；如果后续确实需要执行人员，直接去编辑表单里
      * 手动选执行人员 + 填内部执行成本即可，不需要先把这个标记改回 false。
+     * 用包装类型 Boolean 而不是 boolean：ddl-auto=update 给已有行新增这一列时，
+     * 老数据这一列的值是数据库层面的 NULL，如果用基本类型 boolean，Hibernate 读到 NULL
+     * 会直接抛 PropertyAccessException；用 Boolean 就能安全地把 NULL 当"未确认"处理。
      */
     @Column(name = "executor_cost_not_applicable")
-    private boolean executorCostNotApplicable;
+    private Boolean executorCostNotApplicable;
 
     /** 项目毛利（美金，自动计算）。仅 FULL（ADMIN/管理层/财务）可见 */
     @Column(name = "gross_profit", precision = 15, scale = 2)
