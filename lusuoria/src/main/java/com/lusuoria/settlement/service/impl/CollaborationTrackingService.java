@@ -517,11 +517,13 @@ public class CollaborationTrackingService {
         result.setPendingApproval(false);
 
         // 内部执行成本设置流程触发：视频项目进度改成达到前置条件的状态、或者红人结款进度
-        // 被设置/修改了值，这两种情况下，如果这条记录有内部执行人员、且还没设置过内部执行成本，
-        // 就需要触发一次"设置内部执行成本"，由前端弹窗让用户确认/填写金额
-        // （已经设置过的不会再触发，那种情况直接去编辑表单或用手动入口改这个金额字段）
+        // 被设置/修改了值，这两种情况下，如果这条记录还没设置过内部执行成本、也没确认过
+        // "不涉及内部执行人员"，就需要触发一次"设置内部执行成本"，由前端弹窗让用户确认/选择
+        // 执行人员并填写金额，或者直接选"不涉及执行人员"（不要求这条记录已经先选好执行人员——
+        // 很多时候恰恰是流转到这几个状态时才第一次考虑要不要安排内部执行人员）。
+        // 已经设置过金额、或已确认不涉及的，不会再触发
         boolean triggered = (newProgress != null && newProgress.allowsPaymentProgress()) || newPayment != null;
-        if (triggered && saved.getExecutorId() != null && saved.getInternalExecutionCost() == null) {
+        if (triggered && !saved.isExecutorCostNotApplicable() && saved.getInternalExecutionCost() == null) {
             result.setNeedExecutorCost(true);
         }
         return result;
@@ -539,16 +541,19 @@ public class CollaborationTrackingService {
      *   已经赋值过内部执行成本的旧素材重发记录数量 + 1 来算的——没赋值的记录不算数。
      */
     @Transactional(readOnly = true)
-    public ExecutorCostSuggestionResponse suggestExecutorCost(Long id) {
+    public ExecutorCostSuggestionResponse suggestExecutorCost(Long id, Long executorIdOverride) {
         CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
         ExecutorCostSuggestionResponse resp = new ExecutorCostSuggestionResponse();
 
-        if (t.getExecutorId() == null) {
+        // 弹窗允许在这条记录还没落库执行人员的情况下，现场选一个人来算建议金额，
+        // 所以优先用调用方传入的 executorIdOverride，没传才退回这条记录数据库里已存的值
+        Long executorId = executorIdOverride != null ? executorIdOverride : t.getExecutorId();
+        if (executorId == null) {
             resp.setBreakdown("该记录没有内部执行人员，无需设置内部执行成本");
             return resp;
         }
-        Employee executor = employeeCache.findById(t.getExecutorId());
+        Employee executor = employeeCache.findById(executorId);
         if (executor == null) {
             resp.setBreakdown("执行人员信息不存在，请手动填写金额");
             return resp;
@@ -665,11 +670,33 @@ public class CollaborationTrackingService {
         return v == null ? "0.00" : v.setScale(2, java.math.RoundingMode.HALF_UP).toString();
     }
 
-    /** 保存内部执行成本（跟状态流转分开，是独立的一步操作） */
+    /**
+     * 保存内部执行成本（跟状态流转分开，是独立的一步操作）。
+     * notApplicable=true：确认"不涉及内部执行人员"，忽略 executorId/amount，只置标记位，
+     * 以后这条记录不会再自动弹出这个弹窗（后续如果真的需要，直接去编辑表单手动设置）。
+     * notApplicable=false：executorId 非空时顺带把执行人员也定下来（弹窗允许在这条记录
+     * 还没选执行人员的情况下现场选人）；executorId 和记录里已有的执行人员必须至少有一个非空，
+     * 否则拒绝——不能在没有执行人员的情况下直接填一个金额。
+     */
     @Transactional
-    public CollaborationTracking setExecutorCost(Long id, java.math.BigDecimal amount) {
+    public CollaborationTracking setExecutorCost(Long id, Long executorId, java.math.BigDecimal amount, boolean notApplicable) {
         CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
+
+        if (notApplicable) {
+            t.setExecutorCostNotApplicable(true);
+            return trackingRepo.save(t);
+        }
+
+        if (executorId != null) {
+            Employee executor = employeeCache.findById(executorId);
+            if (executor == null) throw new RuntimeException("内部执行人员不存在：" + executorId);
+            t.setExecutor(executor);
+        }
+        if (t.getExecutor() == null) {
+            throw new RuntimeException("请先选择内部执行人员，或选择\"不涉及执行人员\"");
+        }
+        t.setExecutorCostNotApplicable(false);
         t.setInternalExecutionCost(amount);
         // 内部执行成本变了，项目毛利往下的可分配利润/负责人提成/公司利润这些都要跟着重新算一遍
         profitCalculator.calculate(t);

@@ -200,6 +200,15 @@ public class CollaborationTracking extends BaseEntity {
     @Column(name = "internal_execution_cost", precision = 15, scale = 2)
     private java.math.BigDecimal internalExecutionCost;
 
+    /**
+     * 该记录是否已确认"不涉及内部执行人员"（比如红人自己发布，不需要公司内部人员制作/发布）。
+     * 在"设置内部执行成本"弹窗里选择这个选项后置为 true，之后视频项目进度/红人结款进度再怎么
+     * 流转，也不会再对这条记录自动弹出该弹窗；如果后续确实需要执行人员，直接去编辑表单里
+     * 手动选执行人员 + 填内部执行成本即可，不需要先把这个标记改回 false。
+     */
+    @Column(name = "executor_cost_not_applicable")
+    private boolean executorCostNotApplicable;
+
     /** 项目毛利（美金，自动计算）。仅 FULL（ADMIN/管理层/财务）可见 */
     @Column(name = "gross_profit", precision = 15, scale = 2)
     private java.math.BigDecimal grossProfit;

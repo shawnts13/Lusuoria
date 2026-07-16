@@ -163,20 +163,24 @@ public class CollaborationTrackingController {
 
     /**
      * 内部执行成本弹窗打开时调用：只读，算出默认建议金额 + 算出来的依据说明，不修改任何数据。
+     * executorId 可选：弹窗里如果这条记录还没选执行人员、用户现场选了一个人，传这个参数可以
+     * 现算这个人的建议金额；不传就退回这条记录数据库里已存的执行人员。
      */
     @GetMapping("/{id}/executor-cost-suggestion")
-    public ApiResponse<ExecutorCostSuggestionResponse> suggestExecutorCost(@PathVariable Long id) {
-        return ApiResponse.success(trackingService.suggestExecutorCost(id));
+    public ApiResponse<ExecutorCostSuggestionResponse> suggestExecutorCost(
+            @PathVariable Long id, @RequestParam(required = false) Long executorId) {
+        return ApiResponse.success(trackingService.suggestExecutorCost(id, executorId));
     }
 
     /**
-     * 内部执行成本弹窗确认时调用：保存金额，跟状态流转是分开的两步操作。
+     * 内部执行成本弹窗确认时调用：保存金额（或确认"不涉及执行人员"），跟状态流转是分开的两步操作。
      */
     @PatchMapping("/{id}/executor-cost")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<CollaborationTracking> setExecutorCost(
             @PathVariable Long id, @RequestBody ExecutorCostRequest req) {
-        CollaborationTracking saved = trackingService.setExecutorCost(id, req.getAmount());
+        CollaborationTracking saved = trackingService.setExecutorCost(
+                id, req.getExecutorId(), req.getAmount(), req.isNotApplicable());
         ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
         CollaborationTracking out = ctx.isFull() ? saved : applyFieldVisibility(saved, ctx);
         return ApiResponse.success(out);
@@ -186,6 +190,8 @@ public class CollaborationTrackingController {
     @lombok.Data
     public static class ExecutorCostRequest {
         private java.math.BigDecimal amount;
+        private Long executorId;
+        private boolean notApplicable;
     }
 
     /**
