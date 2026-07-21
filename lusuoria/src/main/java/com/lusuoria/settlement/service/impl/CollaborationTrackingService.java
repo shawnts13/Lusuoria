@@ -282,19 +282,51 @@ public class CollaborationTrackingService {
 
         tracking.setPlatform(req.getPlatform());
         tracking.setDemandContent(req.getDemandContent());
-        tracking.setPublishLink(emptyToNull(req.getPublishLink()));
+
+        // 视频发布链接是否有变化（仅单条编辑场景关心，用于下面"编辑时自动流转"的判断；
+        // 新建/Excel导入都不算"编辑"，不参与这个判断）
+        String oldPublishLink = existingOrNull != null ? existingOrNull.getPublishLink() : null;
+        String newPublishLink = emptyToNull(req.getPublishLink());
+        tracking.setPublishLink(newPublishLink);
+
+        boolean isBulkImport = ctx instanceof BulkLookupContext;
+        boolean isSingleEdit = existingOrNull != null && !isBulkImport;
+        boolean publishLinkChanged = isSingleEdit && !java.util.Objects.equals(oldPublishLink, newPublishLink);
 
         // 视频发布时间：Excel 批量导入允许直接填写（是否符合"视频项目进度"前置条件由
         // CollaborationTrackingExcelHandler 逐行校验报错，这里不重复校验）；单条保存
         // （新建/编辑表单提交）只有 ADMIN 能编辑，其他角色提交的值直接忽略、保留数据库原值——
         // 其他角色只能通过"状态流转"在进度进入符合条件的状态时被系统自动填上，见 updateStatus()
-        boolean isBulkImport = ctx instanceof BulkLookupContext;
         if (isBulkImport || RoleUtil.canEditPublishDate()) {
             tracking.setPublishDate(req.getPublishDate());
         }
+
+        // 2026-07：单条编辑时，如果这次改动涉及"视频发布链接"，说明视频事实上已经发布了——
+        // 不管是哪个角色在编辑、也不管"视频项目进度"锁在哪个阶段，都自动：
+        //   1. 把"视频发布时间"覆盖成今天（不依赖角色能不能手填这个字段，覆盖掉上面刚设置的值）；
+        //   2. 如果当前进度还没到"已发布（未结算）"，直接把进度自动流转过去，不需要再手动走一次
+        //      "状态流转"功能；进度已经在这个阶段或更后面（已加入客户未结算列表/客户已结算）的，
+        //      不倒退、不覆盖。
+        // 如果链接被改成空了，视频发布时间也跟着清空（链接和发布时间强绑定，避免留下一个
+        // 跟"未发布"矛盾的发布时间）。
+        boolean autoTransitionedToPublished = false;
+        if (publishLinkChanged) {
+            if (newPublishLink != null) {
+                tracking.setPublishDate(new Date());
+                if (tracking.getProgress() == null || !tracking.getProgress().allowsPaymentProgress()) {
+                    tracking.setProgress(CollaborationProgress.PUBLISHED_UNSETTLED);
+                    autoTransitionedToPublished = true;
+                }
+            } else {
+                tracking.setPublishDate(null);
+            }
+        }
+
         // 进度：新建时，或明确允许编辑时更新状态（Excel 导入更新分支），才从请求体取值；
         // 普通编辑表单（allowStatusUpdateOnEdit=false）忽略请求体里的 progress，保留数据库原值
+        // （上面"编辑时自动流转"只发生在单条编辑场景，跟这里的分支互斥，不会冲突）
         if (existingOrNull == null || allowStatusUpdateOnEdit) {
+            requireFinanceForSettlementProgress(tracking.getProgress(), req.getProgress());
             tracking.setProgress(req.getProgress());
         }
 
@@ -388,6 +420,7 @@ public class CollaborationTrackingService {
         // （不满足条件时忽略请求体里的值，保留数据库原值，不报错，简单地"改了也不生效"）
         if (fvCtx.isFull() || (fvCtx.tier == ProjectFieldVisibility.Tier.PROJECT_MANAGER && isOwnManager)) {
             tracking.setOtherExternalCost(req.getOtherExternalCost());
+            tracking.setOtherExternalCostNote(req.getOtherExternalCostNote());
         }
         if (fvCtx.isFull()
                 || (fvCtx.tier == ProjectFieldVisibility.Tier.PROJECT_MANAGER && isOwnManager)
@@ -422,6 +455,11 @@ public class CollaborationTrackingService {
         tracking.setClientOrderId(emptyToNull(req.getClientOrderId()));
 
         CollaborationTracking saved = trackingRepo.save(tracking);
+        // 编辑时自动流转到"已发布（未结算）"，等价于走了一次状态流转，同样需要考虑要不要
+        // 弹出"设置内部执行成本"——除非这条记录已经明确确认过"不涉及内部执行人员"
+        if (autoTransitionedToPublished && !Boolean.TRUE.equals(saved.getExecutorCostNotApplicable())) {
+            saved.setNeedExecutorCost(true);
+        }
         return saved;
     }
 
@@ -454,6 +492,7 @@ public class CollaborationTrackingService {
         CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
 
+        CollaborationProgress oldProgress = t.getProgress();
         CollaborationProgress newProgress = req.getProgress();
         InfluencerPaymentProgress newPayment = req.getInfluencerPaymentProgress();
 
@@ -461,6 +500,12 @@ public class CollaborationTrackingService {
         if (newPayment != null && (newProgress == null || !newProgress.allowsPaymentProgress())) {
             throw new RuntimeException(InfluencerPaymentProgress.PRECONDITION_ERROR);
         }
+
+        // "已加入客户未结算列表"/"客户已结算"这两个状态只能由财务/管理层流转进入，
+        // 普通员工（项目负责人/执行人员/基础权限）只能流转到"已发布（未结算）"和"折损"这两个终态。
+        // 只拦截真正的变动——原样提交回去（值没变）不受影响，跟下面 isSystemManagedChange 的
+        // 放行原则保持一致
+        requireFinanceForSettlementProgress(oldProgress, newProgress);
 
         // 倒退检测：红人结款进度当前已有值 + 视频项目进度当前满足条件 + 这次要改成不满足条件的
         // 另一个状态 —— 这种改动需要走管理员审核，不能直接生效。这条路径本身已经是一个受控动作
@@ -505,7 +550,7 @@ public class CollaborationTrackingService {
         // 只在当前为空时才填，避免已经有值（管理员手动填过，或者之前已经自动填过）的记录
         // 在这三个阶段之间来回流转时被反复覆盖成"今天"，抹掉真实的发布日期。
         boolean enteringPublishedZone = newProgress != null && newProgress.allowsPaymentProgress()
-                && (t.getProgress() == null || !t.getProgress().allowsPaymentProgress());
+                && (oldProgress == null || !oldProgress.allowsPaymentProgress());
         if (enteringPublishedZone && t.getPublishDate() == null) {
             t.setPublishDate(new Date());
         }
@@ -516,17 +561,33 @@ public class CollaborationTrackingService {
         result.setTracking(saved);
         result.setPendingApproval(false);
 
-        // 内部执行成本设置流程触发：视频项目进度改成达到前置条件的状态、或者红人结款进度
-        // 被设置/修改了值，这两种情况下，如果这条记录还没设置过内部执行成本、也没确认过
-        // "不涉及内部执行人员"，就需要触发一次"设置内部执行成本"，由前端弹窗让用户确认/选择
-        // 执行人员并填写金额，或者直接选"不涉及执行人员"（不要求这条记录已经先选好执行人员——
-        // 很多时候恰恰是流转到这几个状态时才第一次考虑要不要安排内部执行人员）。
-        // 已经设置过金额、或已确认不涉及的，不会再触发
-        boolean triggered = (newProgress != null && newProgress.allowsPaymentProgress()) || newPayment != null;
-        if (triggered && !Boolean.TRUE.equals(saved.getExecutorCostNotApplicable()) && saved.getInternalExecutionCost() == null) {
+        // 内部执行成本设置流程触发（2026-07 调整）：只在这次流转的目标明确是"已发布（未结算）"
+        // ——项目负责人视角下唯一需要考虑执行人员成本的终态——且是从别的状态第一次流转进来时
+        // 才弹一次；不再看这条记录内部执行成本是不是已经有值，哪怕之前在编辑表单里误填过金额，
+        // 到了这个状态也应该重新弹一次确认，只有已经明确点过"不涉及内部执行人员"的记录才不再弹。
+        // "已加入客户未结算列表"/"客户已结算"这两个财务专属状态不会触发这个弹窗
+        // （财务流转到这两个状态时不涉及执行人员的设置）。
+        boolean enteringPublishedUnsettled = newProgress == CollaborationProgress.PUBLISHED_UNSETTLED
+                && oldProgress != CollaborationProgress.PUBLISHED_UNSETTLED;
+        if (enteringPublishedUnsettled && !Boolean.TRUE.equals(saved.getExecutorCostNotApplicable())) {
             result.setNeedExecutorCost(true);
         }
         return result;
+    }
+
+    /**
+     * "已加入客户未结算列表"/"客户已结算"这两个状态只能由财务/管理层（ProjectFieldVisibility
+     * 判定为 FULL 层级：ADMIN，或关联员工角色是"财务"/"管理层"的 STAFF 账号）流转进入；
+     * 其余角色（项目负责人/执行人员/基础权限的 STAFF）只能流转到"已发布（未结算）"和"折损"
+     * 这两个终态。只拦截真正把值改成这两个状态之一的操作，原样提交回去（值没变，比如
+     * Excel 重新导入同一批已经在这两个状态的记录）不受影响。
+     */
+    private void requireFinanceForSettlementProgress(CollaborationProgress oldProgress, CollaborationProgress newProgress) {
+        boolean isSettlementProgress = newProgress == CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST
+                || newProgress == CollaborationProgress.SETTLED;
+        if (isSettlementProgress && newProgress != oldProgress && !fieldVisibility.resolve().isFull()) {
+            throw new RuntimeException("\"已加入客户未结算列表\"/\"客户已结算\"这两个状态仅能由财务/管理层设置");
+        }
     }
 
     /**

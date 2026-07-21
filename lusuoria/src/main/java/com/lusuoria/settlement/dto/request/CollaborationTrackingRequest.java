@@ -66,6 +66,8 @@ public class CollaborationTrackingRequest {
     // ProjectFieldVisibility 分级校验（不满足条件时忽略请求体里的值，保留数据库原值）=====
     private java.math.BigDecimal exchangeRate;
     private java.math.BigDecimal otherExternalCost;
+    /** 外部成本备注：记录"其他外部成本"的来源和其他备注（比如物流成本等），写权限跟 otherExternalCost 一致 */
+    private String otherExternalCostNote;
     private java.math.BigDecimal internalExecutionCost;
     private java.math.BigDecimal commissionRate;
 

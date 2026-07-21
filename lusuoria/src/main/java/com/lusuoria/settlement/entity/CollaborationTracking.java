@@ -196,6 +196,13 @@ public class CollaborationTracking extends BaseEntity {
     @Column(name = "other_external_cost", precision = 15, scale = 2)
     private java.math.BigDecimal otherExternalCost;
 
+    /**
+     * 外部成本备注：记录"其他外部成本"的来源和其他备注（比如物流成本等）。
+     * 可见性/写权限跟 otherExternalCost 完全一致。
+     */
+    @Column(name = "other_external_cost_note", columnDefinition = "TEXT")
+    private String otherExternalCostNote;
+
     /** 内部执行成本（人民币）。FULL 都能看/改；项目负责人/执行人员仅自己相关的记录能看/改 */
     @Column(name = "internal_execution_cost", precision = 15, scale = 2)
     private java.math.BigDecimal internalExecutionCost;
@@ -268,4 +275,12 @@ public class CollaborationTracking extends BaseEntity {
      */
     @Transient
     private Boolean hasPendingRollbackRequest;
+
+    /**
+     * 这次保存/状态流转是不是触发了"设置内部执行成本"弹窗的条件。瞬态字段，不落库，
+     * 由 CollaborationTrackingService 在 save()/updateStatus() 里按需设置，供前端据此
+     * 弹出"设置内部执行成本"弹窗（见 CollaborationTrackingService 里对应的触发逻辑说明）。
+     */
+    @Transient
+    private Boolean needExecutorCost;
 }

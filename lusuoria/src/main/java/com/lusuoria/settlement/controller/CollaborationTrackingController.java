@@ -260,7 +260,7 @@ public class CollaborationTrackingController {
      * 按当前登录账号的字段可见等级，对一条跟踪记录做脱敏（返回一个新副本，不改动原对象）。
      * 规则跟原来"项目订单"模块的 ProjectFieldVisibility 完全一致：
      *   - 红人成本/客户合作价格：GUEST 之外都能看
-     *   - 其他外部成本：FULL 都能看；项目负责人仅自己负责的记录能看，其余脱敏
+     *   - 其他外部成本/外部成本备注：FULL 都能看；项目负责人仅自己负责的记录能看，其余脱敏
      *   - 内部执行成本：FULL 都能看；项目负责人/执行人员仅自己相关的记录能看，其余脱敏
      *   - 提成比例/提成金额：FULL 都能看；项目负责人仅自己负责的记录只读可见，其余脱敏
      *   - 项目毛利/可分配利润/公司利润(美金/人民币)：仅 FULL 可见
@@ -285,6 +285,7 @@ public class CollaborationTrackingController {
 
         if (!(ctx.isFull() || (isManagerTier && isOwnManager))) {
             copy.setOtherExternalCost(null);
+            copy.setOtherExternalCostNote(null);
         }
 
         if (!(ctx.isFull() || (isManagerTier && isOwnManager) || (isExecutorTier && isOwnExecutor))) {
