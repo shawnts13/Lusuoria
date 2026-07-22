@@ -4,6 +4,7 @@ import javax.persistence.*;
 import lombok.*;
 
 import java.math.BigDecimal;
+import java.util.Date;
 
 @Entity
 @Table(name = "employees")
@@ -22,6 +23,18 @@ public class Employee extends BaseEntity {
 
     @Column(name = "email", unique = true)
     private String email;
+
+    @Column(name = "contact_phone")
+    private String contactPhone;             // 联系电话
+
+    @Temporal(TemporalType.DATE)
+    @Column(name = "hire_date")
+    private Date hireDate;                   // 入职时间
+
+    /** 离职时间：为空表示在职，前端展示为"-" */
+    @Temporal(TemporalType.DATE)
+    @Column(name = "resign_date")
+    private Date resignDate;                 // 离职时间
 
     // 默认提成比例（可在项目层面覆盖）——仅"项目负责人"“管理层”维护
     @Column(name = "default_commission_rate", precision = 5, scale = 4)

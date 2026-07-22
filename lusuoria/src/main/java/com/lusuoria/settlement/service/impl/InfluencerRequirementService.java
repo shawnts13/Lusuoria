@@ -5,6 +5,7 @@ import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.dto.request.InfluencerRequirementItemRequest;
 import com.lusuoria.settlement.dto.request.InfluencerRequirementRequest;
 import com.lusuoria.settlement.dto.response.InfluencerRequirementItemResponse;
+import com.lusuoria.settlement.dto.response.LegacyTrackingCandidateResponse;
 import com.lusuoria.settlement.dto.response.RequirementContentParseResponse;
 import com.lusuoria.settlement.dto.response.RequirementTrackingSummaryResponse;
 import com.lusuoria.settlement.entity.Brand;
@@ -318,6 +319,77 @@ public class InfluencerRequirementService {
 
     public RequirementContentParseResponse parseContent(String content) {
         return contentParser.parse(content);
+    }
+
+    /**
+     * "存量记录关联需求"第三步候选查询：这个红人名下还没关联任何需求的记录里，
+     * 项目视频类型/合作平台/红人视频制作与发布成本/客户合作价格都跟需求某个条目匹配的。
+     * 只是筛出候选给用户挑选，真正的名额/一致性校验在确认关联时（linkLegacyTrackings）走
+     * validateTrackingLinkage，这里不重复做名额判断。
+     */
+    @Transactional(readOnly = true)
+    public List<LegacyTrackingCandidateResponse> findLegacyCandidates(Long influencerId, String internalRequirementNo) {
+        InfluencerRequirement requirement = requirementRepo
+                .findByInternalRequirementNoAndIsDeletedFalse(internalRequirementNo)
+                .orElseThrow(() -> new RuntimeException("内部需求编号不存在：" + internalRequirementNo));
+        if (!java.util.Objects.equals(requirement.getInfluencerId(), influencerId)) {
+            throw new RuntimeException("该内部需求编号不属于这个红人");
+        }
+        List<InfluencerRequirementItem> items = itemRepo.findByRequirementIdOrderByIdAsc(requirement.getId());
+        List<CollaborationTracking> unlinked =
+                trackingRepo.findByInfluencerIdAndInternalRequirementNoIsNullAndIsDeletedFalse(influencerId);
+
+        List<LegacyTrackingCandidateResponse> result = new ArrayList<>();
+        for (CollaborationTracking t : unlinked) {
+            String canonicalPlatform = canonicalTrackingPlatform(t.getPlatform());
+            boolean matched = items.stream().anyMatch(item ->
+                    item.getVideoType() == t.getVideoType()
+                    && java.util.Objects.equals(item.getPlatform(), canonicalPlatform)
+                    && amountsEqual(item.getInfluencerUnitCostPrice(), t.getInfluencerCost())
+                    && amountsEqual(item.getClientUnitPrice(), t.getClientPrice()));
+            if (!matched) continue;
+            LegacyTrackingCandidateResponse r = new LegacyTrackingCandidateResponse();
+            r.setTrackingId(t.getId());
+            r.setInternalProjectNo(t.getInternalProjectNo());
+            r.setVideoTypeLabel(t.getVideoType() != null ? t.getVideoType().getLabel() : null);
+            r.setPlatform(t.getPlatform());
+            r.setInfluencerCost(t.getInfluencerCost());
+            r.setClientPrice(t.getClientPrice());
+            r.setPublishDate(t.getPublishDate());
+            r.setDemandContent(t.getDemandContent());
+            result.add(r);
+        }
+        return result;
+    }
+
+    private boolean amountsEqual(BigDecimal a, BigDecimal b) {
+        if (a == null || b == null) return a == b;
+        return a.compareTo(b) == 0;
+    }
+
+    /**
+     * "存量记录关联需求"确认关联：整批在一个事务里逐条走 validateTrackingLinkage()
+     * （红人/品牌方/团队/项目视频类型/合作平台是否匹配、该需求条目还有没有剩余名额），
+     * 任何一条不满足都抛异常、整批回滚——同一事务内前面几条已经落库的关联，后面几条的
+     * 名额校验能看到，天然实现"这一批加起来超量也会被拦下"。
+     */
+    @Transactional
+    public void linkLegacyTrackings(String internalRequirementNo, List<Long> trackingIds) {
+        if (trackingIds == null || trackingIds.isEmpty()) {
+            throw new RuntimeException("请至少选择一条红人合作跟踪记录");
+        }
+        for (Long trackingId : trackingIds) {
+            CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(trackingId)
+                    .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + trackingId));
+            if (t.getInternalRequirementNo() != null) {
+                throw new RuntimeException("记录 [" + t.getInternalProjectNo() + "] 已经关联了内部需求编号 ["
+                        + t.getInternalRequirementNo() + "]，不能重复关联");
+            }
+            validateTrackingLinkage(internalRequirementNo, t.getInfluencerId(), t.getBrandId(), t.getTeamId(),
+                    t.getVideoType(), t.getPlatform(), null);
+            t.setInternalRequirementNo(internalRequirementNo);
+            trackingRepo.save(t);
+        }
     }
 
     @Transactional

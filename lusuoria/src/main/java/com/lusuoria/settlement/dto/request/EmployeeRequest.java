@@ -3,6 +3,7 @@ package com.lusuoria.settlement.dto.request;
 import lombok.Data;
 import javax.validation.constraints.NotBlank;
 import java.math.BigDecimal;
+import java.util.Date;
 
 @Data
 public class EmployeeRequest {
@@ -11,6 +12,10 @@ public class EmployeeRequest {
     private String name;
     private String role;
     private String email;
+    private String contactPhone;
+    private Date hireDate;
+    /** 离职时间，留空表示在职 */
+    private Date resignDate;
 
     // 项目负责人 / 管理层
     private BigDecimal defaultCommissionRate;

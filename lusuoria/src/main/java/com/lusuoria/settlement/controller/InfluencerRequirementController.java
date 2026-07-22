@@ -1,8 +1,10 @@
 package com.lusuoria.settlement.controller;
 
 import com.lusuoria.settlement.dto.request.InfluencerRequirementRequest;
+import com.lusuoria.settlement.dto.request.LinkLegacyTrackingsRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.dto.response.InfluencerRequirementItemResponse;
+import com.lusuoria.settlement.dto.response.LegacyTrackingCandidateResponse;
 import com.lusuoria.settlement.dto.response.RequirementContentParseResponse;
 import com.lusuoria.settlement.dto.response.RequirementTrackingSummaryResponse;
 import com.lusuoria.settlement.entity.InfluencerRequirement;
@@ -111,6 +113,21 @@ public class InfluencerRequirementController {
     @lombok.Data
     public static class ParseContentRequest {
         private String content;
+    }
+
+    /** "存量记录关联需求"第三步候选：某个红人下还没关联需求、且跟需求条目匹配的红人合作跟踪记录 */
+    @GetMapping("/legacy-candidates")
+    public ApiResponse<List<LegacyTrackingCandidateResponse>> legacyCandidates(
+            @RequestParam Long influencerId, @RequestParam String internalRequirementNo) {
+        return ApiResponse.success(requirementService.findLegacyCandidates(influencerId, internalRequirementNo));
+    }
+
+    /** "存量记录关联需求"确认：批量给选中的存量红人合作跟踪记录写上内部需求编号 */
+    @PostMapping("/link-legacy")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    public ApiResponse<Void> linkLegacy(@RequestBody LinkLegacyTrackingsRequest req) {
+        requirementService.linkLegacyTrackings(req.getInternalRequirementNo(), req.getTrackingIds());
+        return ApiResponse.success();
     }
 
     @GetMapping("/export/excel")

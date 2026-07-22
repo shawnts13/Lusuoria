@@ -212,4 +212,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      * （不看 progress 状态，只要关联了就算，含折损）。
      */
     List<CollaborationTracking> findByInternalRequirementNoAndIsDeletedFalse(String internalRequirementNo);
+
+    /** "存量记录关联需求"候选查询：某个红人名下还没关联任何需求的记录 */
+    List<CollaborationTracking> findByInfluencerIdAndInternalRequirementNoIsNullAndIsDeletedFalse(Long influencerId);
 }

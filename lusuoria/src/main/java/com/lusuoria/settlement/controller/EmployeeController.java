@@ -4,12 +4,15 @@ import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.dto.request.EmployeeRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.Employee;
+import com.lusuoria.settlement.excel.EmployeeExcelHandler;
 import com.lusuoria.settlement.repository.EmployeeRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -22,6 +25,7 @@ public class EmployeeController {
 
     @Autowired private EmployeeRepository employeeRepo;
     @Autowired private EmployeeCache employeeCache;
+    @Autowired private EmployeeExcelHandler excelHandler;
 
     /** 获取员工列表（完全走缓存） */
     @GetMapping
@@ -65,6 +69,9 @@ public class EmployeeController {
         // email 为空字符串时存 null，避免违反唯一约束（PostgreSQL 空字符串不等于 null）
         String email = req.getEmail();
         employee.setEmail(email != null && !email.trim().isEmpty() ? email.trim() : null);
+        employee.setContactPhone(req.getContactPhone());
+        employee.setHireDate(req.getHireDate());
+        employee.setResignDate(req.getResignDate());
 
         // 薪资字段按角色分组维护，非本角色适用的字段一律清空，防止脏数据残留
         String role = req.getRole();
@@ -106,6 +113,15 @@ public class EmployeeController {
         employee.setRateOldMaterialTier2(null);
         employee.setRateOldMaterialTier3(null);
         employee.setOldMaterialMonthlyCap(null);
+    }
+
+    @GetMapping("/export/excel")
+    public void exportExcel(@RequestParam(required = false) String role, HttpServletResponse response) throws IOException {
+        List<Employee> allEmployees = employeeCache.getAll();
+        List<Employee> list = (role != null && !role.isEmpty())
+                ? allEmployees.stream().filter(emp -> role.equals(emp.getRole())).collect(Collectors.toList())
+                : allEmployees;
+        excelHandler.export(list, response);
     }
 
     @DeleteMapping("/{id}")
