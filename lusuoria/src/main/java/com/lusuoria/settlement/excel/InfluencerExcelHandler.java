@@ -50,10 +50,6 @@ public class InfluencerExcelHandler {
     @Autowired private DomainCache   domainCache;
     @Autowired private InfluencerTeamCache teamCache;
 
-    // 中国红人默认领域
-    private static final List<String> CHINA_DEFAULT_DOMAINS =
-            java.util.Arrays.asList("科技", "童装", "玩具", "AI素材");
-
     // ===================================================================
     // 导出
     // ===================================================================
@@ -436,32 +432,23 @@ public class InfluencerExcelHandler {
                     String detected = detectPlatforms(inf.getLinks());
                     if (detected != null) inf.setPlatform(detected);
                 }
+                // 所属领域：Excel 有值才更新，空白则保留数据库原值——更新时是整个替换成 Excel
+                // 里填的这些值（跟单条编辑表单保存的行为一致），不是往数据库原有领域上追加；
+                // 也不再默认给"中国红人"补齐默认领域（之前这条自动追加的规则是错的，已去掉）
                 String domainsRaw = getStr(row, colMap, "所属领域(多个用换行分隔)");
                 if (domainsRaw == null || domainsRaw.isEmpty())
                     domainsRaw = getStr(row, colMap, "所属领域");
 
-                boolean isChinaInfluencer = ProjectType.CHINA_INFLUENCER.equals(inf.getInfluencerType());
-                if (hasValue(domainsRaw) || isChinaInfluencer) {
+                if (hasValue(domainsRaw)) {
                     Set<String> domainSet = new java.util.LinkedHashSet<String>();
-                    // 保留数据库原有领域
-                    if (inf.getDomains() != null && !inf.getDomains().isEmpty()) {
-                        for (String d : inf.getDomains().split("[\n,]+"))
-                            if (!d.trim().isEmpty()) domainSet.add(d.trim());
-                    }
-                    if (isChinaInfluencer) {
-                        domainSet.addAll(CHINA_DEFAULT_DOMAINS);
-                        newDomains.addAll(CHINA_DEFAULT_DOMAINS);
-                    }
-                    if (hasValue(domainsRaw)) {
-                        for (String d : domainsRaw.split("[,\n\r]+")) {
-                            String dn = d.trim();
-                            if (!dn.isEmpty()) {
-                                if (domainCache.findByName(dn) == null) newDomains.add(dn);
-                                domainSet.add(dn);
-                            }
+                    for (String d : domainsRaw.split("[,\n\r]+")) {
+                        String dn = d.trim();
+                        if (!dn.isEmpty()) {
+                            if (domainCache.findByName(dn) == null) newDomains.add(dn);
+                            domainSet.add(dn);
                         }
                     }
-                    if (!domainSet.isEmpty()) inf.setDomains(String.join("\n", domainSet));
+                    inf.setDomains(domainSet.isEmpty() ? null : String.join("\n", domainSet));
                 }
 
                 // 粉丝量
@@ -470,8 +457,6 @@ public class InfluencerExcelHandler {
                     try { inf.setFollowerCount(Long.parseLong(followerStr.replaceAll(",", ""))); }
                     catch (NumberFormatException ignored) {}
                 }
-
-                // 所属领域：有值才更新；中国红人始终补齐默认领域
 
                 String casesRaw = getStr(row, colMap, "合作案例链接(多条用换行分隔)");
                 if (casesRaw == null) casesRaw = getStr(row, colMap, "合作案例链接");
