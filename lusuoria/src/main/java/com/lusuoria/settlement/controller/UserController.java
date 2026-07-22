@@ -59,6 +59,9 @@ public class UserController {
             // 走缓存，不查库
             Employee emp = employeeCache.findById(req.getEmployeeId());
             if (emp == null) throw new RuntimeException("员工不存在：" + req.getEmployeeId());
+            if (userRepo.findByEmployeeIdAndIsDeletedFalse(req.getEmployeeId()).isPresent()) {
+                throw new RuntimeException("该员工已经绑定了其他账号，一个员工只能绑定一个账号");
+            }
             user.setEmployee(emp);
         }
 
@@ -89,6 +92,10 @@ public class UserController {
             // 走缓存，不查库
             Employee emp = employeeCache.findById(req.getEmployeeId());
             if (emp == null) throw new RuntimeException("员工不存在：" + req.getEmployeeId());
+            SysUser existingBinding = userRepo.findByEmployeeIdAndIsDeletedFalse(req.getEmployeeId()).orElse(null);
+            if (existingBinding != null && !existingBinding.getId().equals(user.getId())) {
+                throw new RuntimeException("该员工已经绑定了其他账号，一个员工只能绑定一个账号");
+            }
             user.setEmployee(emp);
         } else {
             user.setEmployee(null);

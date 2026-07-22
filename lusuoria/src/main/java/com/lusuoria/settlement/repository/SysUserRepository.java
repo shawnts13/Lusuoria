@@ -14,4 +14,7 @@ public interface SysUserRepository extends JpaRepository<SysUser, Long> {
     Optional<SysUser> findByIdAndIsDeletedFalse(Long id);
 
     boolean existsByUsernameAndIsDeletedFalse(String username);
+
+    /** 一个员工只能绑定一个账号：新建/编辑账号关联员工时用来判断这个员工是不是已经被别的账号占用 */
+    Optional<SysUser> findByEmployeeIdAndIsDeletedFalse(Long employeeId);
 }
