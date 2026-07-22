@@ -277,7 +277,8 @@ public class InfluencerExcelHandler {
         String[][] requiredGroups = {
             {"红人社媒完整名字(必填)", "红人社媒完整名字", "红人ID(必填)", "红人ID"},
             {"红人类型(必填)", "红人类型"},
-            {"品牌方-团队(每行一对,格式:品牌方/团队,团队可省略,多对用换行分隔)", "品牌方(多个用换行分隔)"},
+            {"品牌方-团队(每行一对,格式:品牌方/团队,团队可省略,多对用换行分隔)",
+             "品牌方-团队(每行一对,格式:品牌方/团队,团队可省略)", "品牌方(多个用换行分隔)"},
             {"服务国家/市场(多个用换行分隔)", "服务国家/市场"},
             {"主页链接(多条用换行分隔)", "主页链接"},
             {"所属领域(多个用换行分隔)", "所属领域"},
@@ -389,6 +390,8 @@ public class InfluencerExcelHandler {
                 // 品牌方必须是品牌方管理里已存在的名称；团队如果不存在会自动创建（跟手动新建团队一致）
                 // 解析结果先记下来，导入循环结束、所有红人都有 id、新团队也建好了以后，再统一写入关联表
                 String brandTeamRaw = getStr(row, colMap, "品牌方-团队(每行一对,格式:品牌方/团队,团队可省略,多对用换行分隔)");
+                // 兼容"Excel 导出"生成的表头（没有"，多对用换行分隔"这半句），支持导出后原样再导入
+                if (brandTeamRaw == null) brandTeamRaw = getStr(row, colMap, "品牌方-团队(每行一对,格式:品牌方/团队,团队可省略)");
                 if (brandTeamRaw == null) brandTeamRaw = getStr(row, colMap, "品牌方(多个用换行分隔)"); // 兼容旧模板
                 if (hasValue(brandTeamRaw)) {
                     Set<String> pairKeys = new java.util.LinkedHashSet<String>();
