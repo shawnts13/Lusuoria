@@ -4,28 +4,35 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.config.DomainCache;
+import com.lusuoria.settlement.config.DomainSyncService;
 import com.lusuoria.settlement.config.EmployeeCache;
+import com.lusuoria.settlement.config.InfluencerCache;
 import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.config.InfluencerOptions;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.Employee;
+import com.lusuoria.settlement.entity.ImportBatch;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.InfluencerBrandTeam;
 import com.lusuoria.settlement.entity.InfluencerBrandTeamView;
 import com.lusuoria.settlement.enums.InfluencerContactStatus;
 import com.lusuoria.settlement.enums.ProjectType;
+import com.lusuoria.settlement.repository.ImportBatchRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddressList;
 import org.apache.poi.xssf.usermodel.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import javax.servlet.http.HttpServletResponse;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -49,6 +56,16 @@ public class InfluencerExcelHandler {
     @Autowired private EmployeeCache employeeCache;
     @Autowired private DomainCache   domainCache;
     @Autowired private InfluencerTeamCache teamCache;
+    @Autowired private ImportBatchRepository importBatchRepo;
+    @Autowired private DomainSyncService domainSyncService;
+    @Autowired private InfluencerCache influencerCache;
+
+    /**
+     * 自己的懒加载代理引用：importDataAsync() 需要经过 Spring 事务代理调用 importData()
+     * （那个方法是 @Transactional），直接 this.importData(...) 是同一个 bean 内部自调用，
+     * 会绕开代理导致事务注解失效——用这个自注入的代理引用调用就能保留事务语义。
+     */
+    @Autowired @Lazy private InfluencerExcelHandler self;
 
     // ===================================================================
     // 导出
@@ -254,16 +271,81 @@ public class InfluencerExcelHandler {
     // ===================================================================
     // 导入
     // ===================================================================
-    @Transactional
+    /** 保留 MultipartFile 入口，兼容以后可能需要同步调用的场景 */
     public List<String> importData(MultipartFile file, boolean canViewSensitive) throws IOException {
+        return self.importData(file.getInputStream(), canViewSensitive, (processed, total) -> {});
+    }
+
+    public List<String> importData(InputStream fileStream, boolean canViewSensitive) throws IOException {
+        return self.importData(fileStream, canViewSensitive, (processed, total) -> {});
+    }
+
+    /**
+     * 异步导入入口：立即返回，实际处理放到后台线程跑完再回填批次记录（跟
+     * CollaborationTrackingExcelHandler 的异步导入是同一套模式，供"导入历史"页面查看进度和结果）。
+     */
+    @org.springframework.scheduling.annotation.Async("importTaskExecutor")
+    public void importDataAsync(Long batchId, byte[] fileBytes, boolean canViewSensitive) {
+        ImportBatch batch = importBatchRepo.findById(batchId).orElse(null);
+        if (batch == null) return; // 理论上不会发生，防御性判断
+        try {
+            List<String> errors = self.importData(new ByteArrayInputStream(fileBytes), canViewSensitive,
+                    (processed, total) -> {
+                        // 每处理一批就回写一次进度，前端"导入历史"页面轮询的时候就能看到实时进度
+                        batch.setTotalRows(total);
+                        batch.setProcessedCount(processed);
+                        importBatchRepo.save(batch);
+                    });
+            String summary = errors.isEmpty() ? "" : errors.get(0);
+            batch.setSuccessCount(parseIntFromSummary(summary, "新增 (\\d+) 条"));
+            batch.setUpdateCount(parseIntFromSummary(summary, "更新 (\\d+) 条"));
+            batch.setFailCount(parseIntFromSummary(summary, "失败 (\\d+) 条"));
+            batch.setResultDetail(String.join("\n", errors));
+            batch.setStatus("COMPLETED");
+            // 导入收尾：领域表同步 + 红人缓存刷新（原来在 Controller 里同步导入完成后做，
+            // 改异步以后挪到这里，导入线程自己跑完才做，语义不变）
+            domainSyncService.sync();
+            influencerCache.refresh();
+        } catch (Exception e) {
+            log.error("批次{}导入失败：{}", batchId, e.getMessage(), e);
+            batch.setStatus("FAILED");
+            batch.setErrorMessage(e.getMessage() != null ? e.getMessage() : e.toString());
+        } finally {
+            batch.setCompletedAt(new Date());
+            importBatchRepo.save(batch);
+        }
+    }
+
+    /** 从汇总文字里用正则挖出具体数字，挖不到就给 0（不影响主流程，只是统计数字不准） */
+    private int parseIntFromSummary(String summary, String pattern) {
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile(pattern).matcher(summary);
+            return m.find() ? Integer.parseInt(m.group(1)) : 0;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /**
+     * 实际的导入逻辑。改成接收 InputStream 而不是 MultipartFile，是因为异步导入场景下
+     * HTTP 请求已经结束、原始的 MultipartFile 早就不能用了，只能先把文件内容读成字节数组
+     * 存起来，后台线程处理时用 ByteArrayInputStream 包一层传进来。
+     *
+     * 带进度回调：每处理完一批（20行）就回调一次，异步导入用这个把进度实时写回"导入批次"
+     * 记录；同步调用（上面两个重载）传一个空回调就行，不影响原来的行为。
+     */
+    @Transactional
+    public List<String> importData(InputStream fileStream, boolean canViewSensitive,
+                                    java.util.function.BiConsumer<Integer, Integer> progressCallback) throws IOException {
         List<String> errors = new ArrayList<String>();
-        Workbook workbook = WorkbookFactory.create(file.getInputStream());
+        Workbook workbook = WorkbookFactory.create(fileStream);
         FORMULA_EVALUATOR.set(workbook.getCreationHelper().createFormulaEvaluator());
         try {
         Sheet sheet = workbook.getSheetAt(0);
 
         int totalRows = sheet.getLastRowNum();
         if (totalRows < 1) { errors.add("Excel 文件为空"); workbook.close(); return errors; }
+        progressCallback.accept(0, totalRows); // 一开始就把总行数汇报出去
 
         Row headerRow = sheet.getRow(0);
         Map<String, Integer> colMap = new HashMap<String, Integer>();
@@ -355,6 +437,7 @@ public class InfluencerExcelHandler {
             Row row = sheet.getRow(i);
             if (row == null || isRowEmpty(row)) continue;
             processedCount++;
+            if (i % 20 == 0 || i == totalRows) progressCallback.accept(i, totalRows);
             try {
                 // 兼容导出列名和模板列名
                 String accountName = readAccountName(row, colMap);

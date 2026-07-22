@@ -10,6 +10,7 @@ import com.lusuoria.settlement.dto.request.InfluencerRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.dto.response.InfluencerSimpleResponse;
 import com.lusuoria.settlement.entity.Brand;
+import com.lusuoria.settlement.entity.ImportBatch;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.InfluencerBrandTeam;
 import com.lusuoria.settlement.entity.InfluencerBrandTeamView;
@@ -17,6 +18,7 @@ import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.enums.ProjectType;
 import com.lusuoria.settlement.excel.InfluencerExcelHandler;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
+import com.lusuoria.settlement.repository.ImportBatchRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.util.RoleUtil;
@@ -50,6 +52,7 @@ public class InfluencerController {
     @Autowired private InfluencerTeamCache teamCache;
     @Autowired private InfluencerCache influencerCache;
     @Autowired private DomainSyncService domainSyncService;
+    @Autowired private ImportBatchRepository importBatchRepo;
 
     // Google Drive 合同上传页面地址（后续在此配置）
     private static final String CONTRACT_UPLOAD_URL = "";
@@ -120,15 +123,25 @@ public class InfluencerController {
 
     @PostMapping("/import/excel")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
-    public ApiResponse<List<String>> importExcel(@RequestParam("file") MultipartFile file) throws IOException {
+    public ApiResponse<Long> importExcel(@RequestParam("file") MultipartFile file) throws IOException {
         if (file.isEmpty()) return ApiResponse.error(400, "请选择要上传的文件");
         String fn = file.getOriginalFilename();
         if (fn == null || (!fn.endsWith(".xlsx") && !fn.endsWith(".xls")))
             return ApiResponse.error(400, "只支持 .xlsx 或 .xls 格式");
-        List<String> result = excelHandler.importData(file, RoleUtil.canViewBaselineFinancials());
-        domainSyncService.sync();
-        influencerCache.refresh();
-        return ApiResponse.success(result);
+
+        // 导入改成异步了（可以在"导入历史"页面查看进度和结果，跟红人合作跟踪模块一致）：
+        // 立即建一条"导入批次"记录、马上把 id 返回给前端，实际的导入过程丢到后台线程慢慢跑
+        ImportBatch batch = new ImportBatch();
+        batch.setModule("INFLUENCER");
+        batch.setFileName(file.getOriginalFilename());
+        batch.setUploadedByName(RoleUtil.getCurrentUsername());
+        batch.setStatus("PROCESSING");
+        batch.setStartedAt(new java.util.Date());
+        batch = importBatchRepo.save(batch);
+
+        byte[] fileBytes = file.getBytes(); // 必须先读成字节数组，HTTP 请求结束后原始文件流就用不了了
+        excelHandler.importDataAsync(batch.getId(), fileBytes, RoleUtil.canViewBaselineFinancials());
+        return ApiResponse.success(batch.getId());
     }
 
     /**
