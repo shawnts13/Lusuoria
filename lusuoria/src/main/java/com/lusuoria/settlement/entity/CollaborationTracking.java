@@ -36,6 +36,15 @@ public class CollaborationTracking extends BaseEntity {
     @Column(name = "internal_project_no", unique = true)
     private String internalProjectNo;
 
+    /**
+     * 关联的"红人需求管理"内部需求编号（可空，2026-07 新增，存量数据一律为空）。
+     * 通过"关联红人需求"选择器确认后由系统写入，同时会一并带入红人社媒完整名字/品牌方/
+     * 红人团队/服务国家/市场/合作平台/项目视频类型这几个字段；Excel 导入时填了值也会走
+     * 同一套校验（见 CollaborationTrackingService/InfluencerRequirementService）。
+     */
+    @Column(name = "internal_requirement_no")
+    private String internalRequirementNo;
+
     /** 关联品牌方 id（直读列，不触发懒加载） */
     @Column(name = "brand_id", insertable = false, updatable = false)
     private Long brandId;

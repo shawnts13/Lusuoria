@@ -29,13 +29,16 @@ public interface InfluencerRepository extends JpaRepository<Influencer, Long> {
 
     Optional<Influencer> findByAccountNameAndIsDeletedFalse(String accountName);
 
+    /** "提取需求内容"账号匹配用：忽略大小写精确匹配 */
+    Optional<Influencer> findByAccountNameIgnoreCaseAndIsDeletedFalse(String accountName);
+
     List<Influencer> findByInfluencerTypeAndIsDeletedFalse(ProjectType type);
 
     @Query("SELECT i FROM Influencer i " +
            "WHERE i.isDeleted = false " +
            "AND (:influencerType IS NULL OR i.influencerType = :influencerType) " +
            "AND (:platform IS NULL OR i.platform LIKE %:platform%) " +
-           "AND (:countryMarket IS NULL OR i.countryMarket = :countryMarket) " +
+           "AND (:countryMarket IS NULL OR i.countryMarket LIKE %:countryMarket%) " +
            "AND (:brandId IS NULL OR i.id IN (" +
            "    SELECT ibt.influencerId FROM InfluencerBrandTeam ibt " +
            "    WHERE ibt.brandId = :brandId AND ibt.isDeleted = false)) " +

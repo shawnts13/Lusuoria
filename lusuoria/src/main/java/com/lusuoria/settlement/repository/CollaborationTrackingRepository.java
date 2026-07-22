@@ -189,4 +189,27 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
 
     /** 红人结款 - 创建/编辑时校验勾选的 id 是否都合法可用（属于该品牌+团队、且未被其他批次占用） */
     List<CollaborationTracking> findByIdInAndIsDeletedFalse(List<Long> ids);
+
+    // ===== 2026-07 红人需求管理对接新增 =====
+
+    /**
+     * 需求列表页"需求完成进度"批量计算：按 internalRequirementNo 分组统计视频项目进度属于
+     * 已发布(未结算)/已加入客户未结算列表/客户已结算/折损 这四个状态的记录数，一次查出当前页
+     * 所有需求的计数，避免逐条查库。
+     */
+    @Query("SELECT c.internalRequirementNo, COUNT(c) FROM CollaborationTracking c " +
+           "WHERE c.isDeleted = false AND c.internalRequirementNo IN :requirementNos " +
+           "AND c.progress IN (" +
+           "  com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
+           "  com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST, " +
+           "  com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+           "  com.lusuoria.settlement.enums.CollaborationProgress.DELAYED) " +
+           "GROUP BY c.internalRequirementNo")
+    List<Object[]> countCompletedByRequirementNos(@Param("requirementNos") List<String> requirementNos);
+
+    /**
+     * "关联红人需求"选择器第二步 / 需求完成进度点击详情：某个需求下所有已关联的红人合作跟踪记录
+     * （不看 progress 状态，只要关联了就算，含折损）。
+     */
+    List<CollaborationTracking> findByInternalRequirementNoAndIsDeletedFalse(String internalRequirementNo);
 }

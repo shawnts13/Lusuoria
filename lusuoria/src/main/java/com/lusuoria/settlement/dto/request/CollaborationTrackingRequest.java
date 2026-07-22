@@ -12,6 +12,12 @@ import java.util.Date;
 public class CollaborationTrackingRequest {
     private Long id;
 
+    /**
+     * 关联的"红人需求管理"内部需求编号（可空）。填了值时后端会校验：编号存在、红人/品牌方/
+     * 团队/项目视频类型/合作平台都跟对应的需求条目匹配、且该条目还有剩余名额。
+     */
+    private String internalRequirementNo;
+
     private Long brandId;
 
     // teamName / countryMarket 不在请求中传入，由后端根据 influencerId 从红人库自动填充快照
@@ -24,6 +30,12 @@ public class CollaborationTrackingRequest {
      * （后端会自动采用那唯一的选项）；有多个选项时必须传，且必须是其中一个合法选项。
      */
     private Long teamId;
+
+    /**
+     * 服务国家/市场：选中的红人在红人库里只维护了 1 个服务国家/市场时可以不传（后端自动采用
+     * 这唯一的选项）；维护了多个时必须传其中一个合法值，由 service 层校验。
+     */
+    private String countryMarket;
 
     /** 合作平台，前端多选后用换行符拼接 */
     private String platform;

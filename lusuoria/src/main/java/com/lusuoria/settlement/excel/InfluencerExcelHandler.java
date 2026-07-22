@@ -178,7 +178,7 @@ public class InfluencerExcelHandler {
         cols.add(new String[]{"品牌方-团队(每行一对,格式:品牌方/团队,团队可省略,多对用换行分隔)", "0"});
         cols.add(new String[]{"红人类型(必填)",           "0"});
         cols.add(new String[]{"红人社媒完整名字(必填)",   "0"});
-        cols.add(new String[]{"服务国家/市场",            "0"});
+        cols.add(new String[]{"服务国家/市场(多个用换行分隔)", "0"});
         cols.add(new String[]{"平台(多个用换行分隔)",     "0"});
         cols.add(new String[]{"主页链接(多条用换行分隔)", "0"});
         cols.add(new String[]{"所属领域(多个用换行分隔)", "0"});
@@ -217,7 +217,7 @@ public class InfluencerExcelHandler {
         String[] contactStatuses = java.util.Arrays.stream(InfluencerOptions.CONTACT_STATUSES)
                 .filter(s -> !s.isEmpty()).toArray(String[]::new);
         addDropdown(sheet, dv, colIdxMap, "建联情况", contactStatuses);
-        addFormulaDropdown(sheet, dv, colIdxMap, "服务国家/市场",
+        addFormulaDropdown(sheet, dv, colIdxMap, "服务国家/市场(多个用换行分隔)",
                 "_lists!$A$1:$A$" + InfluencerOptions.COUNTRIES.length);
         // 品牌方改为多选（换行/逗号分隔），不再用单选下拉
 
@@ -228,7 +228,7 @@ public class InfluencerExcelHandler {
         examples.put("红人社媒完整名字(必填)",    "bigdogtech");
         examples.put("品牌方-团队(每行一对,格式:品牌方/团队,团队可省略,多对用换行分隔)",
                 "TEMU中国/游琳团队\nTEMU海外");
-        examples.put("服务国家/市场",            "美国");
+        examples.put("服务国家/市场(多个用换行分隔)", "美国");
         examples.put("平台",                     "TikTok");
         examples.put("所属领域(多个用换行分隔)", "科技");
         examples.put("粉丝量",                   "500000");
@@ -282,7 +282,7 @@ public class InfluencerExcelHandler {
             {"红人社媒完整名字(必填)", "红人社媒完整名字", "红人ID(必填)", "红人ID"},
             {"红人类型(必填)", "红人类型"},
             {"品牌方-团队(每行一对,格式:品牌方/团队,团队可省略,多对用换行分隔)", "品牌方(多个用换行分隔)"},
-            {"服务国家/市场"},
+            {"服务国家/市场(多个用换行分隔)", "服务国家/市场"},
             {"主页链接(多条用换行分隔)", "主页链接"},
             {"所属领域(多个用换行分隔)", "所属领域"},
             {"合作案例链接(多条用换行分隔)", "合作案例链接"},
@@ -422,7 +422,9 @@ public class InfluencerExcelHandler {
                     }
                 }
 
-                setIfPresent(inf::setCountryMarket, getStr(row, colMap, "服务国家/市场"));
+                String countryMarketRaw = getStr(row, colMap, "服务国家/市场(多个用换行分隔)");
+                if (countryMarketRaw == null) countryMarketRaw = getStr(row, colMap, "服务国家/市场");
+                setIfPresent(inf::setCountryMarket, countryMarketRaw);
 
                 // 链接：有值才更新（先处理链接，再用链接检测平台）
                 String linksRaw = getStr(row, colMap, "主页链接(多条用换行分隔)");

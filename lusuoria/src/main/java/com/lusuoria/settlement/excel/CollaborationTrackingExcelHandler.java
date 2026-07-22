@@ -73,9 +73,10 @@ public class CollaborationTrackingExcelHandler {
     /** 导出/模板列顺序 */
     // 列定义：[列名, 是否敏感(1=是), 是否仅导出(1=模板不含)]
     private static final String[][] COLUMNS = {
+        {"内部需求编号（可选，关联红人需求管理）", "0", "0"},
         {"品牌方",                     "0", "0"},
         {"红人团队",                   "0", "0"},  // 该红人在此品牌方下有多个团队可选时必须填写，否则可留空
-        {"服务国家/市场",              "0", "1"},  // 仅导出，模板不含（导入时系统自动填充）
+        {"服务国家/市场",              "0", "0"},  // 该红人维护了多个服务国家/市场时必须填写，否则可留空
         {"红人社媒完整名字",           "0", "0"},
         {"合作平台",                   "0", "0"},
         {"需求内容(具体产品名)",       "0", "0"},
@@ -172,6 +173,7 @@ public class CollaborationTrackingExcelHandler {
         for (CollaborationTracking t : list) {
             Row row = sheet.createRow(r++);
             int c = 0;
+            setCellStr(row, c++, t.getInternalRequirementNo(), wrap);
             Brand brand = brandCache.findById(t.getBrandId());
             setCellStr(row, c++, brand != null ? brand.getName() : "", wrap);
             InfluencerTeam team = t.getTeamId() != null ? teamCache.findById(t.getTeamId()) : null;
@@ -256,6 +258,8 @@ public class CollaborationTrackingExcelHandler {
         ex.put("红人视频制作与发布成本（美金）", "550");
         ex.put("客户合作价格（美金）", "800");
         ex.put("红人团队", "");  // 该红人在选中的品牌方下只有0/1个团队时可以留空，多个团队时必须填写
+        ex.put("服务国家/市场", "");  // 该红人只维护了0/1个服务国家/市场时可以留空，多个时必须填写
+        ex.put("内部需求编号（可选，关联红人需求管理）", "");  // 非必填，填了会校验跟需求管理里的数据是否匹配
         ex.put("备注", "");
         Row exRow = sheet.createRow(1);
         for (String[] col : COLUMNS) {
@@ -449,6 +453,11 @@ public class CollaborationTrackingExcelHandler {
                 CollaborationTrackingRequest req = new CollaborationTrackingRequest();
                 req.setInfluencerId(influencer.getId());
 
+                // 内部需求编号（可选）：具体是否存在、跟这一行的红人/品牌方/团队/项目视频类型/
+                // 合作平台是否匹配、是否还有剩余名额，交给 CollaborationTrackingService.doSave()
+                // 统一校验（跟单条表单保存共用同一套逻辑）
+                req.setInternalRequirementNo(emptyToNull(getStr(row, colMap, "内部需求编号（可选，关联红人需求管理）")));
+
                 // 品牌方：这里只负责按名称查出 id，具体"是否已在红人模块关联"交给 service.save() 统一校验
                 String brandName = getStr(row, colMap, "品牌方");
                 if (brandName != null && !brandName.isEmpty()) {
@@ -473,6 +482,11 @@ public class CollaborationTrackingExcelHandler {
                     req.setTeamId(team.getId());
                 }
 
+                // 服务国家/市场：这里只负责按原样传值，具体"这个红人只有0/1个选项时忽略这个值/
+                // 有多个选项时必须传其中一个合法值"交给 service.save() 统一校验
+                String countryMarketRaw = getStr(row, colMap, "服务国家/市场");
+                req.setCountryMarket(countryMarketRaw != null ? countryMarketRaw.trim() : null);
+
                 // 合作平台：优先取"合作平台"列，没有则从"合作资源"/"需求内容"智能提取
                 String platformRaw = getStr(row, colMap, "合作平台");
                 String demandRaw = firstNonNull(
@@ -480,8 +494,8 @@ public class CollaborationTrackingExcelHandler {
                         getStr(row, colMap, "需求内容"),
                         getStr(row, colMap, "合作资源"));
                 String platform = (platformRaw != null && !platformRaw.isEmpty())
-                        ? normalizePlatforms(platformRaw)
-                        : extractPlatforms(demandRaw);
+                        ? com.lusuoria.settlement.util.PlatformTextParser.normalizePlatforms(platformRaw)
+                        : com.lusuoria.settlement.util.PlatformTextParser.extractPlatforms(demandRaw);
                 req.setPlatform(platform);
                 req.setDemandContent(demandRaw);
 
@@ -674,36 +688,8 @@ public class CollaborationTrackingExcelHandler {
      *   小红书 / xhs / red            -> 小红书
      *   抖音(国内)                    -> 抖音
      */
-    private String extractPlatforms(String raw) {
-        if (raw == null || raw.trim().isEmpty()) return null;
-        String u = raw.toUpperCase();
-        LinkedHashSet<String> set = new LinkedHashSet<String>();
-        if (u.contains("INSTAGRAM") || u.contains("IG") || u.contains("REEL")) set.add("Instagram");
-        if (u.contains("TIKTOK") || matchesToken(u, "TT")) set.add("TikTok");
-        if (u.contains("YOUTUBE") || matchesToken(u, "YT")) set.add("YouTube");
-        if (u.contains("FACEBOOK") || matchesToken(u, "FB")) set.add("Facebook");
-        if (raw.contains("微博") || u.contains("WEIBO")) set.add("微博");
-        if (raw.contains("小红书") || u.contains("XHS") || u.contains("RED")) set.add("小红书");
-        if (raw.contains("抖音")) set.add("抖音");
-        return set.isEmpty() ? null : String.join("\n", set);
-    }
-
-    /** 标准化已是平台值的内容（如前端导出的"Instagram\nTikTok"或逗号分隔） */
-    private String normalizePlatforms(String raw) {
-        if (raw == null || raw.trim().isEmpty()) return null;
-        // 先尝试当作标准平台值切分；切出来的若识别不出，再走智能提取
-        String extracted = extractPlatforms(raw);
-        return extracted != null ? extracted : raw.trim();
-    }
-
-    /** 判断缩写 token 是否作为独立单词出现（避免 "TT" 误匹配 "ATTACK"） */
-    private boolean matchesToken(String upperText, String token) {
-        // 用非字母数字边界判断
-        java.util.regex.Matcher m = java.util.regex.Pattern
-                .compile("(^|[^A-Z0-9])" + token + "([^A-Z0-9]|$)")
-                .matcher(upperText);
-        return m.find();
-    }
+    // 平台文本识别（IG/TT/YT/FB 等缩写）2026-07 起抽到 util/PlatformTextParser，
+    // 供这里的 Excel 智能提取 和 红人需求管理模块的"提取需求内容"共用
 
     // ============ 工具方法 ============
     private CollaborationProgress parseProgress(String label) {
@@ -814,6 +800,7 @@ public class CollaborationTrackingExcelHandler {
             {"红人社媒完整名字", "红人ID", "达人名称", "达人"},
             {"品牌方"},
             {"红人团队"},
+            {"服务国家/市场"},
             {"合作平台"},
             {"需求内容(具体产品名)", "需求内容", "合作资源"},
             {"视频发布链接", "发布链接(IG reel)", "发布链接", "主页link"},

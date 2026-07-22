@@ -39,8 +39,9 @@ public class Influencer extends BaseEntity {
     @Column(name = "account_name", nullable = false, unique = true)
     private String accountName;             // 红人社媒完整名字（全局唯一）
 
-    @Column(name = "country_market")
-    private String countryMarket;           // 服务国家/市场
+    /** 服务国家/市场（多个，换行符分隔，如 "美国\n加拿大"）——2026-07 起改为多选 */
+    @Column(name = "country_market", columnDefinition = "TEXT")
+    private String countryMarket;
 
     @Column(name = "platform")
     private String platform;

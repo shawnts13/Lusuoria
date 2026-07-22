@@ -131,6 +131,20 @@ public class CollaborationTrackingController {
     }
 
     /**
+     * "复制"批量新建：新建弹窗左侧克隆出的多个"视频项目"面板一次性提交，整批在一个事务里
+     * 校验+保存，任何一条失败（含关联需求超量）都整批回滚，前端据此保留所有面板不关闭。
+     */
+    @PostMapping("/batch")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    public ApiResponse<List<CollaborationTracking>> createBatch(@Valid @RequestBody List<CollaborationTrackingRequest> reqs) {
+        List<CollaborationTracking> saved = trackingService.createBatch(reqs);
+        ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
+        List<CollaborationTracking> out = ctx.isFull() ? saved
+                : saved.stream().map(t -> applyFieldVisibility(t, ctx)).collect(java.util.stream.Collectors.toList());
+        return ApiResponse.success(out);
+    }
+
+    /**
      * 发起删除申请（不直接删除）：填写删除原因后生成一条"待处理"审核事项，
      * 由 ADMIN 在"待处理"模块同意后才真正删除。
      */

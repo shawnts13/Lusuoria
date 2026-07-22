@@ -22,6 +22,7 @@ import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.entity.InfluencerBrandTeam;
 import com.lusuoria.settlement.util.ProjectNoAllocator;
 import com.lusuoria.settlement.util.ProjectNoGenerator;
+import com.lusuoria.settlement.util.MultiValueUtil;
 import com.lusuoria.settlement.util.ProfitCalculator;
 import com.lusuoria.settlement.util.ProjectFieldVisibility;
 import com.lusuoria.settlement.util.RoleUtil;
@@ -74,6 +75,7 @@ public class CollaborationTrackingService {
     @Autowired private ProfitCalculator profitCalculator;
     @Autowired private PendingApprovalService pendingApprovalService;
     @Autowired private ProjectFieldVisibility fieldVisibility;
+    @Autowired private InfluencerRequirementService requirementService;
 
     /** 自定义异常：去重命中 */
     public static class DuplicateTrackingException extends RuntimeException {
@@ -198,6 +200,27 @@ public class CollaborationTrackingService {
     }
 
     /**
+     * "复制"批量新建专用：一次性提交多条视频项目，整批在一个事务里逐条走 doSave()。
+     * 只允许新建（每条 req.id 必须为空），任何一条校验失败（含"关联红人需求"超出剩余名额、
+     * 查重命中等）都会抛异常，整批回滚——因为是同一个事务，前面几条已经 INSERT 的记录，
+     * 后面几条如果引用了同一个需求条目，查询已用名额时能看到前面刚插入的记录，天然实现了
+     * "这一批加起来超量也会被拦下"，不需要额外写一遍单独的批量额度校验逻辑。
+     */
+    @Transactional
+    public List<CollaborationTracking> createBatch(List<CollaborationTrackingRequest> reqs) {
+        List<CollaborationTracking> results = new ArrayList<>();
+        for (CollaborationTrackingRequest req : reqs) {
+            if (req.getId() != null) {
+                throw new RuntimeException("批量新建不支持编辑已有记录");
+            }
+            Influencer influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getInfluencerId())
+                    .orElseThrow(() -> new RuntimeException("红人不存在：" + req.getInfluencerId()));
+            results.add(doSave(req, false, influencer, null, new DbLookupContext()));
+        }
+        return results;
+    }
+
+    /**
      * Excel 批量导入专用：红人、（如果是更新）已有记录、查重/编号分配用的数据，
      * 全部由调用方（CollaborationTrackingExcelHandler）提前批量查好传进来，
      * 这里不再逐行查数据库，只有最后落库这一步是真正的数据库写入。
@@ -235,10 +258,15 @@ public class CollaborationTrackingService {
             tracking.setIsDeleted(false);
         }
 
-        // 团队 / 国家：拷贝快照（不随红人库变）——countryMarket 仍是红人库的快照，
-        // teamName 这个红人库单团队字段已经被"品牌方-团队"关联对取代，不再使用
+        // 团队 / 国家：teamName 这个红人库单团队字段已经被"品牌方-团队"关联对取代，不再使用
         tracking.setInfluencer(influencer);
-        tracking.setCountryMarket(influencer.getCountryMarket());
+
+        // 服务国家/市场：2026-07 起红人库改为多选，这里跟红人团队一样的"单个自动填/多个手动选"
+        // 规则——选中的红人只维护了 1 个服务国家/市场时，不管请求传了什么，直接采用这唯一的选项；
+        // 维护了多个时，请求必须明确指定其中一个合法值，否则拒绝（一条视频/一次合作只涉及
+        // 一个国家/市场，不像红人库本身允许维护多个）
+        tracking.setCountryMarket(MultiValueUtil.resolveSingleChoice(
+                influencer.getCountryMarket(), req.getCountryMarket(), "服务国家/市场"));
 
         // 品牌方：必须是该红人在红人模块里已关联的"品牌方-团队"对里出现过的品牌方
         // （不管那个品牌方下有没有配团队，只要有关联记录就算数）
@@ -351,6 +379,19 @@ public class CollaborationTrackingService {
         tracking.setVideoType(req.getVideoType());
         tracking.setClientPaymentBatch(req.getClientPaymentBatch());
         tracking.setNotes(req.getNotes());
+
+        // 关联的"红人需求管理"内部需求编号：填了值就校验红人/品牌方/团队/项目视频类型/合作平台
+        // 是否跟需求条目匹配、且该条目还有剩余名额（excludeId 排除自身，编辑已关联记录时
+        // 不把自己算进"已占用"）
+        String requirementNo = emptyToNull(req.getInternalRequirementNo());
+        if (requirementNo != null) {
+            requirementService.validateTrackingLinkage(requirementNo, influencer.getId(),
+                    tracking.getBrand() != null ? tracking.getBrand().getId() : null,
+                    tracking.getTeam() != null ? tracking.getTeam().getId() : null,
+                    tracking.getVideoType(), tracking.getPlatform(),
+                    existingOrNull != null ? existingOrNull.getId() : null);
+        }
+        tracking.setInternalRequirementNo(requirementNo);
 
         // ---- 采买旧视频的原链接：只有"旧素材重发"才允许填，且全表唯一（归一化后比较） ----
         String sourceLink = emptyToNull(req.getOldMaterialSourceLink());
