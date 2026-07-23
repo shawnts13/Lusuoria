@@ -43,7 +43,11 @@ public class ProgressReminderDetail extends BaseEntity {
     @Column(name = "demand_content", columnDefinition = "TEXT")
     private String demandContent;
 
-    /** 红人视频制作与发布成本（美金）快照 */
+    /**
+     * 红人视频制作与发布成本（美金）快照。语义按类别重新解释：PM_EXECUTOR_PROGRESS_STALL/
+     * FINANCE_PROGRESS_STALL 是单条红人合作跟踪记录的成本；REQUIREMENT_INVOICE_OVERDUE
+     * 是整个需求的红人视频制作与发布总成本。
+     */
     @Column(name = "influencer_cost", precision = 15, scale = 2)
     private BigDecimal influencerCost;
 
@@ -56,7 +60,13 @@ public class ProgressReminderDetail extends BaseEntity {
     @Column(name = "publish_date")
     private Date publishDate;
 
-    /** 结款周期（天数），跑批时根据品牌方配置 + 单笔红人成本算出来的 */
+    /**
+     * 历史 NOT NULL 列，含义按类别重新解释（2026-07）：
+     *   - COLLAB_PAYMENT_DUE：结款周期（天数），根据品牌方配置 + 单笔红人成本算出来的。
+     *   - PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL："提醒阈值（工作日）"——
+     *     超过多少个工作日没流转就算滞留（3/5/14）。
+     *   - REQUIREMENT_INVOICE_OVERDUE："需求条目总数"（不是天数）。
+     */
     @Column(name = "cycle_days", nullable = false)
     private Integer cycleDays;
 
@@ -83,4 +93,27 @@ public class ProgressReminderDetail extends BaseEntity {
 
     @Column(name = "internal_requirement_no")
     private String internalRequirementNo;
+
+    /**
+     * 以下4个字段 2026-07 新增，供 PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL 展示
+     * 红人合作跟踪本身的关键信息用（红人视频制作与发布成本/结款周期/最迟结款日/视频发布时间
+     * 这几个payment专属字段对这两类没有意义，已经不在前端展示，用这4个换成更贴切的信息）。
+     */
+    @Column(name = "platform", columnDefinition = "TEXT")
+    private String platform;
+
+    @Column(name = "video_type_label")
+    private String videoTypeLabel;
+
+    /**
+     * 客户合作价格（美金）。语义按类别重新解释：PM_EXECUTOR_PROGRESS_STALL/
+     * FINANCE_PROGRESS_STALL 是单条红人合作跟踪记录的客户合作价格；
+     * REQUIREMENT_INVOICE_OVERDUE 是整个需求的客户合作总价格。
+     */
+    @Column(name = "client_price", precision = 15, scale = 2)
+    private BigDecimal clientPrice;
+
+    /** 内部执行人员姓名快照（PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL 专用） */
+    @Column(name = "executor_name")
+    private String executorName;
 }

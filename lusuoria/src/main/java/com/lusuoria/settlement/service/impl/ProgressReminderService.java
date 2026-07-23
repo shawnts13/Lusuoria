@@ -585,11 +585,16 @@ public class ProgressReminderService {
         detail.setInfluencerCost(t.getInfluencerCost());
         detail.setProgressLabel(t.getProgress() != null ? t.getProgress().getLabel() : null);
         detail.setPublishDate(t.getPublishDate());
-        // cycleDays/deadlineDate 是历史 NOT NULL 列，新类别没有"结款周期"这个概念，
-        // 借用来存"阈值工作日数"/"进度最近变化的日期"，真正展示用的是下面的 overdueDays
+        // cycleDays/deadlineDate 是历史 NOT NULL 列，这两类没有"结款周期"这个概念，借用来存
+        // "提醒阈值工作日数"/"进度最近变化的日期"（deadlineDate 只用于明细排序，不再展示成列）
         detail.setCycleDays(thresholdWorkdays);
         detail.setDeadlineDate(toDate(toLocalDate(t.getProgressChangedAt())));
         detail.setOverdueDays(overdueDays);
+        detail.setPlatform(t.getPlatform());
+        detail.setVideoTypeLabel(t.getVideoType() != null ? t.getVideoType().getLabel() : null);
+        detail.setClientPrice(t.getClientPrice());
+        Employee executor = t.getExecutorId() != null ? employeeCache.findById(t.getExecutorId()) : null;
+        detail.setExecutorName(executor != null ? executor.getName() : null);
         return detail;
     }
 
@@ -605,9 +610,13 @@ public class ProgressReminderService {
         detail.setTeamName(team != null ? team.getName() : null);
         Influencer inf = r.getInfluencerId() != null ? influencerRepo.findById(r.getInfluencerId()).orElse(null) : null;
         detail.setAccountName(inf != null ? inf.getAccountName() : null);
-        detail.setCycleDays(5);
+        // cycleDays 这里复用成"需求条目总数"（不是天数）；deadlineDate 只用于明细排序，不展示成列；
+        // influencerCost/clientPrice 复用成"需求总成本"/"需求客户合作总价格"（不是单条视频的）
+        detail.setCycleDays(r.getTotalItemCount() != null ? r.getTotalItemCount() : 0);
         detail.setDeadlineDate(toDate(toLocalDate(r.getCompletedAt())));
         detail.setOverdueDays(overdueDays);
+        detail.setInfluencerCost(r.getTotalInfluencerCost());
+        detail.setClientPrice(r.getTotalClientPrice());
         detail.setRequirementId(r.getId());
         detail.setInternalRequirementNo(r.getInternalRequirementNo());
         return detail;
