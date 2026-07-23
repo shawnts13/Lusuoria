@@ -32,13 +32,23 @@ public class ProgressReminderController {
         return ApiResponse.success(progressReminderService.listDetails(id));
     }
 
-    /** "结款后更新提示内容"：手动立即重新跑一次批，不用等到凌晨3点 */
+    /** "结款后更新提示内容"：手动立即重新计算"临近结款"这两类，不用等到凌晨3点 */
     @PostMapping("/recompute")
     public ApiResponse<List<ProgressReminder>> recompute() {
         if (!progressReminderService.isCurrentUserManagement()) {
             return ApiResponse.error(403, "无权限执行此操作");
         }
-        progressReminderService.runBatch();
+        progressReminderService.runPaymentBatches();
+        return ApiResponse.success(progressReminderService.listForCurrentUser());
+    }
+
+    /** "项目流转后更新提示内容"（2026-07 新增）：手动立即重新计算进度滞留/Invoice逾期这3类 */
+    @PostMapping("/recompute-project-flow")
+    public ApiResponse<List<ProgressReminder>> recomputeProjectFlow() {
+        if (!progressReminderService.isCurrentUserManagement()) {
+            return ApiResponse.error(403, "无权限执行此操作");
+        }
+        progressReminderService.runProjectFlowBatches();
         return ApiResponse.success(progressReminderService.listForCurrentUser());
     }
 

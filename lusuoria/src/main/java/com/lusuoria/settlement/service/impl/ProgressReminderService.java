@@ -79,6 +79,14 @@ public class ProgressReminderService {
             CollaborationProgress.SHOOTING_GUIDE_SENT, CollaborationProgress.PENDING_DRAFT,
             CollaborationProgress.PENDING_REVISION, CollaborationProgress.PENDING_PUBLISH);
 
+    /** "结款后更新提示内容"手动触发范围 */
+    private static final Set<ReminderCategory> PAYMENT_CATEGORIES = EnumSet.of(
+            ReminderCategory.COLLAB_PAYMENT_DUE, ReminderCategory.BRAND_MONTH_END_PAYMENT_DUE);
+    /** "项目流转后更新提示内容"手动触发范围（2026-07 新增） */
+    private static final Set<ReminderCategory> PROJECT_FLOW_CATEGORIES = EnumSet.of(
+            ReminderCategory.PM_EXECUTOR_PROGRESS_STALL, ReminderCategory.FINANCE_PROGRESS_STALL,
+            ReminderCategory.REQUIREMENT_INVOICE_OVERDUE);
+
     @Autowired private ProgressReminderRepository reminderRepo;
     @Autowired private ProgressReminderDetailRepository detailRepo;
     @Autowired private CollaborationTrackingRepository trackingRepo;
@@ -113,6 +121,55 @@ public class ProgressReminderService {
             log.error("进度提醒跑批失败：{}", e.toString(), e);
             throw e;
         }
+    }
+
+    /**
+     * "结款后更新提示内容"手动触发（2026-07 起改成只重算 COLLAB_PAYMENT_DUE/
+     * BRAND_MONTH_END_PAYMENT_DUE 这两类，不影响 PM_EXECUTOR_PROGRESS_STALL/
+     * FINANCE_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE 当天已经算好的数据）。
+     */
+    @Transactional
+    public void runPaymentBatches() {
+        try {
+            clearCategories(PAYMENT_CATEGORIES);
+            LocalDate today = LocalDate.now(ZoneId.systemDefault());
+            Date batchDate = toDate(today);
+            runCollabPaymentDue(today, batchDate);
+            runBrandMonthEndPaymentDue(today, batchDate);
+        } catch (RuntimeException e) {
+            log.error("进度提醒（结款类）手动重算失败：{}", e.toString(), e);
+            throw e;
+        }
+    }
+
+    /**
+     * "项目流转后更新提示内容"手动触发（2026-07 新增）：只重算 PM_EXECUTOR_PROGRESS_STALL/
+     * FINANCE_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE 这3类，不影响两类"临近结款"提醒
+     * 当天已经算好的数据。
+     */
+    @Transactional
+    public void runProjectFlowBatches() {
+        try {
+            clearCategories(PROJECT_FLOW_CATEGORIES);
+            LocalDate today = LocalDate.now(ZoneId.systemDefault());
+            Date batchDate = toDate(today);
+            runPmExecutorProgressStall(today, batchDate);
+            runFinanceProgressStall(today, batchDate);
+            runRequirementInvoiceOverdue(today, batchDate);
+        } catch (RuntimeException e) {
+            log.error("进度提醒（项目流转类）手动重算失败：{}", e.toString(), e);
+            throw e;
+        }
+    }
+
+    /** 清空指定几个类别当前的 ProgressReminder + 对应明细行，不动其它类别 */
+    private void clearCategories(Set<ReminderCategory> categories) {
+        List<Long> reminderIds = reminderRepo.findByCategoryIn(categories).stream()
+                .map(ProgressReminder::getId).collect(java.util.stream.Collectors.toList());
+        if (!reminderIds.isEmpty()) {
+            detailRepo.deleteByReminderIdIn(reminderIds);
+        }
+        reminderRepo.deleteByCategoryIn(categories);
     }
 
     /** Part A：品牌方付款周期=按红人成本阈值分档 */

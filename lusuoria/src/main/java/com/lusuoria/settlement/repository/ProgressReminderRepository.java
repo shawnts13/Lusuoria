@@ -1,9 +1,11 @@
 package com.lusuoria.settlement.repository;
 
 import com.lusuoria.settlement.entity.ProgressReminder;
+import com.lusuoria.settlement.enums.ReminderCategory;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 
 @Repository
@@ -21,4 +23,9 @@ public interface ProgressReminderRepository extends JpaRepository<ProgressRemind
 
     /** 管理层/ADMIN 的"全部可见"查询：不按受众过滤，返回全表（表本身就是"最新一次跑批"的全量结果） */
     List<ProgressReminder> findAllByIsDeletedFalse();
+
+    /** 2026-07 新增：手动"分类重算"用——只清空/重算指定几类，不影响其它类别当天已经算好的数据 */
+    List<ProgressReminder> findByCategoryIn(Collection<ReminderCategory> categories);
+
+    void deleteByCategoryIn(Collection<ReminderCategory> categories);
 }
