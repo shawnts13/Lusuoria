@@ -405,9 +405,11 @@ public class ProgressReminderService {
     /**
      * Part C（2026-07 新增）：项目负责人/执行人员视角，视频项目进度长时间未流转。
      * "红人已下单"阈值5工作日，其余6个中间状态阈值3工作日；已发布未结算及以后的终态、
-     * 或折损，不算滞留。同一条记录如果负责人和执行人员是不同人，两边各生成一条（按各自的
-     * 身份分开归类，不合并）；没有 progressChangedAt（老数据，从没触发过一次这个字段的
-     * 维护逻辑）的记录直接跳过，避免上线当天把所有历史记录都误判成"长期未流转"。
+     * 或折损，不算滞留。同一条记录如果负责人和执行人员是不同人，两边各生成一条；如果负责人
+     * 和执行人员是同一个人，只算一次（角色标签合并成"项目负责人/执行人员"），避免同一条记录
+     * 在这个人自己的视图里被"项目负责人"、"执行人员"两个身份各数一遍，看起来像重复数据。
+     * 没有 progressChangedAt（老数据，从没触发过一次这个字段的维护逻辑）的记录直接跳过，
+     * 避免上线当天把所有历史记录都误判成"长期未流转"。
      */
     private void runPmExecutorProgressStall(LocalDate today, Date batchDate) {
         List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
@@ -426,14 +428,19 @@ public class ProgressReminderService {
             OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays);
             if (urgency == null) continue;
 
+            // 这条记录本身涉及的"员工 -> 身份"集合（用 LinkedHashSet 保序、去重合并同一个人的
+            // 多个身份），只针对这一条记录算，不跨记录累积
+            Map<Long, Set<String>> rolesForThisRecord = new LinkedHashMap<>();
             if (t.getProjectManagerId() != null) {
-                addToStallBucket(byKey, employeeIdByKey, roleLabelByKey, urgencyByKey,
-                        t.getProjectManagerId(), "项目负责人", urgency,
-                        buildStallDetail(t, accountNameById, overdueDays, threshold));
+                rolesForThisRecord.computeIfAbsent(t.getProjectManagerId(), k -> new LinkedHashSet<>()).add("项目负责人");
             }
             if (t.getExecutorId() != null) {
+                rolesForThisRecord.computeIfAbsent(t.getExecutorId(), k -> new LinkedHashSet<>()).add("执行人员");
+            }
+            for (Map.Entry<Long, Set<String>> owner : rolesForThisRecord.entrySet()) {
+                String roleLabel = String.join("/", owner.getValue());
                 addToStallBucket(byKey, employeeIdByKey, roleLabelByKey, urgencyByKey,
-                        t.getExecutorId(), "执行人员", urgency,
+                        owner.getKey(), roleLabel, urgency,
                         buildStallDetail(t, accountNameById, overdueDays, threshold));
             }
         }
@@ -514,14 +521,21 @@ public class ProgressReminderService {
             if (linked.isEmpty()) continue; // 理论上不会发生（completedAt本身就是靠这些记录算出来的），防御性跳过
             Long placeholderTrackingId = linked.get(0).getId();
 
-            Map<Long, String> roleLabelByEmployee = new LinkedHashMap<>();
+            // 同一个员工可能在这个需求下的不同条目里分别当过项目负责人、执行人员——合并成一个
+            // 组合身份标签，只生成一条，不要因为身份不同就把同一个需求算给同一个人两遍
+            Map<Long, Set<String>> rolesByEmployee = new LinkedHashMap<>();
             for (CollaborationTracking t : linked) {
-                if (t.getProjectManagerId() != null) roleLabelByEmployee.putIfAbsent(t.getProjectManagerId(), "项目负责人");
-                if (t.getExecutorId() != null) roleLabelByEmployee.putIfAbsent(t.getExecutorId(), "执行人员");
+                if (t.getProjectManagerId() != null) {
+                    rolesByEmployee.computeIfAbsent(t.getProjectManagerId(), k -> new LinkedHashSet<>()).add("项目负责人");
+                }
+                if (t.getExecutorId() != null) {
+                    rolesByEmployee.computeIfAbsent(t.getExecutorId(), k -> new LinkedHashSet<>()).add("执行人员");
+                }
             }
-            for (Map.Entry<Long, String> ownerEntry : roleLabelByEmployee.entrySet()) {
+            for (Map.Entry<Long, Set<String>> ownerEntry : rolesByEmployee.entrySet()) {
+                String roleLabel = String.join("/", ownerEntry.getValue());
                 addToStallBucket(byKey, employeeIdByKey, roleLabelByKey, urgencyByKey,
-                        ownerEntry.getKey(), ownerEntry.getValue(), urgency,
+                        ownerEntry.getKey(), roleLabel, urgency,
                         buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays));
             }
         }
@@ -614,12 +628,14 @@ public class ProgressReminderService {
         reminder.setAudienceEmployeeId(audienceEmployeeId);
         reminder.setCount(details.size());
         // 按员工定向的这两类，管理层/ADMIN 是"全量可见"（看到所有人的卡片混在一起，不是只看
-        // 自己的），标题里必须带上具体是谁的，不然只写"作为执行人员"会让管理层误以为是在说自己
+        // 自己的），标题里必须带上具体是谁的、以及是"谁手下的"，不用"作为XX"这种口吻——
+        // 系统不清楚项目负责人/执行人员各自的具体职责分工，这么说更中性、不会让管理层误以为
+        // 是在说自己："项目负责人-陈洁-手下的2笔视频项目进度长时间未流转"
         String prefix;
         if (audienceEmployeeId != null) {
             Employee emp = employeeCache.findById(audienceEmployeeId);
             String empName = emp != null ? emp.getName() : ("员工#" + audienceEmployeeId);
-            prefix = empName + "（" + audienceRoleLabel + "）：";
+            prefix = audienceRoleLabel + "-" + empName + "-手下的";
         } else {
             prefix = urgency.getLabel() + "：";
         }
