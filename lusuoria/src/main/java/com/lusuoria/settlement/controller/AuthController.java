@@ -48,6 +48,8 @@ public class AuthController {
         result.put("username",    user.getUsername());
         result.put("displayName", displayName);
         result.put("role",        user.getRole());
+        // 供前端"新建红人合作跟踪时把项目负责人默认填成自己"这类场景使用，未关联员工时为 null
+        result.put("employeeId",  user.getEmployeeId());
         // "进度提醒"功能受众：看登录账号关联的员工角色是不是"管理层"，跟登录账号本身的
         // ADMIN/STAFF/AUDITOR/GUEST 角色无关（见 ProgressReminderService.isManagementEmployee）
         result.put("isManagement", progressReminderService.isManagementEmployee(user.getEmployeeId()));
