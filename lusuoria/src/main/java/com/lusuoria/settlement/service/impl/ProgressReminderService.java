@@ -476,30 +476,42 @@ public class ProgressReminderService {
     }
 
     /**
-     * Part D（2026-07 新增）：财务视角，"已发布（未结算）"/"已加入客户未结算列表"长时间没到
-     * "客户已结算"，阈值统一14工作日。目前只有1个财务，按角色整体可见（audienceEmployeeRole=
-     * "财务"），不做按人定向。
+     * Part D（2026-07 新增，2026-07 修正）：财务视角，"已发布（未结算）"/"已加入客户未结算列表"
+     * 长时间没到"客户已结算"，阈值统一14工作日。目前只有1个财务，按角色整体可见
+     * （audienceEmployeeRole="财务"），不做按人定向。
+     *
+     * 按"视频项目进度"和严重度两个维度分桶——两个阶段分开报数，不合并成一句笼统的提醒，
+     * 财务能一眼看出是卡在"已发布（未结算）"还是"已加入客户未结算列表"没往下流转
+     * （之前是不管卡在哪个阶段，只按严重度合并成一条"XX笔视频项目进度长时间未到客户已结算"，
+     * 不够精确，2026-07 改成两个阶段各自独立生成提醒）。
      */
     private void runFinanceProgressStall(LocalDate today, Date batchDate) {
         List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
         Map<Long, String> accountNameById = buildAccountNameIndex(all);
 
-        Map<OverdueUrgency, List<ProgressReminderDetail>> byUrgency = new EnumMap<>(OverdueUrgency.class);
+        Map<CollaborationProgress, Map<OverdueUrgency, List<ProgressReminderDetail>>> byProgressAndUrgency
+                = new EnumMap<>(CollaborationProgress.class);
         for (CollaborationTracking t : all) {
             if (!isFinanceStallCandidate(t.getProgress()) || t.getProgressChangedAt() == null) continue;
             int workdays = WorkdayUtil.countWeekdaysInclusive(toLocalDate(t.getProgressChangedAt()), today);
             int overdueDays = workdays - 14;
             OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays);
             if (urgency == null) continue;
-            byUrgency.computeIfAbsent(urgency, k -> new ArrayList<>())
+            byProgressAndUrgency
+                    .computeIfAbsent(t.getProgress(), k -> new EnumMap<>(OverdueUrgency.class))
+                    .computeIfAbsent(urgency, k -> new ArrayList<>())
                     .add(buildStallDetail(t, accountNameById, overdueDays, 14));
         }
 
-        for (OverdueUrgency urgency : OverdueUrgency.values()) {
-            List<ProgressReminderDetail> details = byUrgency.get(urgency);
-            if (details == null || details.isEmpty()) continue;
-            saveStallReminder(batchDate, ReminderCategory.FINANCE_PROGRESS_STALL,
-                    null, FINANCE_ROLE, urgency, details, "笔视频项目进度长时间未到客户已结算", null);
+        for (Map.Entry<CollaborationProgress, Map<OverdueUrgency, List<ProgressReminderDetail>>> progressEntry
+                : byProgressAndUrgency.entrySet()) {
+            String titleSuffix = "笔视频项目进度长时间在“" + progressEntry.getKey().getLabel() + "”未流转";
+            for (OverdueUrgency urgency : OverdueUrgency.values()) {
+                List<ProgressReminderDetail> details = progressEntry.getValue().get(urgency);
+                if (details == null || details.isEmpty()) continue;
+                saveStallReminder(batchDate, ReminderCategory.FINANCE_PROGRESS_STALL,
+                        null, FINANCE_ROLE, urgency, details, titleSuffix, null);
+            }
         }
     }
 
