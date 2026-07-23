@@ -171,6 +171,16 @@ public class InfluencerController {
             inf = new Influencer();
             inf.setIsDeleted(false);
         }
+        // 红人社媒完整名字忽略大小写判重：数据库的 unique 约束是大小写敏感的，之前出现过
+        // "JohnDoe"和"johndoe"被当成两个不同红人分别插入的情况，这里手动加一层忽略大小写
+        // 的校验，命中且不是自己本身时直接报错，不让重复新建/改名重名
+        influencerRepo.findByAccountNameIgnoreCaseAndIsDeletedFalse(req.getAccountName())
+                .filter(existing -> !existing.getId().equals(req.getId()))
+                .ifPresent(existing -> {
+                    throw new RuntimeException("红人社媒完整名字 [" + req.getAccountName()
+                            + "] 与现有红人「" + existing.getAccountName() + "」重复（忽略大小写），不能重复添加");
+                });
+
         inf.setInfluencerType(req.getInfluencerType());
         inf.setAccountName(req.getAccountName());
         inf.setCountryMarket(req.getCountryMarket());

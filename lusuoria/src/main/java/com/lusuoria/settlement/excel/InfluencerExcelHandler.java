@@ -396,22 +396,25 @@ public class InfluencerExcelHandler {
             return errors;
         }
 
-        // ---- 预检：找出 Excel 里重复的红人ID，提示用户 ----
+        // ---- 预检：找出 Excel 里重复的红人ID，提示用户（忽略大小写判重，"JohnDoe"和"johndoe"
+        // 算同一个红人，不能都当新红人插入） ----
         Map<String, List<Integer>> accountRowMap = new LinkedHashMap<String, List<Integer>>();
+        Map<String, String> accountDisplayName = new HashMap<String, String>(); // key -> 第一次出现时的原始大小写，供报错展示
         for (int i = 1; i <= totalRows; i++) {
             Row row = sheet.getRow(i);
             if (row == null || isRowEmpty(row)) continue;
             String accountName = readAccountName(row, colMap);
             if (accountName != null && !accountName.isEmpty()) {
-                accountRowMap.computeIfAbsent(accountName.trim(),
-                        k -> new java.util.ArrayList<Integer>()).add(i + 1);
+                String key = nameKey(accountName);
+                accountRowMap.computeIfAbsent(key, k -> new java.util.ArrayList<Integer>()).add(i + 1);
+                accountDisplayName.putIfAbsent(key, accountName.trim());
             }
         }
         Set<String> duplicateAccounts = new HashSet<String>();
         for (Map.Entry<String, List<Integer>> entry : accountRowMap.entrySet()) {
             if (entry.getValue().size() > 1) {
                 duplicateAccounts.add(entry.getKey());
-                errors.add("红人社媒完整名字 [" + entry.getKey() + "] 在 Excel 中重复出现，位于第 "
+                errors.add("红人社媒完整名字 [" + accountDisplayName.get(entry.getKey()) + "]（忽略大小写）在 Excel 中重复出现，位于第 "
                         + entry.getValue().toString() + " 行，请删除重复行后重新导入，本次已跳过重复行");
             }
         }
@@ -419,10 +422,10 @@ public class InfluencerExcelHandler {
         int successCount = 0, updateCount = 0, duplicateSkipCount = 0, processedCount = 0;
 
         // ---- 导入前预加载，避免循环内反复查库 ----
-        // 所有现有红人：accountName -> Influencer
+        // 所有现有红人：accountName（忽略大小写）-> Influencer
         Map<String, Influencer> existingMap = new HashMap<String, Influencer>();
         influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc()
-                .forEach(inf -> existingMap.put(inf.getAccountName().trim(), inf));
+                .forEach(inf -> existingMap.put(nameKey(inf.getAccountName()), inf));
 
         // 收集所有需要新建/更新的 Influencer，最后批量 save
         List<Influencer> toSave = new ArrayList<Influencer>();
@@ -452,11 +455,11 @@ public class InfluencerExcelHandler {
                     errors.add("第" + (i + 1) + "行：红人类型不能为空"); continue;
                 }
 
-                // 查预加载的 Map，不查库
-                Influencer inf = existingMap.get(accountName.trim());
+                // 查预加载的 Map，不查库（忽略大小写匹配）
+                Influencer inf = existingMap.get(nameKey(accountName));
 
                 // 重复行：所有出现过的都跳过，让用户自行决定保留哪行
-                if (duplicateAccounts.contains(accountName.trim())) {
+                if (duplicateAccounts.contains(nameKey(accountName))) {
                     duplicateSkipCount++;
                     continue;
                 }
@@ -500,7 +503,7 @@ public class InfluencerExcelHandler {
                                 + " 不存在，请先在品牌方管理模块创建后再导入，该行其余关联已正常处理");
                     }
                     if (!pairKeys.isEmpty()) {
-                        pendingBrandTeamPairs.put(accountName.trim(), pairKeys);
+                        pendingBrandTeamPairs.put(nameKey(accountName), pairKeys);
                     }
                 }
 
@@ -588,10 +591,10 @@ public class InfluencerExcelHandler {
 
                 if (isNew) {
                     toSave.add(inf);
-                    existingMap.put(accountName.trim(), inf);  // 防止同一 Excel 里重复 accountName 被误判
+                    existingMap.put(nameKey(accountName), inf);  // 防止同一 Excel 里重复 accountName 被误判
                     successCount++;
                 } else {
-                    Influencer original = existingMap.get(accountName.trim());
+                    Influencer original = existingMap.get(nameKey(accountName));
                     if (isDirty(original, inf)) {
                         toSave.add(inf);
                         updateCount++;
@@ -620,7 +623,7 @@ public class InfluencerExcelHandler {
         if (!pendingBrandTeamPairs.isEmpty()) {
             Map<String, Influencer> savedMap = new HashMap<String, Influencer>();
             influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc()
-                    .forEach(inf -> savedMap.put(inf.getAccountName().trim(), inf));
+                    .forEach(inf -> savedMap.put(nameKey(inf.getAccountName()), inf));
             for (Map.Entry<String, Set<String>> entry : pendingBrandTeamPairs.entrySet()) {
                 Influencer inf = savedMap.get(entry.getKey());
                 if (inf == null) continue;
@@ -835,6 +838,15 @@ public class InfluencerExcelHandler {
             if (v != null && !v.isEmpty()) return v;
         }
         return null;
+    }
+
+    /**
+     * 红人社媒完整名字判重/匹配用的 key：忽略大小写（trim后转小写），避免"JohnDoe"和"johndoe"
+     * 被当成两个不同的红人——无论是同一次 Excel 里的行间去重，还是导入行跟数据库已有红人的
+     * 匹配，统一走这个 key，不能只处理其中一处。
+     */
+    private String nameKey(String accountName) {
+        return accountName == null ? null : accountName.trim().toLowerCase();
     }
 
     /** 只有有值时才调用 setter，空白不覆盖原值 */
