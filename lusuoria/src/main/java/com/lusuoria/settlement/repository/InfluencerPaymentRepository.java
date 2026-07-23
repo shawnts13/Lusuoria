@@ -29,6 +29,7 @@ public interface InfluencerPaymentRepository extends JpaRepository<InfluencerPay
            "AND (:settlementMonth IS NULL OR ip.settlementMonth = :settlementMonth) " +
            "AND (:brandId IS NULL OR ip.brandId = :brandId) " +
            "AND (:filterByTeam = false OR ip.id IN :matchingIds) " +
+           "AND (:filterByReqNo = false OR ip.id IN :reqMatchingIds) " +
            "AND (:paymentStatus IS NULL OR ip.paymentStatus = :paymentStatus) " +
            "ORDER BY ip.settlementMonth DESC, ip.paymentNo ASC")
     Page<InfluencerPayment> findByFilters(
@@ -36,6 +37,8 @@ public interface InfluencerPaymentRepository extends JpaRepository<InfluencerPay
             @Param("brandId") Long brandId,
             @Param("filterByTeam") boolean filterByTeam,
             @Param("matchingIds") List<Long> matchingIds,
+            @Param("filterByReqNo") boolean filterByReqNo,
+            @Param("reqMatchingIds") List<Long> reqMatchingIds,
             @Param("paymentStatus") InfluencerPaymentStatus paymentStatus,
             Pageable pageable);
 

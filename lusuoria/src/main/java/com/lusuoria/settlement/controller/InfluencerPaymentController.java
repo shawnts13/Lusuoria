@@ -7,6 +7,7 @@ import com.lusuoria.settlement.dto.response.PaymentCandidateItem;
 import com.lusuoria.settlement.entity.InfluencerPayment;
 import com.lusuoria.settlement.enums.InfluencerPaymentStatus;
 import com.lusuoria.settlement.excel.InfluencerPaymentExcelHandler;
+import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerPaymentRepository;
 import com.lusuoria.settlement.repository.InfluencerPaymentTeamRepository;
 import com.lusuoria.settlement.service.impl.InfluencerPaymentService;
@@ -36,6 +37,7 @@ public class InfluencerPaymentController {
 
     @Autowired private InfluencerPaymentRepository paymentRepo;
     @Autowired private InfluencerPaymentTeamRepository paymentTeamRepo;
+    @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private InfluencerPaymentService paymentService;
     @Autowired private InfluencerPaymentExcelHandler excelHandler;
     @Autowired private PaymentAccessUtil accessUtil;
@@ -45,6 +47,7 @@ public class InfluencerPaymentController {
             @RequestParam(required = false) String settlementMonth,
             @RequestParam(required = false) Long brandId,
             @RequestParam(required = false) Long teamId,
+            @RequestParam(required = false) String internalRequirementNo,
             @RequestParam(required = false) InfluencerPaymentStatus paymentStatus,
             @RequestParam(defaultValue = "0")  int page,
             @RequestParam(defaultValue = "20") int size) {
@@ -55,9 +58,15 @@ public class InfluencerPaymentController {
         boolean filterByTeam = teamId != null;
         List<Long> matchingIds = filterByTeam ? paymentTeamRepo.findPaymentIdsByTeamId(teamId) : Collections.emptyList();
         if (matchingIds.isEmpty()) matchingIds = Collections.singletonList(-1L);
+        // 内部需求编号筛选：一个结款批次下可能挂着多个不同需求编号的合作跟踪记录，
+        // 只要批次里"有至少一条"匹配这个需求编号就算命中，跟按团队筛选是同一个套路
+        boolean filterByReqNo = internalRequirementNo != null && !internalRequirementNo.trim().isEmpty();
+        List<Long> reqMatchingIds = filterByReqNo
+                ? trackingRepo.findPaymentIdsByRequirementNo(internalRequirementNo.trim()) : Collections.emptyList();
+        if (reqMatchingIds.isEmpty()) reqMatchingIds = Collections.singletonList(-1L);
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "settlementMonth"));
         Page<InfluencerPayment> result = paymentRepo.findByFilters(
-                settlementMonth, brandId, filterByTeam, matchingIds, paymentStatus, pageable);
+                settlementMonth, brandId, filterByTeam, matchingIds, filterByReqNo, reqMatchingIds, paymentStatus, pageable);
         paymentService.attachTeamIds(result.getContent());
         return ApiResponse.success(result);
     }

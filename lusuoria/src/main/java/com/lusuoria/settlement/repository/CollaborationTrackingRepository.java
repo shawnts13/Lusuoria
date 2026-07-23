@@ -215,4 +215,10 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
 
     /** "存量记录关联需求"候选查询：某个红人名下还没关联任何需求的记录 */
     List<CollaborationTracking> findByInfluencerIdAndInternalRequirementNoIsNullAndIsDeletedFalse(Long influencerId);
+
+    /** 红人结款列表按"内部需求编号"筛选用：涉及了这个需求编号、且已经纳入某个结款批次的记录，对应的结款批次id */
+    @Query("SELECT DISTINCT c.influencerPaymentId FROM CollaborationTracking c " +
+           "WHERE c.internalRequirementNo = :requirementNo AND c.isDeleted = false " +
+           "AND c.influencerPaymentId IS NOT NULL")
+    List<Long> findPaymentIdsByRequirementNo(@Param("requirementNo") String requirementNo);
 }
