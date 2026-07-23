@@ -394,15 +394,18 @@ public class CollaborationTrackingService {
         tracking.setClientPaymentBatch(req.getClientPaymentBatch());
         tracking.setNotes(req.getNotes());
 
-        // 关联的"红人需求管理"内部需求编号：填了值就校验红人/品牌方/团队/项目视频类型/合作平台
-        // 是否跟需求条目匹配、且该条目还有剩余名额（excludeId 排除自身，编辑已关联记录时
-        // 不把自己算进"已占用"）
+        // 关联的"红人需求管理"内部需求编号：填了值就校验红人/品牌方/团队/项目视频类型/合作平台/
+        // 成本/价格是否精确匹配到需求里的某个条目、且该条目还有剩余名额（excludeId 排除自身，
+        // 编辑已关联记录时不把自己算进"已占用"）。这里必须传 req 里的成本/价格（即将保存的新值），
+        // 不能传 tracking 当前的值——此时 tracking.influencerCost/clientPrice 还没被下面的赋值
+        // 更新，仍是编辑前的旧值
         String requirementNo = emptyToNull(req.getInternalRequirementNo());
         if (requirementNo != null) {
             requirementService.validateTrackingLinkage(requirementNo, influencer.getId(),
                     tracking.getBrand() != null ? tracking.getBrand().getId() : null,
                     tracking.getTeam() != null ? tracking.getTeam().getId() : null,
                     tracking.getVideoType(), tracking.getPlatform(),
+                    req.getInfluencerCost(), req.getClientPrice(),
                     existingOrNull != null ? existingOrNull.getId() : null);
         }
         tracking.setInternalRequirementNo(requirementNo);

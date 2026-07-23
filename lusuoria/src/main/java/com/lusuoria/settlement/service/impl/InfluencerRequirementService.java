@@ -135,11 +135,13 @@ public class InfluencerRequirementService {
 
     /**
      * 增量协调条目：按 id 匹配已有条目做更新，没有 id 的是新增，请求里没出现的已有条目视为删除——
-     * 但已经有关联的合作跟踪记录（fulfilledCount > 0）的条目不允许删除/改动 videoType 或
-     * platform（数量/单价允许改，因为不影响"这是哪个组合"的判定），保证已经实施的记录不会
-     * 变成孤儿。同一需求内 (videoType, 排序后platform) 允许重复（2026-07 取消唯一限制——
-     * 同样的视频类型/平台组合，实际上可能有不同的视频单价，需要拆成多个条目分别记录），
-     * validateTrackingLinkage 里做名额校验时会把同组合的多个条目名额加总。
+     * 但已经有关联的合作跟踪记录（fulfilledCount > 0）的条目不允许删除/改动 videoType、
+     * platform 或两个单价（2026-07 起单价也不能改了——同一需求内 (videoType, platform) 允许
+     * 重复、靠单价区分是哪个条目之后，单价就是判断"一条记录属于哪个条目"的一部分，已经关联
+     * 记录后改单价会导致这些记录跟条目对不上、"已实施"数算错），保证已经实施的记录不会变成
+     * 孤儿。同一需求内 (videoType, 排序后platform) 允许重复（取消唯一限制——同样的视频类型/
+     * 平台组合，实际上可能有不同的视频单价，需要拆成多个条目分别记录），
+     * validateTrackingLinkage 按 (videoType, platform, 两个单价) 精确匹配到具体条目做名额校验。
      */
     private void applyItems(InfluencerRequirement requirement, List<InfluencerRequirementItemRequest> itemReqs) {
         if (itemReqs == null) itemReqs = new ArrayList<>();
@@ -173,8 +175,10 @@ public class InfluencerRequirementService {
                 keptIds.add(item.getId());
                 Integer fulfilled = fulfilledByItemId.getOrDefault(item.getId(), 0);
                 if (fulfilled > 0 && (item.getVideoType() != itemReq.getVideoType()
-                        || !java.util.Objects.equals(item.getPlatform(), platform))) {
-                    throw new RuntimeException("该条目已经有关联的红人合作跟踪记录，不能修改项目视频类型/合作平台");
+                        || !java.util.Objects.equals(item.getPlatform(), platform)
+                        || !amountsEqual(item.getInfluencerUnitCostPrice(), itemReq.getInfluencerUnitCostPrice())
+                        || !amountsEqual(item.getClientUnitPrice(), itemReq.getClientUnitPrice()))) {
+                    throw new RuntimeException("该条目已经有关联的红人合作跟踪记录，不能修改项目视频类型/合作平台/单价");
                 }
                 if (fulfilled > itemReq.getVideoCount()) {
                     throw new RuntimeException("该条目已经实施了 " + fulfilled + " 条，项目视频数目不能改得比这个还小");
@@ -222,7 +226,13 @@ public class InfluencerRequirementService {
         return String.join("\n", sorted);
     }
 
-    /** 某个需求下每个条目 id 已经关联了多少条红人合作跟踪记录（不看 progress 状态） */
+    /**
+     * 某个需求下每个条目 id 已经关联了多少条红人合作跟踪记录（不看 progress 状态）。
+     * 2026-07：同一需求内允许多个条目共用同一个 (videoType, platform) 组合（价格不同），
+     * 所以判断一条记录属于"哪个条目"必须把单价也算进匹配条件，不能只按组合——否则两个
+     * 同组合不同价的条目会把同一批记录重复计入各自的"已实施"，出现类似"5条容量的条目
+     * 显示实施了6条，1条容量的条目也显示实施了6条"这种同一批记录被两个条目各自算一遍的错误。
+     */
     private Map<Long, Integer> fulfilledCountByItemId(InfluencerRequirement requirement) {
         List<CollaborationTracking> linked =
                 trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(requirement.getInternalRequirementNo());
@@ -231,7 +241,9 @@ public class InfluencerRequirementService {
             if (item.getId() == null) continue;
             int count = (int) linked.stream()
                     .filter(t -> t.getVideoType() == item.getVideoType()
-                            && java.util.Objects.equals(canonicalTrackingPlatform(t.getPlatform()), item.getPlatform()))
+                            && java.util.Objects.equals(canonicalTrackingPlatform(t.getPlatform()), item.getPlatform())
+                            && amountsEqual(t.getInfluencerCost(), item.getInfluencerUnitCostPrice())
+                            && amountsEqual(t.getClientPrice(), item.getClientUnitPrice()))
                     .count();
             result.put(item.getId(), count);
         }
@@ -398,9 +410,9 @@ public class InfluencerRequirementService {
 
     /**
      * "存量记录关联需求"确认关联：整批在一个事务里逐条走 validateTrackingLinkage()
-     * （红人/品牌方/团队/项目视频类型/合作平台是否匹配、该需求条目还有没有剩余名额），
-     * 任何一条不满足都抛异常、整批回滚——同一事务内前面几条已经落库的关联，后面几条的
-     * 名额校验能看到，天然实现"这一批加起来超量也会被拦下"。
+     * （红人/品牌方/团队/项目视频类型/合作平台/成本/价格是否精确匹配到某个具体条目、该条目
+     * 还有没有剩余名额），任何一条不满足都抛异常、整批回滚——同一事务内前面几条已经落库的
+     * 关联，后面几条的名额校验能看到，天然实现"这一批加起来超量也会被拦下"。
      */
     @Transactional
     public void linkLegacyTrackings(String internalRequirementNo, List<Long> trackingIds) {
@@ -415,7 +427,7 @@ public class InfluencerRequirementService {
                         + t.getInternalRequirementNo() + "]，不能重复关联");
             }
             validateTrackingLinkage(internalRequirementNo, t.getInfluencerId(), t.getBrandId(), t.getTeamId(),
-                    t.getVideoType(), t.getPlatform(), null);
+                    t.getVideoType(), t.getPlatform(), t.getInfluencerCost(), t.getClientPrice(), null);
             t.setInternalRequirementNo(internalRequirementNo);
             trackingRepo.save(t);
         }
@@ -477,13 +489,23 @@ public class InfluencerRequirementService {
 
     /**
      * "红人合作跟踪"关联需求校验：内部需求编号存在、红人/品牌方/团队跟需求一致、
-     * videoType+platform 匹配需求里的某个条目且该条目还有剩余名额（excludeTrackingId 排除自身，
-     * 编辑已关联记录时不把自己算进"已占用"）。供 CollaborationTrackingService（表单保存/
-     * 状态流转）和 Excel 导入共用，任何一处不满足都抛异常，调用方决定怎么呈现给用户。
+     * videoType+platform+两个单价精确匹配需求里的某一个条目且该条目还有剩余名额
+     * （excludeTrackingId 排除自身，编辑已关联记录时不把自己算进"已占用"）。供
+     * CollaborationTrackingService（表单保存/状态流转）和"存量记录关联需求"共用，任何一处
+     * 不满足都抛异常，调用方决定怎么呈现给用户。
+     *
+     * 2026-07：单价也纳入匹配条件——同一需求内允许多个条目共用同一个 (videoType, platform)
+     * 组合（价格不同，比如同样是"新AI素材"，一批单价$50一批单价$80），如果只按组合匹配、
+     * 把这些同组合条目的名额加总算一个池子，会导致一条实际价格对应"条目A"的记录，占用的却是
+     * "条目A+条目B"合并后的名额池，反过来又会让"已实施"数在两个条目上都算出同一个总数——
+     * 也就是本该 5 条容量的条目和 1 条容量的条目，各自都显示"已实施 6 条"这种同一批记录被
+     * 两个条目重复计入的错误。单价加入匹配条件后，只要两个条目没有完全相同的单价组合，
+     * 就能唯一定位到该记录真正对应哪个条目，恢复按条目精确控制名额。
      */
     @Transactional(readOnly = true)
     public void validateTrackingLinkage(String internalRequirementNo, Long influencerId, Long brandId, Long teamId,
-                                         VideoType videoType, String platform, Long excludeTrackingId) {
+                                         VideoType videoType, String platform,
+                                         BigDecimal influencerCost, BigDecimal clientPrice, Long excludeTrackingId) {
         InfluencerRequirement requirement = requirementRepo
                 .findByInternalRequirementNoAndIsDeletedFalse(internalRequirementNo)
                 .orElseThrow(() -> new RuntimeException("内部需求编号 [" + internalRequirementNo + "] 不存在"));
@@ -500,24 +522,25 @@ public class InfluencerRequirementService {
 
         String canonicalPlatform = canonicalTrackingPlatform(platform);
         List<InfluencerRequirementItem> items = itemRepo.findByRequirementIdOrderByIdAsc(requirement.getId());
-        // 同一 (videoType, platform) 组合允许拆成多个条目（比如同组合不同视频单价），
-        // 名额校验按组合汇总所有匹配条目的 videoCount 之和，不再假设组合唯一
-        List<InfluencerRequirementItem> matched = items.stream()
-                .filter(i -> i.getVideoType() == videoType && java.util.Objects.equals(i.getPlatform(), canonicalPlatform))
-                .collect(Collectors.toList());
-        if (matched.isEmpty()) {
-            throw new RuntimeException("这条记录的项目视频类型/合作平台，在内部需求编号 [" + internalRequirementNo + "] 里找不到匹配的需求条目");
+        InfluencerRequirementItem matched = items.stream()
+                .filter(i -> i.getVideoType() == videoType && java.util.Objects.equals(i.getPlatform(), canonicalPlatform)
+                        && amountsEqual(i.getInfluencerUnitCostPrice(), influencerCost)
+                        && amountsEqual(i.getClientUnitPrice(), clientPrice))
+                .findFirst().orElse(null);
+        if (matched == null) {
+            throw new RuntimeException("这条记录的项目视频类型/合作平台/成本/价格，在内部需求编号 [" + internalRequirementNo + "] 里找不到匹配的需求条目");
         }
-        int totalCapacity = matched.stream().mapToInt(InfluencerRequirementItem::getVideoCount).sum();
 
         List<CollaborationTracking> linked = trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(internalRequirementNo);
         long usedCount = linked.stream()
                 .filter(t -> !java.util.Objects.equals(t.getId(), excludeTrackingId))
-                .filter(t -> t.getVideoType() == videoType && java.util.Objects.equals(canonicalTrackingPlatform(t.getPlatform()), canonicalPlatform))
+                .filter(t -> t.getVideoType() == videoType && java.util.Objects.equals(canonicalTrackingPlatform(t.getPlatform()), canonicalPlatform)
+                        && amountsEqual(t.getInfluencerCost(), influencerCost)
+                        && amountsEqual(t.getClientPrice(), clientPrice))
                 .count();
-        if (usedCount >= totalCapacity) {
+        if (usedCount >= matched.getVideoCount()) {
             throw new RuntimeException("「" + videoType.getLabel() + "-" + canonicalPlatform.replace("\n", "、")
-                    + "」这个需求条目已经没有剩余名额（" + totalCapacity + "条已全部安排）");
+                    + "」这个需求条目已经没有剩余名额（" + matched.getVideoCount() + "条已全部安排）");
         }
     }
 }
