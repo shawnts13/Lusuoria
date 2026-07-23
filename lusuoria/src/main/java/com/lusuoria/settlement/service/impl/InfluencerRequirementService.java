@@ -346,7 +346,9 @@ public class InfluencerRequirementService {
 
     /**
      * "存量记录关联需求"第三步候选查询：这个红人名下还没关联任何需求的记录里，
-     * 项目视频类型/合作平台/红人视频制作与发布成本/客户合作价格都跟需求某个条目匹配的。
+     * 品牌方-团队/项目视频类型/合作平台/红人视频制作与发布成本/客户合作价格都跟需求（以及
+     * 需求某个条目）匹配的。同一个红人可能对应多个品牌方-团队组合，只按红人筛会把其他
+     * 品牌方-团队下巧合金额一致的记录也混进来，所以必须先卡死品牌方-团队，2026-07 加上。
      * 只是筛出候选给用户挑选，真正的名额/一致性校验在确认关联时（linkLegacyTrackings）走
      * validateTrackingLinkage，这里不重复做名额判断。
      */
@@ -364,6 +366,10 @@ public class InfluencerRequirementService {
 
         List<LegacyTrackingCandidateResponse> result = new ArrayList<>();
         for (CollaborationTracking t : unlinked) {
+            if (!java.util.Objects.equals(t.getBrandId(), requirement.getBrandId())
+                    || !java.util.Objects.equals(t.getTeamId(), requirement.getTeamId())) {
+                continue;
+            }
             String canonicalPlatform = canonicalTrackingPlatform(t.getPlatform());
             boolean matched = items.stream().anyMatch(item ->
                     item.getVideoType() == t.getVideoType()
