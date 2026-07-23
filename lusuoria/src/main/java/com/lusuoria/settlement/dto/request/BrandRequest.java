@@ -1,5 +1,6 @@
 package com.lusuoria.settlement.dto.request;
 
+import com.lusuoria.settlement.enums.ContractCycleType;
 import com.lusuoria.settlement.enums.PaymentCycleType;
 import lombok.Data;
 import javax.validation.constraints.NotBlank;
@@ -20,4 +21,7 @@ public class BrandRequest {
     private Integer daysAfterMonthEnd;
 
     private String notes;
+
+    private Boolean requiresInvoice;
+    private ContractCycleType contractCycleType;
 }

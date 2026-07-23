@@ -26,6 +26,8 @@ public class InfluencerRequirementRequest {
 
     private String fullRequirementContent;
 
+    private String notes;
+
     /** 涉及的红人需求条目：整份替换（service 层按 id 做增量增删改，见 InfluencerRequirementService） */
     private List<InfluencerRequirementItemRequest> items;
 }

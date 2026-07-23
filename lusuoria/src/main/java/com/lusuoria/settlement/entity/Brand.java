@@ -1,5 +1,6 @@
 package com.lusuoria.settlement.entity;
 
+import com.lusuoria.settlement.enums.ContractCycleType;
 import com.lusuoria.settlement.enums.PaymentCycleType;
 import javax.persistence.*;
 import lombok.*;
@@ -54,4 +55,23 @@ public class Brand extends BaseEntity {
 
     @Column(name = "notes", columnDefinition = "TEXT")
     private String notes;                // 备注
+
+    /**
+     * 是否需要 invoice（2026-07 起，替代原来打算写在业务代码里的"TEMU中国"硬编码判断）。
+     * null/true 都按"需要"处理，只有显式设成 false 才是"不涉及 invoice 上传"，见
+     * {@link #requiresInvoiceUpload()}——新品牌方不用今天就必须配置这个开关，默认走更安全的
+     * "需要"分支。
+     */
+    @Column(name = "requires_invoice")
+    private Boolean requiresInvoice;
+
+    /** 合同签订周期（目前没有配套的合同上传功能，先落地配置项供以后使用） */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "contract_cycle_type")
+    private ContractCycleType contractCycleType;
+
+    /** null 按"需要 invoice"处理，只有显式设成 false 才是"不涉及"——统一用这个方法判断，不要在别处重复 !Boolean.FALSE.equals(...) */
+    public boolean requiresInvoiceUpload() {
+        return !Boolean.FALSE.equals(requiresInvoice);
+    }
 }

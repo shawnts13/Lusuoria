@@ -15,6 +15,7 @@ import com.lusuoria.settlement.entity.InfluencerBrandTeam;
 import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.InfluencerRequirementItem;
 import com.lusuoria.settlement.entity.InfluencerTeam;
+import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
@@ -116,6 +117,7 @@ public class InfluencerRequirementService {
                 ? req.getRequirementMonth().trim()
                 : new SimpleDateFormat("yyyyMM").format(new Date()));
         requirement.setFullRequirementContent(req.getFullRequirementContent());
+        requirement.setNotes(req.getNotes());
 
         boolean isNew = requirement.getId() == null;
 
@@ -403,6 +405,47 @@ public class InfluencerRequirementService {
         }
         requirement.setIsDeleted(true);
         requirementRepo.save(requirement);
+    }
+
+    /**
+     * 上传/修改 Invoice 链接：该品牌方不需要 invoice 时直接拒绝（正常情况下前端按钮已禁用，
+     * 这里是后端兜底）；需要 invoice 时必须"需求完成进度"100%才允许。成功后级联把所有关联的
+     * "红人合作跟踪"记录（按 internalRequirementNo）的红人结款进度改成"红人已提供invoice"——
+     * 已经纳入结款批次的记录（isSystemManagedOnly）跳过，不破坏批次联动。
+     */
+    @Transactional
+    public InfluencerRequirement uploadInvoiceLink(Long requirementId, String invoiceLink) {
+        InfluencerRequirement requirement = requirementRepo.findByIdAndIsDeletedFalse(requirementId)
+                .orElseThrow(() -> new RuntimeException("需求记录不存在：" + requirementId));
+
+        Brand brand = requirement.getBrandId() != null ? brandCache.findById(requirement.getBrandId()) : null;
+        if (brand != null && !brand.requiresInvoiceUpload()) {
+            throw new RuntimeException("该品牌方不涉及Invoice上传");
+        }
+
+        int completed = completedCountByNos(java.util.Collections.singletonList(requirement.getInternalRequirementNo()))
+                .getOrDefault(requirement.getInternalRequirementNo(), 0);
+        int total = requirement.getTotalItemCount() != null ? requirement.getTotalItemCount() : 0;
+        if (total <= 0 || completed < total) {
+            throw new RuntimeException("该需求尚未实施完成，还无需上传Invoice");
+        }
+
+        requirement.setInvoiceLink(invoiceLink);
+        InfluencerRequirement saved = requirementRepo.save(requirement);
+
+        List<CollaborationTracking> linked =
+                trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(requirement.getInternalRequirementNo());
+        List<CollaborationTracking> toUpdate = new ArrayList<>();
+        for (CollaborationTracking t : linked) {
+            if (t.getInfluencerPaymentProgress() != null && t.getInfluencerPaymentProgress().isSystemManagedOnly()) {
+                continue;
+            }
+            t.setInfluencerPaymentProgress(InfluencerPaymentProgress.INVOICE_PROVIDED);
+            toUpdate.add(t);
+        }
+        if (!toUpdate.isEmpty()) trackingRepo.saveAll(toUpdate);
+
+        return saved;
     }
 
     /**

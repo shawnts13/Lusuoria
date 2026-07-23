@@ -82,6 +82,18 @@ public class InfluencerRequirement extends BaseEntity {
     @Column(name = "total_influencer_cost", precision = 15, scale = 2)
     private BigDecimal totalInfluencerCost;
 
+    /** 备注 */
+    @Column(name = "notes", columnDefinition = "TEXT")
+    private String notes;
+
+    /**
+     * Invoice 链接（该需求所有视频都实施完成后，统一上传一份 invoice，只能通过
+     * InfluencerRequirementService.uploadInvoiceLink() 这个专门校验过的接口写入，
+     * 不走普通的 save() 编辑表单，避免被意外覆盖）。
+     */
+    @Column(name = "invoice_link", columnDefinition = "TEXT")
+    private String invoiceLink;
+
     /**
      * 需求条目集合，仅供 service 层落库时的级联增删改使用（在事务内操作）。
      * 不直接序列化给前端——open-in-view=false，事务外访问 LAZY 集合会抛异常；

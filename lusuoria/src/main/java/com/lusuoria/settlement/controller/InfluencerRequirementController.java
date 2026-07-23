@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.controller;
 
 import com.lusuoria.settlement.dto.request.InfluencerRequirementRequest;
+import com.lusuoria.settlement.dto.request.InvoiceLinkRequest;
 import com.lusuoria.settlement.dto.request.LinkLegacyTrackingsRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.dto.response.InfluencerRequirementItemResponse;
@@ -128,6 +129,18 @@ public class InfluencerRequirementController {
     public ApiResponse<Void> linkLegacy(@RequestBody LinkLegacyTrackingsRequest req) {
         requirementService.linkLegacyTrackings(req.getInternalRequirementNo(), req.getTrackingIds());
         return ApiResponse.success();
+    }
+
+    /**
+     * 上传/修改 Invoice 链接：品牌方不需要 invoice、或需求完成进度未满 100% 时后端会拒绝
+     * （前端按钮已经按同样的条件禁用，这里是兜底）。成功后级联更新对应"红人合作跟踪"记录的
+     * 红人结款进度，见 InfluencerRequirementService.uploadInvoiceLink()。
+     */
+    @PostMapping("/{id}/invoice-link")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    public ApiResponse<InfluencerRequirement> uploadInvoiceLink(
+            @PathVariable Long id, @Valid @RequestBody InvoiceLinkRequest req) {
+        return ApiResponse.success(requirementService.uploadInvoiceLink(id, req.getInvoiceLink()));
     }
 
     @GetMapping("/export/excel")

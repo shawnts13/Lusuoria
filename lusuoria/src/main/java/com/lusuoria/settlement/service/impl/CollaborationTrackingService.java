@@ -344,6 +344,9 @@ public class CollaborationTrackingService {
                 if (tracking.getProgress() == null || !tracking.getProgress().allowsPaymentProgress()) {
                     tracking.setProgress(CollaborationProgress.PUBLISHED_UNSETTLED);
                     autoTransitionedToPublished = true;
+                    // 首次进入"已发布（未结算）"：红人结款进度按品牌方是否需要 invoice 自动判定，
+                    // 不需要用户手动选（这个分支只在红人结款进度当前还没有值时触发，直接覆盖安全）
+                    tracking.setInfluencerPaymentProgress(resolveInitialPaymentProgress(tracking.getBrand()));
                 }
             } else {
                 tracking.setPublishDate(null);
@@ -577,6 +580,14 @@ public class CollaborationTrackingService {
             return result;
         }
 
+        // 首次进入"已发布（未结算）"：红人结款进度改成系统按品牌方是否需要 invoice 自动判定的值，
+        // 不看前端这次提交了什么——避免用户还要在这个转瞬即逝的时间点手动选一次
+        boolean enteringPublishedUnsettled = newProgress == CollaborationProgress.PUBLISHED_UNSETTLED
+                && oldProgress != CollaborationProgress.PUBLISHED_UNSETTLED;
+        if (enteringPublishedUnsettled) {
+            newPayment = resolveInitialPaymentProgress(t.getBrand());
+        }
+
         // "已纳入红人结款批次"这两个状态只能由红人结款模块内部设置，状态流转接口的"直接生效"这条
         // 路径不接受手动改动——既不能改成这两个值，也不能把记录从这两个值手动改离开（那样会跟
         // 红人结款那边的批次记录对不上）。值没变（弹窗没碰这个字段、原样提交回去）不算，放行，
@@ -608,12 +619,20 @@ public class CollaborationTrackingService {
         // 到了这个状态也应该重新弹一次确认，只有已经明确点过"不涉及内部执行人员"的记录才不再弹。
         // "已加入客户未结算列表"/"客户已结算"这两个财务专属状态不会触发这个弹窗
         // （财务流转到这两个状态时不涉及执行人员的设置）。
-        boolean enteringPublishedUnsettled = newProgress == CollaborationProgress.PUBLISHED_UNSETTLED
-                && oldProgress != CollaborationProgress.PUBLISHED_UNSETTLED;
         if (enteringPublishedUnsettled && !Boolean.TRUE.equals(saved.getExecutorCostNotApplicable())) {
             result.setNeedExecutorCost(true);
         }
         return result;
+    }
+
+    /**
+     * 首次进入"已发布（未结算）"时，红人结款进度按品牌方是否需要 invoice 自动判定：
+     * 需要 invoice（null 或 true）→ 待红人发送invoice；显式不需要 → 待结款（不涉及invoice）。
+     */
+    private InfluencerPaymentProgress resolveInitialPaymentProgress(Brand brand) {
+        return (brand == null || brand.requiresInvoiceUpload())
+                ? InfluencerPaymentProgress.PENDING_INVOICE
+                : InfluencerPaymentProgress.PENDING_SETTLEMENT_NO_INVOICE;
     }
 
     /**

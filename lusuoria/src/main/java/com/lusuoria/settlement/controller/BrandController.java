@@ -120,6 +120,8 @@ public class BrandController {
         brand.setDaysAboveThreshold(req.getDaysAboveThreshold());
         brand.setDaysAfterMonthEnd(req.getDaysAfterMonthEnd());
         brand.setNotes(req.getNotes());
+        brand.setRequiresInvoice(req.getRequiresInvoice());
+        brand.setContractCycleType(req.getContractCycleType());
         Brand saved = brandRepo.save(brand);
         brandCache.refresh();
         return ApiResponse.success(saved);
