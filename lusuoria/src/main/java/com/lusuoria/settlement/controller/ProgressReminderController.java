@@ -3,6 +3,7 @@ package com.lusuoria.settlement.controller;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.ProgressReminder;
 import com.lusuoria.settlement.entity.ProgressReminderDetail;
+import com.lusuoria.settlement.enums.ReminderCategory;
 import com.lusuoria.settlement.service.impl.ProgressReminderService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
@@ -65,5 +66,21 @@ public class ProgressReminderController {
     public ApiResponse<Void> popupDismiss() {
         progressReminderService.markPopupSeen();
         return ApiResponse.success();
+    }
+
+    /**
+     * "标记已处理"（2026-07 新增，仅 PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL/
+     * REQUIREMENT_INVOICE_OVERDUE 这3类支持）：只影响标记人自己后续还看不看得到这条提醒。
+     */
+    @PostMapping("/acknowledge")
+    public ApiResponse<Void> acknowledge(@RequestBody AcknowledgeRequest req) {
+        progressReminderService.acknowledge(req.getCategory(), req.getTargetId());
+        return ApiResponse.success();
+    }
+
+    @lombok.Data
+    public static class AcknowledgeRequest {
+        private ReminderCategory category;
+        private Long targetId;
     }
 }

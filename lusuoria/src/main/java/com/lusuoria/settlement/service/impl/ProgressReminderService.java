@@ -11,6 +11,7 @@ import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.entity.ProgressReminder;
 import com.lusuoria.settlement.entity.ProgressReminderDetail;
+import com.lusuoria.settlement.entity.ReminderAcknowledgement;
 import com.lusuoria.settlement.entity.SysUser;
 import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
@@ -23,6 +24,7 @@ import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
 import com.lusuoria.settlement.repository.ProgressReminderDetailRepository;
 import com.lusuoria.settlement.repository.ProgressReminderRepository;
+import com.lusuoria.settlement.repository.ReminderAcknowledgementRepository;
 import com.lusuoria.settlement.repository.SysUserRepository;
 import com.lusuoria.settlement.util.EmployeeRoleUtil;
 import com.lusuoria.settlement.util.RoleUtil;
@@ -43,6 +45,7 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * 进度提醒 - 跑批与查询逻辑（2026-07 新增）。
@@ -92,6 +95,7 @@ public class ProgressReminderService {
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private InfluencerRequirementRepository requirementRepo;
+    @Autowired private ReminderAcknowledgementRepository ackRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private InfluencerTeamCache teamCache;
     @Autowired private EmployeeCache employeeCache;
@@ -165,7 +169,7 @@ public class ProgressReminderService {
     /** 清空指定几个类别当前的 ProgressReminder + 对应明细行，不动其它类别 */
     private void clearCategories(Set<ReminderCategory> categories) {
         List<Long> reminderIds = reminderRepo.findByCategoryIn(categories).stream()
-                .map(ProgressReminder::getId).collect(java.util.stream.Collectors.toList());
+                .map(ProgressReminder::getId).collect(Collectors.toList());
         if (!reminderIds.isEmpty()) {
             detailRepo.deleteByReminderIdIn(reminderIds);
         }
@@ -597,7 +601,89 @@ public class ProgressReminderService {
         if (reminder == null || !canViewReminder(reminder)) {
             return Collections.emptyList();
         }
-        return detailRepo.findByReminderIdOrderByDeadlineDateAsc(reminderId);
+        List<ProgressReminderDetail> details = detailRepo.findByReminderIdOrderByDeadlineDateAsc(reminderId);
+        if (ACKNOWLEDGEABLE_CATEGORIES.contains(reminder.getCategory()) && !hasFullReminderVisibility()) {
+            details = filterAcknowledged(reminder.getCategory(), details);
+        }
+        return details;
+    }
+
+    // ============ 标记已处理（2026-07 新增） ============
+
+    private static final Set<ReminderCategory> ACKNOWLEDGEABLE_CATEGORIES = PROJECT_FLOW_CATEGORIES;
+
+    /**
+     * 标记这条提醒对应的业务记录为"已处理"：只影响当前登录人自己后续还看不看得到这条提醒，
+     * 不影响其他共同受众（比如同一条记录的项目负责人和执行人员各自独立标记）；不影响
+     * ADMIN/管理层的完整视角（他们本来就不受这个过滤逻辑影响）。
+     *
+     * 业务记录的进度真正发生变化后（progressChangedAt/completedAt 前进），这条标记会自动
+     * 失效——不需要手动清理，也不会被每天/每次手动重算的批次清空（这张表完全独立于
+     * progress_reminders/progress_reminder_details，那两张表怎么重建都不会碰到它）。
+     */
+    @Transactional
+    public void acknowledge(ReminderCategory category, Long targetId) {
+        if (!ACKNOWLEDGEABLE_CATEGORIES.contains(category)) {
+            throw new RuntimeException("这类提醒不支持标记已处理");
+        }
+        Long employeeId = employeeRoleUtil.getCurrentEmployeeId();
+        if (employeeId == null) {
+            throw new RuntimeException("当前账号未关联员工，无法标记已处理");
+        }
+        Date snapshot = resolveCurrentChangedAt(category, targetId);
+        ReminderAcknowledgement ack = ackRepo
+                .findByCategoryAndTargetIdAndEmployeeId(category, targetId, employeeId)
+                .orElseGet(ReminderAcknowledgement::new);
+        ack.setIsDeleted(false);
+        ack.setCategory(category);
+        ack.setTargetId(targetId);
+        ack.setEmployeeId(employeeId);
+        ack.setSnapshotChangedAt(snapshot);
+        ack.setAcknowledgedAt(new Date());
+        ackRepo.save(ack);
+    }
+
+    /** REQUIREMENT_INVOICE_OVERDUE 用 completedAt，其余（trackingId 定位）用 progressChangedAt */
+    private Date resolveCurrentChangedAt(ReminderCategory category, Long targetId) {
+        if (category == ReminderCategory.REQUIREMENT_INVOICE_OVERDUE) {
+            return requirementRepo.findById(targetId).map(InfluencerRequirement::getCompletedAt).orElse(null);
+        }
+        return trackingRepo.findById(targetId).map(CollaborationTracking::getProgressChangedAt).orElse(null);
+    }
+
+    /**
+     * 过滤掉当前登录人已经标记"已处理"、且标记之后业务记录时间戳没有变化（说明情况还没变，
+     * 应该继续隐藏）的明细行；标记之后时间戳变了（真的推进了）的，标记自动失效，正常展示。
+     */
+    private List<ProgressReminderDetail> filterAcknowledged(ReminderCategory category, List<ProgressReminderDetail> details) {
+        Long employeeId = employeeRoleUtil.getCurrentEmployeeId();
+        if (employeeId == null || details.isEmpty()) return details;
+
+        boolean requirementBased = category == ReminderCategory.REQUIREMENT_INVOICE_OVERDUE;
+        List<Long> targetIds = details.stream()
+                .map(d -> requirementBased ? d.getRequirementId() : d.getTrackingId())
+                .filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        if (targetIds.isEmpty()) return details;
+
+        Map<Long, Date> snapshotByTarget = ackRepo.findByCategoryAndEmployeeIdAndTargetIdIn(category, employeeId, targetIds)
+                .stream().collect(Collectors.toMap(ReminderAcknowledgement::getTargetId, ReminderAcknowledgement::getSnapshotChangedAt));
+        if (snapshotByTarget.isEmpty()) return details;
+
+        List<ProgressReminderDetail> result = new ArrayList<>();
+        for (ProgressReminderDetail d : details) {
+            Long targetId = requirementBased ? d.getRequirementId() : d.getTrackingId();
+            Date snapshot = snapshotByTarget.get(targetId);
+            if (snapshot == null) {
+                result.add(d);
+                continue;
+            }
+            Date currentChangedAt = resolveCurrentChangedAt(category, targetId);
+            // 标记之后业务记录的时间戳真的往前走了，说明标记已经失效，恢复展示；否则继续隐藏
+            if (currentChangedAt != null && currentChangedAt.after(snapshot)) {
+                result.add(d);
+            }
+        }
+        return result;
     }
 
     private boolean canViewReminder(ProgressReminder r) {
