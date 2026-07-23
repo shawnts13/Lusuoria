@@ -39,6 +39,7 @@ public interface InfluencerRepository extends JpaRepository<Influencer, Long> {
            "AND (:influencerType IS NULL OR i.influencerType = :influencerType) " +
            "AND (:platform IS NULL OR i.platform LIKE %:platform%) " +
            "AND (:countryMarket IS NULL OR i.countryMarket LIKE %:countryMarket%) " +
+           "AND (:domain IS NULL OR i.domains LIKE %:domain%) " +
            "AND (:brandId IS NULL OR i.id IN (" +
            "    SELECT ibt.influencerId FROM InfluencerBrandTeam ibt " +
            "    WHERE ibt.brandId = :brandId AND ibt.isDeleted = false)) " +
@@ -52,6 +53,7 @@ public interface InfluencerRepository extends JpaRepository<Influencer, Long> {
             @Param("influencerType") ProjectType influencerType,
             @Param("platform") String platform,
             @Param("countryMarket") String countryMarket,
+            @Param("domain") String domain,
             @Param("brandId") Long brandId,
             @Param("teamId") Long teamId,
             @Param("followerMin") Long followerMin,

@@ -62,6 +62,7 @@ public class InfluencerController {
             @RequestParam(required = false) ProjectType influencerType,
             @RequestParam(required = false) String platform,
             @RequestParam(required = false) String countryMarket,
+            @RequestParam(required = false) String domain,
             @RequestParam(required = false) Long brandId,
             @RequestParam(required = false) Long teamId,
             @RequestParam(required = false) Long followerMin,
@@ -77,7 +78,7 @@ public class InfluencerController {
                 : Sort.by(Sort.Direction.ASC,  sortBy);
         PageRequest pageable = PageRequest.of(page, size, sort);
         Page<Influencer> result = influencerRepo.findByFilters(
-                influencerType, platform, countryMarket, brandId, teamId,
+                influencerType, platform, countryMarket, domain, brandId, teamId,
                 followerMin, followerMax, keyword, pageable);
         attachBrandTeamPairs(result.getContent());
         if (!RoleUtil.canViewBaselineFinancials()) {
