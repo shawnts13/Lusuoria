@@ -613,7 +613,16 @@ public class ProgressReminderService {
         reminder.setAudienceEmployeeRole(audienceRoleLabel);
         reminder.setAudienceEmployeeId(audienceEmployeeId);
         reminder.setCount(details.size());
-        String prefix = audienceEmployeeId != null ? "作为" + audienceRoleLabel + "：" : urgency.getLabel() + "：";
+        // 按员工定向的这两类，管理层/ADMIN 是"全量可见"（看到所有人的卡片混在一起，不是只看
+        // 自己的），标题里必须带上具体是谁的，不然只写"作为执行人员"会让管理层误以为是在说自己
+        String prefix;
+        if (audienceEmployeeId != null) {
+            Employee emp = employeeCache.findById(audienceEmployeeId);
+            String empName = emp != null ? emp.getName() : ("员工#" + audienceEmployeeId);
+            prefix = empName + "（" + audienceRoleLabel + "）：";
+        } else {
+            prefix = urgency.getLabel() + "：";
+        }
         reminder.setTitle(prefix + details.size() + titleSuffix);
         reminder = reminderRepo.save(reminder);
         for (ProgressReminderDetail d : details) d.setReminderId(reminder.getId());
