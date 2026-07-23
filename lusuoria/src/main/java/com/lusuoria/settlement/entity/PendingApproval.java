@@ -79,4 +79,23 @@ public class PendingApproval extends BaseEntity {
 
     @Column(name = "requested_payment_progress")
     private String requestedPaymentProgress;
+
+    /**
+     * 发起那一刻从目标"红人合作跟踪"记录快照下来的项目负责人/执行人员 id（2026-07 新增，
+     * 供"处理结果通知"功能判断谁能看到这条记录——用快照而不是实时查询，避免记录后续换了
+     * 负责人导致通知对不上人）。
+     */
+    @Column(name = "target_project_manager_id")
+    private Long targetProjectManagerId;
+
+    @Column(name = "target_executor_id")
+    private Long targetExecutorId;
+
+    /**
+     * 已经点过"确认删除"（标记已读）的员工 id，换行分隔（沿用系统"多值单列文本"的既有约定，
+     * 见 MultiValueUtil）。只影响非管理员的"处理结果通知"列表是否还展示这条，不影响管理员
+     * 审批队列——管理员永远能看到全部记录。
+     */
+    @Column(name = "dismissed_by_employee_ids", columnDefinition = "TEXT")
+    private String dismissedByEmployeeIds;
 }

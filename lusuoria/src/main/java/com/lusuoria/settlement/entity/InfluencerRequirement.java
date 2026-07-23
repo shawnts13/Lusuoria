@@ -95,6 +95,16 @@ public class InfluencerRequirement extends BaseEntity {
     private String invoiceLink;
 
     /**
+     * 需求完成进度达到100%（completedCount >= totalItemCount）那一刻的时间（2026-07 新增，
+     * 供"Invoice逾期"提醒批次计算"完成后第几个工作日还没上传invoice"）。如果后续某条关联的
+     * 合作跟踪记录被"进度倒退"审批通过、导致完成数重新低于总数，这个字段会被清空。由
+     * InfluencerRequirementService.refreshCompletedAt() 统一维护，不要在别处直接设置。
+     */
+    @Temporal(TemporalType.TIMESTAMP)
+    @Column(name = "completed_at")
+    private java.util.Date completedAt;
+
+    /**
      * 需求条目集合，仅供 service 层落库时的级联增删改使用（在事务内操作）。
      * 不直接序列化给前端——open-in-view=false，事务外访问 LAZY 集合会抛异常；
      * 对外的条目列表统一走 InfluencerRequirementService 显式查询组装成响应 DTO，

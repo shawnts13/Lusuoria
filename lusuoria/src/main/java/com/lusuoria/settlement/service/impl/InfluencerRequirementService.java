@@ -298,6 +298,31 @@ public class InfluencerRequirementService {
         return result;
     }
 
+    /**
+     * 维护 completedAt（需求完成进度达到100%的时间，2026-07 新增，供"Invoice逾期"提醒批次用）。
+     * 由 CollaborationTrackingService 在每次某条关联记录的 progress 真正发生变化后调用。
+     * 达到100%且当前为空 → 设置成当前时间；没达到100%但当前有值（说明是被"进度倒退"审批
+     * 通过拉回去的）→ 清空。internalRequirementNo 为空或查不到需求时直接忽略。
+     */
+    @Transactional
+    public void refreshCompletedAt(String internalRequirementNo) {
+        if (internalRequirementNo == null) return;
+        InfluencerRequirement requirement = requirementRepo
+                .findByInternalRequirementNoAndIsDeletedFalse(internalRequirementNo).orElse(null);
+        if (requirement == null) return;
+        int completed = completedCountByNos(java.util.Collections.singletonList(internalRequirementNo))
+                .getOrDefault(internalRequirementNo, 0);
+        int total = requirement.getTotalItemCount() != null ? requirement.getTotalItemCount() : 0;
+        boolean isComplete = total > 0 && completed >= total;
+        if (isComplete && requirement.getCompletedAt() == null) {
+            requirement.setCompletedAt(new Date());
+            requirementRepo.save(requirement);
+        } else if (!isComplete && requirement.getCompletedAt() != null) {
+            requirement.setCompletedAt(null);
+            requirementRepo.save(requirement);
+        }
+    }
+
     /** 需求完成进度点击详情：这条需求下所有已关联的红人合作跟踪记录（含折损） */
     @Transactional(readOnly = true)
     public List<RequirementTrackingSummaryResponse> progressDetail(Long requirementId) {

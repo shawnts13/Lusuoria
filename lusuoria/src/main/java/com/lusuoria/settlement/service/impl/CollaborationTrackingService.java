@@ -76,6 +76,7 @@ public class CollaborationTrackingService {
     @Autowired private PendingApprovalService pendingApprovalService;
     @Autowired private ProjectFieldVisibility fieldVisibility;
     @Autowired private InfluencerRequirementService requirementService;
+    @Autowired private com.lusuoria.settlement.util.EmployeeRoleUtil employeeRoleUtil;
 
     /** 自定义异常：去重命中 */
     public static class DuplicateTrackingException extends RuntimeException {
@@ -338,11 +339,16 @@ public class CollaborationTrackingService {
         // 如果链接被改成空了，视频发布时间也跟着清空（链接和发布时间强绑定，避免留下一个
         // 跟"未发布"矛盾的发布时间）。
         boolean autoTransitionedToPublished = false;
+        // 进度真正发生变化时才刷新"进度最近更新时间"（供进度滞留提醒批次用），跟 updateStatus()
+        // 保持一致的口径
+        boolean progressChangedInDoSave = false;
         if (publishLinkChanged) {
             if (newPublishLink != null) {
                 tracking.setPublishDate(new Date());
                 if (tracking.getProgress() == null || !tracking.getProgress().allowsPaymentProgress()) {
                     tracking.setProgress(CollaborationProgress.PUBLISHED_UNSETTLED);
+                    tracking.setProgressChangedAt(new Date());
+                    progressChangedInDoSave = true;
                     autoTransitionedToPublished = true;
                     // 首次进入"已发布（未结算）"：红人结款进度按品牌方是否需要 invoice 自动判定，
                     // 不需要用户手动选（这个分支只在红人结款进度当前还没有值时触发，直接覆盖安全）
@@ -357,8 +363,13 @@ public class CollaborationTrackingService {
         // 普通编辑表单（allowStatusUpdateOnEdit=false）忽略请求体里的 progress，保留数据库原值
         // （上面"编辑时自动流转"只发生在单条编辑场景，跟这里的分支互斥，不会冲突）
         if (existingOrNull == null || allowStatusUpdateOnEdit) {
+            CollaborationProgress oldProgressBeforeSet = tracking.getProgress();
             requireFinanceForSettlementProgress(tracking.getProgress(), req.getProgress());
             tracking.setProgress(req.getProgress());
+            if (!java.util.Objects.equals(oldProgressBeforeSet, req.getProgress())) {
+                tracking.setProgressChangedAt(new Date());
+                progressChangedInDoSave = true;
+            }
         }
 
         // 红人结款进度：跟"进度"字段一样的编辑权限规则——只有新建，或明确允许时（Excel 导入更新分支）
@@ -418,6 +429,11 @@ public class CollaborationTrackingService {
                     ctx.allocateInternalProjectNo(brandName, teamName, createMonth, influencer.getAccountName()));
         }
 
+        // 权限校验用：捕获改动前（编辑场景）的项目负责人/执行人员 id，必须在下面两块赋值
+        // 逻辑执行之前捕获，避免"同一次请求里先把自己设成项目负责人、再改执行人员"绕开校验
+        Long oldProjectManagerId = existingOrNull != null ? existingOrNull.getProjectManagerId() : null;
+        Long oldExecutorId = existingOrNull != null ? existingOrNull.getExecutorId() : null;
+
         // 项目负责人
         if (req.getProjectManagerId() != null) {
             Employee manager = employeeCache.findById(req.getProjectManagerId());
@@ -427,7 +443,17 @@ public class CollaborationTrackingService {
             tracking.setProjectManager(null);
         }
 
-        // 内部执行人员
+        // 内部执行人员：只有编辑且这个字段真的变了时才校验（新建记录不受限，还没有"该记录负责人"
+        // 这个概念）——ADMIN、员工角色=管理层、或改动前的项目负责人本人才能改，其余人报错
+        if (existingOrNull != null && !java.util.Objects.equals(oldExecutorId, req.getExecutorId())) {
+            boolean isAdmin = RoleUtil.isAdmin();
+            boolean isManagementEmployee = "管理层".equals(employeeRoleUtil.getCurrentEmployeeRole());
+            Long currentEmpId = employeeRoleUtil.getCurrentEmployeeId();
+            boolean isOwnManager = currentEmpId != null && currentEmpId.equals(oldProjectManagerId);
+            if (!isAdmin && !isManagementEmployee && !isOwnManager) {
+                throw new RuntimeException("只有该记录的项目负责人或管理层可以更改内部执行人员");
+            }
+        }
         if (req.getExecutorId() != null) {
             Employee executor = employeeCache.findById(req.getExecutorId());
             if (executor == null) throw new RuntimeException("内部执行人员不存在：" + req.getExecutorId());
@@ -504,6 +530,9 @@ public class CollaborationTrackingService {
         if (autoTransitionedToPublished && !Boolean.TRUE.equals(saved.getExecutorCostNotApplicable())) {
             saved.setNeedExecutorCost(true);
         }
+        if (progressChangedInDoSave && saved.getInternalRequirementNo() != null) {
+            requirementService.refreshCompletedAt(saved.getInternalRequirementNo());
+        }
         return saved;
     }
 
@@ -514,11 +543,26 @@ public class CollaborationTrackingService {
     public PendingApproval requestDelete(Long id, String reason) {
         CollaborationTracking tracking = trackingRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
+        assertOwnerOrAdmin(tracking, "发起删除申请");
         String summary = (tracking.getBrand() != null ? tracking.getBrand().getName() : "未知品牌")
                 + " - " + (tracking.getInfluencer() != null ? tracking.getInfluencer().getAccountName() : "未知红人");
         return pendingApprovalService.requestDelete(
                 PendingApprovalModule.COLLABORATION_TRACKING, id,
                 tracking.getInternalProjectNo(), summary, reason);
+    }
+
+    /**
+     * "删除"、"视频项目进度倒退"这两个操作收窄成只能由该记录的项目负责人/执行人员发起，
+     * ADMIN 不受此限（2026-07 新增）。
+     */
+    private void assertOwnerOrAdmin(CollaborationTracking tracking, String actionLabel) {
+        if (RoleUtil.isAdmin()) return;
+        Long currentEmpId = employeeRoleUtil.getCurrentEmployeeId();
+        boolean isOwner = currentEmpId != null
+                && (currentEmpId.equals(tracking.getProjectManagerId()) || currentEmpId.equals(tracking.getExecutorId()));
+        if (!isOwner) {
+            throw new RuntimeException("只有该记录的项目负责人或执行人员可以" + actionLabel);
+        }
     }
 
     /**
@@ -564,6 +608,7 @@ public class CollaborationTrackingService {
         CollaborationStatusUpdateResult result = new CollaborationStatusUpdateResult();
 
         if (isRollback) {
+            assertOwnerOrAdmin(t, "发起进度倒退申请");
             if (req.getReason() == null || req.getReason().trim().isEmpty()) {
                 throw new RuntimeException("该记录\"红人结款进度\"已有值，视频项目进度要改回不满足前置条件的状态"
                         + "需要管理员审核，请填写原因");
@@ -607,11 +652,21 @@ public class CollaborationTrackingService {
             t.setPublishDate(new Date());
         }
 
+        // 进度真正变化时才刷新"进度最近更新时间"（供进度滞留提醒批次用），原样提交回去
+        // （值没变）不算变化，不刷新
+        boolean progressActuallyChanged = !java.util.Objects.equals(oldProgress, newProgress);
+        if (progressActuallyChanged) {
+            t.setProgressChangedAt(new Date());
+        }
         t.setProgress(newProgress);
         t.setInfluencerPaymentProgress(newPayment);
         CollaborationTracking saved = trackingRepo.save(t);
         result.setTracking(saved);
         result.setPendingApproval(false);
+
+        if (progressActuallyChanged && saved.getInternalRequirementNo() != null) {
+            requirementService.refreshCompletedAt(saved.getInternalRequirementNo());
+        }
 
         // 内部执行成本设置流程触发（2026-07 调整）：只在这次流转的目标明确是"已发布（未结算）"
         // ——项目负责人视角下唯一需要考虑执行人员成本的终态——且是从别的状态第一次流转进来时

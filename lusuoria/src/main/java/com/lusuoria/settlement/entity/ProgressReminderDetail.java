@@ -64,4 +64,23 @@ public class ProgressReminderDetail extends BaseEntity {
     @Temporal(TemporalType.DATE)
     @Column(name = "deadline_date", nullable = false)
     private Date deadlineDate;
+
+    /**
+     * "超出天数"（2026-07 新增，PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL/
+     * REQUIREMENT_INVOICE_OVERDUE 这3类新提醒专用）。老两类不设置，前端该列展示"—"。
+     */
+    @Column(name = "overdue_days")
+    private Integer overdueDays;
+
+    /**
+     * REQUIREMENT_INVOICE_OVERDUE 专用：关联的红人需求 id/内部需求编号，供"查看详情"跳转到
+     * "红人需求管理"模块（这一类的 trackingId 会填成该需求下某一条关联合作跟踪记录的 id
+     * 占位——trackingId 是历史 NOT NULL 列，不能留空——但"查看详情"实际跳转按这两个字段来，
+     * 不用 trackingId）。
+     */
+    @Column(name = "requirement_id")
+    private Long requirementId;
+
+    @Column(name = "internal_requirement_no")
+    private String internalRequirementNo;
 }

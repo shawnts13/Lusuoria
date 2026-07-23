@@ -116,6 +116,16 @@ public class CollaborationTracking extends BaseEntity {
     private CollaborationProgress progress;
 
     /**
+     * "进度"最近一次真正发生变化的时间（2026-07 新增，供进度滞留提醒批次计算"已经第几个
+     * 工作日没流转"）。只有 progress 的值真的变了才更新——状态流转接口提交了同样的值不算
+     * 变化，不会刷新这个时间。由 CollaborationTrackingService/PendingApprovalService 在
+     * 每个实际改动 progress 的地方维护。
+     */
+    @Temporal(TemporalType.TIMESTAMP)
+    @Column(name = "progress_changed_at")
+    private Date progressChangedAt;
+
+    /**
      * 红人结款进度。默认空，只有"进度"达到 allowsPaymentProgress() 要求的三个阶段才允许设置值
      * （校验见 CollaborationTrackingService）。跟"进度"字段一样，新建时可选，
      * 编辑已有记录时锁定，只能通过"状态流转"接口修改。

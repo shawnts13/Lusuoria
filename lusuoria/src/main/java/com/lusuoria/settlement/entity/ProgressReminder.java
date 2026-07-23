@@ -1,5 +1,6 @@
 package com.lusuoria.settlement.entity;
 
+import com.lusuoria.settlement.enums.OverdueUrgency;
 import com.lusuoria.settlement.enums.ReminderCategory;
 import com.lusuoria.settlement.enums.ReminderUrgency;
 import lombok.Getter;
@@ -41,17 +42,42 @@ public class ProgressReminder extends BaseEntity {
     @Column(name = "category", nullable = false)
     private ReminderCategory category;
 
+    /**
+     * 老两类（COLLAB_PAYMENT_DUE/BRAND_MONTH_END_PAYMENT_DUE，"临近提醒"方向，倒数天数）专用。
+     * 2026-07 新增的3类"超期提醒"（方向相反，超出天数）改用下面的 overdueUrgency，
+     * 这个字段对新类别没有实际展示意义，统一填一个占位值（不能留空，这一列是 NOT NULL 的
+     * 历史列，ddl-auto 不会放松已有列的约束）。
+     */
     @Enumerated(EnumType.STRING)
     @Column(name = "urgency", nullable = false)
     private ReminderUrgency urgency;
 
     /**
-     * 受众：员工角色（Employee.role），目前只有"管理层"这一个值。
+     * 2026-07 新增的3类"超期提醒"专用严重程度（1-3/4-7/8+工作日，黄/橙/红）。
+     * 老两类不设置这个字段，颜色继续读 urgency。
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "overdue_urgency")
+    private OverdueUrgency overdueUrgency;
+
+    /**
+     * 受众：员工角色（Employee.role）。老两类只有"管理层"；2026-07 新增
+     * FINANCE_PROGRESS_STALL 用"财务"；PM_EXECUTOR_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE
+     * 按具体员工定向时，这里填该员工在这条记录里的身份（"项目负责人"/"执行人员"），实际可见性
+     * 判断走下面的 audienceEmployeeId，这个字段只作展示用途。
      * 不是 SysUser.role——判断谁能看到这条提醒，是看登录账号关联的员工角色，
      * 跟登录账号本身是 ADMIN 还是 STAFF 无关（见 ProgressReminderService.isManagementUser）。
      */
     @Column(name = "audience_employee_role", nullable = false)
     private String audienceEmployeeRole;
+
+    /**
+     * 2026-07 新增：按具体员工定向的提醒（PM_EXECUTOR_PROGRESS_STALL/
+     * REQUIREMENT_INVOICE_OVERDUE），只有这个员工本人 + ADMIN/管理层能看到这一行。
+     * 老两类和 FINANCE_PROGRESS_STALL 留空，走角色级可见（audienceEmployeeRole）。
+     */
+    @Column(name = "audience_employee_id")
+    private Long audienceEmployeeId;
 
     /** 预先算好的展示文案，前端直接展示（BRAND_MONTH_END_PAYMENT_DUE 就是完整消息本身） */
     @Column(name = "title", length = 500)

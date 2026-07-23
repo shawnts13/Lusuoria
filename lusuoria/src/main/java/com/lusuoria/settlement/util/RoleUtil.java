@@ -78,6 +78,12 @@ public class RoleUtil {
         return "ADMIN".equals(getCurrentRole());
     }
 
+    /** 是否是管理员（SysUser.role=ADMIN）。2026-07 新增，供"该记录的负责人/执行人员才能操作，
+     * 但管理员不受此限"这类权限校验复用，语义比复用 canApprove() 更清晰。 */
+    public static boolean isAdmin() {
+        return "ADMIN".equals(getCurrentRole());
+    }
+
     public static String getCurrentRole() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null) return "";

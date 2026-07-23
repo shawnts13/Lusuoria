@@ -9,6 +9,7 @@ import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.enums.PendingApprovalStatus;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.PendingApprovalRepository;
+import com.lusuoria.settlement.util.MultiValueUtil;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
@@ -16,8 +17,11 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * 待处理事项 - 业务逻辑
@@ -37,6 +41,7 @@ public class PendingApprovalService {
 
     @Autowired private PendingApprovalRepository pendingApprovalRepo;
     @Autowired private CollaborationTrackingRepository trackingRepo;
+    @Autowired private InfluencerRequirementService requirementService;
 
     /**
      * 发起删除申请。如果这条记录已经有一条"待审核"的删除申请，直接复用（不重复创建）。
@@ -57,8 +62,20 @@ public class PendingApprovalService {
                     p.setReason(reason);
                     p.setRequestedBy(RoleUtil.getCurrentUsername());
                     p.setStatus(PendingApprovalStatus.PENDING);
+                    snapshotOwner(p, targetId);
                     return pendingApprovalRepo.save(p);
                 });
+    }
+
+    /**
+     * 发起那一刻快照目标记录的项目负责人/执行人员 id（2026-07 新增），供"处理结果通知"
+     * 判断谁能看到这条通知——用快照而不是实时查询，避免记录后续换了负责人导致通知对不上人。
+     */
+    private void snapshotOwner(PendingApproval p, Long trackingId) {
+        trackingRepo.findByIdAndIsDeletedFalse(trackingId).ifPresent(t -> {
+            p.setTargetProjectManagerId(t.getProjectManagerId());
+            p.setTargetExecutorId(t.getExecutorId());
+        });
     }
 
     /**
@@ -89,6 +106,7 @@ public class PendingApprovalService {
                     p.setStatus(PendingApprovalStatus.PENDING);
                     p.setRequestedProgress(requestedProgress != null ? requestedProgress.name() : null);
                     p.setRequestedPaymentProgress(requestedPaymentProgress != null ? requestedPaymentProgress.name() : null);
+                    snapshotOwner(p, trackingId);
                     return pendingApprovalRepo.save(p);
                 });
     }
@@ -173,11 +191,53 @@ public class PendingApprovalService {
                 .orElseThrow(() -> new RuntimeException("跟踪记录不存在或已被删除：" + p.getTargetId()));
         if (p.getRequestedProgress() != null) {
             t.setProgress(CollaborationProgress.valueOf(p.getRequestedProgress()));
+            // 倒退本身就是把 progress 真正改成别的值，一定要刷新"进度最近更新时间"
+            // （供进度滞留提醒批次用），跟 CollaborationTrackingService 的口径保持一致
+            t.setProgressChangedAt(new Date());
         }
         t.setInfluencerPaymentProgress(
                 p.getRequestedPaymentProgress() != null
                         ? InfluencerPaymentProgress.valueOf(p.getRequestedPaymentProgress())
                         : null);
         trackingRepo.save(t);
+        if (p.getRequestedProgress() != null && t.getInternalRequirementNo() != null) {
+            requirementService.refreshCompletedAt(t.getInternalRequirementNo());
+        }
+    }
+
+    /**
+     * "确认删除"（标记已读，2026-07 新增）：非管理员在自己的"处理结果通知"列表里点击后调用，
+     * 只影响这个员工自己后续还看不看得到这条通知，不影响管理员审批队列、不影响其他共同
+     * 受众（比如同一条记录的项目负责人和执行人员各自独立标记）。
+     */
+    @Transactional
+    public void dismiss(Long id, Long employeeId) {
+        PendingApproval p = pendingApprovalRepo.findById(id)
+                .orElseThrow(() -> new RuntimeException("待处理事项不存在：" + id));
+        boolean isOwner = employeeId != null
+                && (employeeId.equals(p.getTargetProjectManagerId()) || employeeId.equals(p.getTargetExecutorId()));
+        if (!isOwner) {
+            throw new RuntimeException("只有该记录的项目负责人或执行人员可以确认删除这条通知");
+        }
+        List<String> dismissed = new ArrayList<>(MultiValueUtil.splitMulti(p.getDismissedByEmployeeIds()));
+        String idStr = String.valueOf(employeeId);
+        if (!dismissed.contains(idStr)) {
+            dismissed.add(idStr);
+            p.setDismissedByEmployeeIds(String.join("\n", dismissed));
+            pendingApprovalRepo.save(p);
+        }
+    }
+
+    /**
+     * "处理结果通知"列表（2026-07 新增）：某个员工作为项目负责人/执行人员、已经处理完
+     * （同意/拒绝）、且自己还没点过"确认删除"的事项。量级小，不分页。
+     */
+    @Transactional(readOnly = true)
+    public List<PendingApproval> listMyNotifications(Long employeeId) {
+        if (employeeId == null) return Collections.emptyList();
+        String idStr = String.valueOf(employeeId);
+        return pendingApprovalRepo.findResolvedForEmployee(employeeId).stream()
+                .filter(p -> !MultiValueUtil.splitMulti(p.getDismissedByEmployeeIds()).contains(idStr))
+                .collect(Collectors.toList());
     }
 }

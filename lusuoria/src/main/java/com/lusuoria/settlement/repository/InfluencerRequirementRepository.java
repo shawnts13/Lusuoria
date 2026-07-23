@@ -42,4 +42,7 @@ public interface InfluencerRequirementRepository extends JpaRepository<Influence
 
     /** "关联红人需求"选择器第一步：某个红人名下的所有未删除需求（前端再按"需求完成进度"过滤掉已满的） */
     List<InfluencerRequirement> findByInfluencerIdAndIsDeletedFalse(Long influencerId);
+
+    /** "Invoice逾期"提醒批次用：已完成（completedAt有值）但还没上传invoice的需求 */
+    List<InfluencerRequirement> findByIsDeletedFalseAndCompletedAtIsNotNullAndInvoiceLinkIsNull();
 }

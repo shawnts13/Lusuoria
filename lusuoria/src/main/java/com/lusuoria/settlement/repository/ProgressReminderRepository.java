@@ -15,4 +15,10 @@ public interface ProgressReminderRepository extends JpaRepository<ProgressRemind
      * "已超期 -> 1-3天 -> 3-7天"顺序对不上，排序统一交给 Service 层按枚举 ordinal 处理。
      */
     List<ProgressReminder> findByAudienceEmployeeRole(String audienceEmployeeRole);
+
+    /** 2026-07 新增：按具体员工定向的提醒（PM_EXECUTOR_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE） */
+    List<ProgressReminder> findByAudienceEmployeeId(Long audienceEmployeeId);
+
+    /** 管理层/ADMIN 的"全部可见"查询：不按受众过滤，返回全表（表本身就是"最新一次跑批"的全量结果） */
+    List<ProgressReminder> findAllByIsDeletedFalse();
 }

@@ -44,4 +44,16 @@ public interface PendingApprovalRepository extends JpaRepository<PendingApproval
            "WHERE p.targetModule = :module AND p.category = :category AND p.status = 'PENDING'")
     List<Long> findPendingTargetIds(@Param("module") PendingApprovalModule module,
                                      @Param("category") PendingApprovalCategory category);
+
+    /**
+     * "处理结果通知"用（2026-07 新增）：某个员工作为项目负责人或执行人员，已经被处理
+     * （同意/拒绝）的事项，按处理时间倒序。是否已被这个员工"确认删除"过，在 Service 层
+     * 按 dismissedByEmployeeIds 过滤，不在这里做（TEXT 字段模糊匹配不适合放 JPQL）。
+     */
+    @Query("SELECT p FROM PendingApproval p " +
+           "WHERE p.status IN (com.lusuoria.settlement.enums.PendingApprovalStatus.APPROVED, " +
+           "  com.lusuoria.settlement.enums.PendingApprovalStatus.REJECTED) " +
+           "AND (p.targetProjectManagerId = :employeeId OR p.targetExecutorId = :employeeId) " +
+           "ORDER BY p.resolvedAt DESC")
+    List<PendingApproval> findResolvedForEmployee(@Param("employeeId") Long employeeId);
 }
