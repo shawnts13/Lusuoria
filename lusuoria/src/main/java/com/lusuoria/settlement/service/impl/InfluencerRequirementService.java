@@ -137,7 +137,9 @@ public class InfluencerRequirementService {
      * 增量协调条目：按 id 匹配已有条目做更新，没有 id 的是新增，请求里没出现的已有条目视为删除——
      * 但已经有关联的合作跟踪记录（fulfilledCount > 0）的条目不允许删除/改动 videoType 或
      * platform（数量/单价允许改，因为不影响"这是哪个组合"的判定），保证已经实施的记录不会
-     * 变成孤儿。同一需求内 (videoType, 排序后platform) 不允许重复。
+     * 变成孤儿。同一需求内 (videoType, 排序后platform) 允许重复（2026-07 取消唯一限制——
+     * 同样的视频类型/平台组合，实际上可能有不同的视频单价，需要拆成多个条目分别记录），
+     * validateTrackingLinkage 里做名额校验时会把同组合的多个条目名额加总。
      */
     private void applyItems(InfluencerRequirement requirement, List<InfluencerRequirementItemRequest> itemReqs) {
         if (itemReqs == null) itemReqs = new ArrayList<>();
@@ -151,7 +153,6 @@ public class InfluencerRequirementService {
                 ? fulfilledCountByItemId(requirement) : new HashMap<>();
 
         Set<Long> keptIds = new HashSet<>();
-        Set<String> comboKeys = new HashSet<>();
         int totalCount = 0;
         BigDecimal totalClient = BigDecimal.ZERO;
         BigDecimal totalCost = BigDecimal.ZERO;
@@ -162,11 +163,6 @@ public class InfluencerRequirementService {
                 throw new RuntimeException("项目视频数目必须是大于0的整数");
             }
             String platform = canonicalPlatform(itemReq.getPlatform());
-            String comboKey = itemReq.getVideoType().name() + "|" + platform;
-            if (!comboKeys.add(comboKey)) {
-                throw new RuntimeException("「" + itemReq.getVideoType().getLabel() + "-" + platform.replace("\n", "、")
-                        + "」这个项目视频类型-合作平台组合已经存在，不能重复添加");
-            }
 
             InfluencerRequirementItem item = itemReq.getId() != null ? existingById.get(itemReq.getId()) : null;
             if (item == null) {
@@ -498,21 +494,24 @@ public class InfluencerRequirementService {
 
         String canonicalPlatform = canonicalTrackingPlatform(platform);
         List<InfluencerRequirementItem> items = itemRepo.findByRequirementIdOrderByIdAsc(requirement.getId());
-        InfluencerRequirementItem matched = items.stream()
+        // 同一 (videoType, platform) 组合允许拆成多个条目（比如同组合不同视频单价），
+        // 名额校验按组合汇总所有匹配条目的 videoCount 之和，不再假设组合唯一
+        List<InfluencerRequirementItem> matched = items.stream()
                 .filter(i -> i.getVideoType() == videoType && java.util.Objects.equals(i.getPlatform(), canonicalPlatform))
-                .findFirst().orElse(null);
-        if (matched == null) {
+                .collect(Collectors.toList());
+        if (matched.isEmpty()) {
             throw new RuntimeException("这条记录的项目视频类型/合作平台，在内部需求编号 [" + internalRequirementNo + "] 里找不到匹配的需求条目");
         }
+        int totalCapacity = matched.stream().mapToInt(InfluencerRequirementItem::getVideoCount).sum();
 
         List<CollaborationTracking> linked = trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(internalRequirementNo);
         long usedCount = linked.stream()
                 .filter(t -> !java.util.Objects.equals(t.getId(), excludeTrackingId))
                 .filter(t -> t.getVideoType() == videoType && java.util.Objects.equals(canonicalTrackingPlatform(t.getPlatform()), canonicalPlatform))
                 .count();
-        if (usedCount >= matched.getVideoCount()) {
+        if (usedCount >= totalCapacity) {
             throw new RuntimeException("「" + videoType.getLabel() + "-" + canonicalPlatform.replace("\n", "、")
-                    + "」这个需求条目已经没有剩余名额（" + matched.getVideoCount() + "条已全部安排）");
+                    + "」这个需求条目已经没有剩余名额（" + totalCapacity + "条已全部安排）");
         }
     }
 }
