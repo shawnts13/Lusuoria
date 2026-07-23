@@ -128,6 +128,76 @@ public class ProgressReminderService {
     }
 
     /**
+     * "标记已处理"记录的每日清理（2026-07 新增，凌晨3点10分，紧跟在主批次后面）。
+     * reminder_acknowledgements 只在用户点"标记已处理"时写入，从不被 runBatch() 触碰，
+     * 会无限累积——这里把"已经不可能再派上用场"的记录删掉：
+     *   - 对应的业务记录（合作跟踪/需求）已经不存在了；
+     *   - 或者已经不再符合这一类提醒的候选条件了（比如进度已经到了终态、Invoice已经传了、
+     *     需求被倒退拉回100%以下、品牌方配置改成不需要invoice了）；
+     *   - 或者业务记录的时间戳（progressChangedAt/completedAt）已经比标记时的快照更新——
+     *     时间戳只会前进不会倒退，一旦前进过一次，这条旧快照就永远不可能再匹配上了。
+     * 满足以上任一条件就说明这条标记已经不再有意义（不管当时是不是还在生效），直接删除。
+     */
+    @Scheduled(cron = "0 10 3 * * *")
+    @Transactional
+    public void cleanupAcknowledgements() {
+        try {
+            List<ReminderAcknowledgement> all = ackRepo.findAll();
+            if (all.isEmpty()) return;
+
+            Set<Long> trackingTargetIds = new HashSet<>();
+            Set<Long> requirementTargetIds = new HashSet<>();
+            for (ReminderAcknowledgement ack : all) {
+                if (ack.getCategory() == ReminderCategory.REQUIREMENT_INVOICE_OVERDUE) {
+                    requirementTargetIds.add(ack.getTargetId());
+                } else {
+                    trackingTargetIds.add(ack.getTargetId());
+                }
+            }
+            Map<Long, CollaborationTracking> trackingById = new HashMap<>();
+            if (!trackingTargetIds.isEmpty()) {
+                for (CollaborationTracking t : trackingRepo.findAllById(trackingTargetIds)) trackingById.put(t.getId(), t);
+            }
+            Map<Long, InfluencerRequirement> requirementById = new HashMap<>();
+            if (!requirementTargetIds.isEmpty()) {
+                for (InfluencerRequirement r : requirementRepo.findAllById(requirementTargetIds)) requirementById.put(r.getId(), r);
+            }
+
+            List<Long> staleIds = new ArrayList<>();
+            for (ReminderAcknowledgement ack : all) {
+                boolean stale = ack.getCategory() == ReminderCategory.REQUIREMENT_INVOICE_OVERDUE
+                        ? isRequirementAckStale(ack, requirementById.get(ack.getTargetId()))
+                        : isTrackingAckStale(ack, trackingById.get(ack.getTargetId()));
+                if (stale) staleIds.add(ack.getId());
+            }
+            if (!staleIds.isEmpty()) {
+                ackRepo.deleteAllByIdInBatch(staleIds);
+                log.info("清理了 {} 条已失效的提醒标记", staleIds.size());
+            }
+        } catch (RuntimeException e) {
+            log.error("提醒标记清理失败：{}", e.toString(), e);
+            throw e;
+        }
+    }
+
+    private boolean isTrackingAckStale(ReminderAcknowledgement ack, CollaborationTracking t) {
+        if (t == null || Boolean.TRUE.equals(t.getIsDeleted())) return true;
+        boolean stillCandidate = ack.getCategory() == ReminderCategory.PM_EXECUTOR_PROGRESS_STALL
+                ? stallThreshold(t.getProgress()) != null
+                : isFinanceStallCandidate(t.getProgress());
+        if (!stillCandidate || t.getProgressChangedAt() == null) return true;
+        return t.getProgressChangedAt().after(ack.getSnapshotChangedAt());
+    }
+
+    private boolean isRequirementAckStale(ReminderAcknowledgement ack, InfluencerRequirement r) {
+        if (r == null || Boolean.TRUE.equals(r.getIsDeleted())) return true;
+        if (r.getCompletedAt() == null || r.getInvoiceLink() != null) return true;
+        Brand brand = r.getBrandId() != null ? brandCache.findById(r.getBrandId()) : null;
+        if (brand != null && !brand.requiresInvoiceUpload()) return true;
+        return r.getCompletedAt().after(ack.getSnapshotChangedAt());
+    }
+
+    /**
      * "结款后更新提示内容"手动触发（2026-07 起改成只重算 COLLAB_PAYMENT_DUE/
      * BRAND_MONTH_END_PAYMENT_DUE 这两类，不影响 PM_EXECUTOR_PROGRESS_STALL/
      * FINANCE_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE 当天已经算好的数据）。
@@ -383,6 +453,12 @@ public class ProgressReminderService {
         return null;
     }
 
+    /** 财务视角的滞留候选状态：已发布（未结算）/已加入客户未结算列表，到了客户已结算就不算了 */
+    private boolean isFinanceStallCandidate(CollaborationProgress progress) {
+        return progress == CollaborationProgress.PUBLISHED_UNSETTLED
+                || progress == CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST;
+    }
+
     /**
      * Part D（2026-07 新增）：财务视角，"已发布（未结算）"/"已加入客户未结算列表"长时间没到
      * "客户已结算"，阈值统一14工作日。目前只有1个财务，按角色整体可见（audienceEmployeeRole=
@@ -394,10 +470,7 @@ public class ProgressReminderService {
 
         Map<OverdueUrgency, List<ProgressReminderDetail>> byUrgency = new EnumMap<>(OverdueUrgency.class);
         for (CollaborationTracking t : all) {
-            CollaborationProgress p = t.getProgress();
-            boolean isFinanceStage = p == CollaborationProgress.PUBLISHED_UNSETTLED
-                    || p == CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST;
-            if (!isFinanceStage || t.getProgressChangedAt() == null) continue;
+            if (!isFinanceStallCandidate(t.getProgress()) || t.getProgressChangedAt() == null) continue;
             int workdays = WorkdayUtil.countWeekdaysInclusive(toLocalDate(t.getProgressChangedAt()), today);
             int overdueDays = workdays - 14;
             OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays);
