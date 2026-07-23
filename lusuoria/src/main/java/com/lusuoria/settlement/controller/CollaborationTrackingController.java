@@ -68,6 +68,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) VideoType videoType,
             @RequestParam(required = false) String videoMonth,
             @RequestParam(required = false) String internalProjectNo,
+            @RequestParam(required = false) String internalRequirementNo,
             @RequestParam(required = false) String clientOrderId,
             @RequestParam(required = false) String clientPaymentBatch,
             @RequestParam(required = false) Long projectManagerId,
@@ -86,7 +87,7 @@ public class CollaborationTrackingController {
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         Page<CollaborationTracking> result = trackingRepo.findByFilters(
                 brandId, teamId, countryMarket, accountName, platform,
-                progress, videoType, videoMonthParam, internalProjectNo,
+                progress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
                 clientOrderId, clientPaymentBatch, projectManagerId, pageable);
 
         // 批量标记"当前是否有待审核的删除申请 / 进度倒退申请"，避免逐行查库
@@ -232,6 +233,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) VideoType videoType,
             @RequestParam(required = false) String videoMonth,
             @RequestParam(required = false) String internalProjectNo,
+            @RequestParam(required = false) String internalRequirementNo,
             @RequestParam(required = false) String clientOrderId,
             @RequestParam(required = false) String clientPaymentBatch,
             @RequestParam(required = false) Long projectManagerId,
@@ -241,7 +243,7 @@ public class CollaborationTrackingController {
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         List<CollaborationTracking> list = trackingRepo.findByFilters(
                 brandId, teamId, countryMarket, accountName, platform,
-                progress, videoType, videoMonthParam, internalProjectNo,
+                progress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
                 clientOrderId, clientPaymentBatch, projectManagerId, all).getContent();
         excelHandler.export(list, RoleUtil.canViewBaselineFinancials(), response);
     }

@@ -87,6 +87,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:videoType IS NULL OR c.videoType = :videoType) " +
            "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth) " +
            "AND (:internalProjectNo IS NULL OR c.internalProjectNo LIKE %:internalProjectNo%) " +
+           "AND (:internalRequirementNo IS NULL OR c.internalRequirementNo LIKE %:internalRequirementNo%) " +
            "AND (:clientOrderId IS NULL OR c.clientOrderId LIKE %:clientOrderId%) " +
            "AND (:clientPaymentBatch IS NULL OR c.clientPaymentBatch LIKE %:clientPaymentBatch%) " +
            "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId)")
@@ -100,6 +101,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("videoType") VideoType videoType,
             @Param("videoMonth") String videoMonth,
             @Param("internalProjectNo") String internalProjectNo,
+            @Param("internalRequirementNo") String internalRequirementNo,
             @Param("clientOrderId") String clientOrderId,
             @Param("clientPaymentBatch") String clientPaymentBatch,
             @Param("projectManagerId") Long projectManagerId,
