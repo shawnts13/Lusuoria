@@ -35,8 +35,10 @@ public class RequirementContentParser {
             "达人([A-Za-z0-9_.]+)");
 
     // ---- 单价+数量识别：要求"USD/条"紧跟在数字后面，避免误把"其他权益"里 0USD 的附加说明当条目 ----
+    // "合作价格"（不带"客户"/"红人"前缀，出现在不太规范的需求文本里）也当客户合作单价处理；
+    // 用负向后顾排除"红人合作价格"这种写法，避免跟红人成本混淆
     private static final Pattern CLIENT_UNIT_PRICE = Pattern.compile(
-            "(?:客户价格|客户合作价格)[^：:\\n]*[：:]\\s*([\\d.]+)\\s*USD\\s*/\\s*条(?:[^\\n]*?(?:共计|合计|总计)\\s*([\\d.]+)\\s*USD)?");
+            "(?:客户价格|客户合作价格|(?<!红人)合作价格)[^：:\\n]*[：:]\\s*([\\d.]+)\\s*USD\\s*/\\s*条(?:[^\\n]*?(?:共计|合计|总计)\\s*([\\d.]+)\\s*USD)?");
     private static final Pattern COST_UNIT_PRICE = Pattern.compile(
             "(?:红人成本|红人合作成本)[^：:\\n]*[：:]\\s*([\\d.]+)\\s*USD\\s*/\\s*条(?:[^\\n]*?(?:共计|合计|总计)\\s*([\\d.]+)\\s*USD)?");
     private static final Pattern QTY_ORDER_COUNT = Pattern.compile("下单条数[：:]\\s*(\\d+)\\s*条");
