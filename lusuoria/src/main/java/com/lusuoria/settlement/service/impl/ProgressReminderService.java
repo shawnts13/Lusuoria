@@ -27,6 +27,7 @@ import com.lusuoria.settlement.repository.ProgressReminderRepository;
 import com.lusuoria.settlement.repository.ReminderAcknowledgementRepository;
 import com.lusuoria.settlement.repository.SysUserRepository;
 import com.lusuoria.settlement.util.EmployeeRoleUtil;
+import com.lusuoria.settlement.util.MultiValueUtil;
 import com.lusuoria.settlement.util.RoleUtil;
 import com.lusuoria.settlement.util.WorkdayUtil;
 import org.slf4j.Logger;
@@ -403,12 +404,16 @@ public class ProgressReminderService {
     }
 
     /**
-     * Part C（2026-07 新增）：项目负责人/执行人员视角，视频项目进度长时间未流转。
-     * "红人已下单"阈值5工作日，其余6个中间状态阈值3工作日；已发布未结算及以后的终态、
-     * 或折损，不算滞留。同一条记录如果负责人和执行人员是不同人，两边各生成一条；如果负责人
-     * 和执行人员是同一个人，只算一次（角色标签合并成"项目负责人/执行人员"），避免同一条记录
-     * 在这个人自己的视图里被"项目负责人"、"执行人员"两个身份各数一遍，看起来像重复数据。
-     * 没有 progressChangedAt（老数据，从没触发过一次这个字段的维护逻辑）的记录直接跳过，
+     * Part C（2026-07 新增，2026-07 修正）：红人合作跟踪记录的"主责人"始终是项目负责人——
+     * 执行人员不是另一个"主责人"，所以这一类现在统一只按项目负责人归类（不再单独给执行人员
+     * 生成一条"执行人员"卡片，那样会导致同一条记录在管理层的全量视角下被算两遍，看起来像
+     * 重复数据）。执行人员依然能看到这条卡片（因为他们负责执行其中一部分），只是卡片始终
+     * 以"项目负责人-XX-手下的"命名，查看详情时执行人员看到的明细会按自己实际执行的那部分
+     * 动态过滤（见 filterToMyExecutorRecords）。
+     *
+     * "红人已下单"阈值5工作日，其余6个中间状态阈值3工作日；已发布未结算及以后的终态、或折损，
+     * 不算滞留。没有项目负责人的记录（理论上不该出现）直接跳过——没有主责人就没法归类。
+     * 没有 progressChangedAt（老数据，从没触发过一次这个字段的维护逻辑）的记录也跳过，
      * 避免上线当天把所有历史记录都误判成"长期未流转"。
      */
     private void runPmExecutorProgressStall(LocalDate today, Date batchDate) {
@@ -416,40 +421,44 @@ public class ProgressReminderService {
         Map<Long, String> accountNameById = buildAccountNameIndex(all);
 
         Map<String, List<ProgressReminderDetail>> byKey = new LinkedHashMap<>();
-        Map<String, Long> employeeIdByKey = new HashMap<>();
-        Map<String, String> roleLabelByKey = new HashMap<>();
+        Map<String, Long> pmIdByKey = new HashMap<>();
         Map<String, OverdueUrgency> urgencyByKey = new HashMap<>();
+        Map<String, Set<Long>> involvedByKey = new HashMap<>();
 
         for (CollaborationTracking t : all) {
             Integer threshold = stallThreshold(t.getProgress());
-            if (threshold == null || t.getProgressChangedAt() == null) continue;
+            if (threshold == null || t.getProgressChangedAt() == null || t.getProjectManagerId() == null) continue;
             int workdays = WorkdayUtil.countWeekdaysInclusive(toLocalDate(t.getProgressChangedAt()), today);
             int overdueDays = workdays - threshold;
             OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays);
             if (urgency == null) continue;
 
-            // 这条记录本身涉及的"员工 -> 身份"集合（用 LinkedHashSet 保序、去重合并同一个人的
-            // 多个身份），只针对这一条记录算，不跨记录累积
-            Map<Long, Set<String>> rolesForThisRecord = new LinkedHashMap<>();
-            if (t.getProjectManagerId() != null) {
-                rolesForThisRecord.computeIfAbsent(t.getProjectManagerId(), k -> new LinkedHashSet<>()).add("项目负责人");
-            }
-            if (t.getExecutorId() != null) {
-                rolesForThisRecord.computeIfAbsent(t.getExecutorId(), k -> new LinkedHashSet<>()).add("执行人员");
-            }
-            for (Map.Entry<Long, Set<String>> owner : rolesForThisRecord.entrySet()) {
-                String roleLabel = String.join("/", owner.getValue());
-                addToStallBucket(byKey, employeeIdByKey, roleLabelByKey, urgencyByKey,
-                        owner.getKey(), roleLabel, urgency,
-                        buildStallDetail(t, accountNameById, overdueDays, threshold));
-            }
+            Set<Long> involvedExecutor = (t.getExecutorId() != null && !t.getExecutorId().equals(t.getProjectManagerId()))
+                    ? Collections.singleton(t.getExecutorId()) : Collections.emptySet();
+            addToOwnerBucket(byKey, pmIdByKey, urgencyByKey, involvedByKey,
+                    t.getProjectManagerId(), urgency,
+                    buildStallDetail(t, accountNameById, overdueDays, threshold), involvedExecutor);
         }
 
         for (Map.Entry<String, List<ProgressReminderDetail>> entry : byKey.entrySet()) {
+            String key = entry.getKey();
             saveStallReminder(batchDate, ReminderCategory.PM_EXECUTOR_PROGRESS_STALL,
-                    employeeIdByKey.get(entry.getKey()), roleLabelByKey.get(entry.getKey()),
-                    urgencyByKey.get(entry.getKey()), entry.getValue(),
-                    "笔视频项目进度长时间未流转");
+                    pmIdByKey.get(key), "项目负责人", urgencyByKey.get(key), entry.getValue(),
+                    "笔视频项目进度长时间未流转", involvedByKey.get(key));
+        }
+    }
+
+    /** 按项目负责人归类的通用累加器，PM_EXECUTOR_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE 共用 */
+    private void addToOwnerBucket(Map<String, List<ProgressReminderDetail>> byKey, Map<String, Long> pmIdByKey,
+                                    Map<String, OverdueUrgency> urgencyByKey, Map<String, Set<Long>> involvedByKey,
+                                    Long projectManagerId, OverdueUrgency urgency, ProgressReminderDetail detail,
+                                    Set<Long> involvedExecutorIds) {
+        String key = projectManagerId + "|" + urgency.name();
+        byKey.computeIfAbsent(key, k -> new ArrayList<>()).add(detail);
+        pmIdByKey.put(key, projectManagerId);
+        urgencyByKey.put(key, urgency);
+        if (involvedExecutorIds != null && !involvedExecutorIds.isEmpty()) {
+            involvedByKey.computeIfAbsent(key, k -> new LinkedHashSet<>()).addAll(involvedExecutorIds);
         }
     }
 
@@ -490,23 +499,26 @@ public class ProgressReminderService {
             List<ProgressReminderDetail> details = byUrgency.get(urgency);
             if (details == null || details.isEmpty()) continue;
             saveStallReminder(batchDate, ReminderCategory.FINANCE_PROGRESS_STALL,
-                    null, FINANCE_ROLE, urgency, details, "笔视频项目进度长时间未到客户已结算");
+                    null, FINANCE_ROLE, urgency, details, "笔视频项目进度长时间未到客户已结算", null);
         }
     }
 
     /**
-     * Part E（2026-07 新增）：需求完成进度100%后长时间未上传Invoice。只提醒"涉及invoice上传"
-     * 的品牌方；阈值5工作日，基准时间是 InfluencerRequirement.completedAt。按需求关联的所有
-     * 合作跟踪记录，取项目负责人/执行人员的去重集合，每个员工各生成一条。
+     * Part E（2026-07 新增，2026-07 修正）：需求完成进度100%后长时间未上传Invoice。只提醒
+     * "涉及invoice上传"的品牌方；阈值5工作日，基准时间是 InfluencerRequirement.completedAt。
+     * 同 Part C 的修正：按需求关联的合作跟踪记录的项目负责人归类（不再单独按执行人员归类），
+     * 一个需求下如果关联的视频分属不同项目负责人，各自的负责人都各生成一条（每个人对自己
+     * 负责的那部分确实负有责任，不算重复）；同一负责人名下涉及的执行人员汇总进这个负责人的
+     * "涉及员工"集合，供执行人员本人也能看到（但查看详情时明细会按自己实际执行的那部分过滤）。
      */
     private void runRequirementInvoiceOverdue(LocalDate today, Date batchDate) {
         List<InfluencerRequirement> candidates = requirementRepo.findByIsDeletedFalseAndCompletedAtIsNotNullAndInvoiceLinkIsNull();
         if (candidates.isEmpty()) return;
 
         Map<String, List<ProgressReminderDetail>> byKey = new LinkedHashMap<>();
-        Map<String, Long> employeeIdByKey = new HashMap<>();
-        Map<String, String> roleLabelByKey = new HashMap<>();
+        Map<String, Long> pmIdByKey = new HashMap<>();
         Map<String, OverdueUrgency> urgencyByKey = new HashMap<>();
+        Map<String, Set<Long>> involvedByKey = new HashMap<>();
 
         for (InfluencerRequirement r : candidates) {
             Brand brand = r.getBrandId() != null ? brandCache.findById(r.getBrandId()) : null;
@@ -521,30 +533,28 @@ public class ProgressReminderService {
             if (linked.isEmpty()) continue; // 理论上不会发生（completedAt本身就是靠这些记录算出来的），防御性跳过
             Long placeholderTrackingId = linked.get(0).getId();
 
-            // 同一个员工可能在这个需求下的不同条目里分别当过项目负责人、执行人员——合并成一个
-            // 组合身份标签，只生成一条，不要因为身份不同就把同一个需求算给同一个人两遍
-            Map<Long, Set<String>> rolesByEmployee = new LinkedHashMap<>();
+            // 按项目负责人分组，汇总每个负责人名下涉及的执行人员
+            Map<Long, Set<Long>> executorsByPm = new LinkedHashMap<>();
             for (CollaborationTracking t : linked) {
-                if (t.getProjectManagerId() != null) {
-                    rolesByEmployee.computeIfAbsent(t.getProjectManagerId(), k -> new LinkedHashSet<>()).add("项目负责人");
-                }
-                if (t.getExecutorId() != null) {
-                    rolesByEmployee.computeIfAbsent(t.getExecutorId(), k -> new LinkedHashSet<>()).add("执行人员");
+                if (t.getProjectManagerId() == null) continue;
+                Set<Long> execs = executorsByPm.computeIfAbsent(t.getProjectManagerId(), k -> new LinkedHashSet<>());
+                if (t.getExecutorId() != null && !t.getExecutorId().equals(t.getProjectManagerId())) {
+                    execs.add(t.getExecutorId());
                 }
             }
-            for (Map.Entry<Long, Set<String>> ownerEntry : rolesByEmployee.entrySet()) {
-                String roleLabel = String.join("/", ownerEntry.getValue());
-                addToStallBucket(byKey, employeeIdByKey, roleLabelByKey, urgencyByKey,
-                        ownerEntry.getKey(), roleLabel, urgency,
-                        buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays));
+            for (Map.Entry<Long, Set<Long>> pmEntry : executorsByPm.entrySet()) {
+                addToOwnerBucket(byKey, pmIdByKey, urgencyByKey, involvedByKey,
+                        pmEntry.getKey(), urgency,
+                        buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays),
+                        pmEntry.getValue());
             }
         }
 
         for (Map.Entry<String, List<ProgressReminderDetail>> entry : byKey.entrySet()) {
+            String key = entry.getKey();
             saveStallReminder(batchDate, ReminderCategory.REQUIREMENT_INVOICE_OVERDUE,
-                    employeeIdByKey.get(entry.getKey()), roleLabelByKey.get(entry.getKey()),
-                    urgencyByKey.get(entry.getKey()), entry.getValue(),
-                    "个需求完成后长时间未上传Invoice");
+                    pmIdByKey.get(key), "项目负责人", urgencyByKey.get(key), entry.getValue(),
+                    "个需求完成后长时间未上传Invoice", involvedByKey.get(key));
         }
     }
 
@@ -603,19 +613,10 @@ public class ProgressReminderService {
         return detail;
     }
 
-    private void addToStallBucket(Map<String, List<ProgressReminderDetail>> byKey, Map<String, Long> employeeIdByKey,
-                                    Map<String, String> roleLabelByKey, Map<String, OverdueUrgency> urgencyByKey,
-                                    Long employeeId, String roleLabel, OverdueUrgency urgency, ProgressReminderDetail detail) {
-        String key = employeeId + "|" + roleLabel + "|" + urgency.name();
-        byKey.computeIfAbsent(key, k -> new ArrayList<>()).add(detail);
-        employeeIdByKey.put(key, employeeId);
-        roleLabelByKey.put(key, roleLabel);
-        urgencyByKey.put(key, urgency);
-    }
-
     private void saveStallReminder(Date batchDate, ReminderCategory category, Long audienceEmployeeId,
                                      String audienceRoleLabel, OverdueUrgency urgency,
-                                     List<ProgressReminderDetail> details, String titleSuffix) {
+                                     List<ProgressReminderDetail> details, String titleSuffix,
+                                     Set<Long> involvedExecutorIds) {
         ProgressReminder reminder = new ProgressReminder();
         reminder.setIsDeleted(false);
         reminder.setBatchDate(batchDate);
@@ -626,11 +627,15 @@ public class ProgressReminderService {
         reminder.setOverdueUrgency(urgency);
         reminder.setAudienceEmployeeRole(audienceRoleLabel);
         reminder.setAudienceEmployeeId(audienceEmployeeId);
+        if (involvedExecutorIds != null && !involvedExecutorIds.isEmpty()) {
+            reminder.setInvolvedEmployeeIds(involvedExecutorIds.stream()
+                    .map(String::valueOf).collect(Collectors.joining("\n")));
+        }
         reminder.setCount(details.size());
-        // 按员工定向的这两类，管理层/ADMIN 是"全量可见"（看到所有人的卡片混在一起，不是只看
-        // 自己的），标题里必须带上具体是谁的、以及是"谁手下的"，不用"作为XX"这种口吻——
-        // 系统不清楚项目负责人/执行人员各自的具体职责分工，这么说更中性、不会让管理层误以为
-        // 是在说自己："项目负责人-陈洁-手下的2笔视频项目进度长时间未流转"
+        // 按项目负责人定向的这两类，管理层/ADMIN 是"全量可见"（看到所有项目负责人的卡片混在
+        // 一起，不是只看自己的），标题里必须带上具体是谁的、以及是"谁手下的"，不用"作为XX"这种
+        // 口吻——红人合作跟踪的主责人始终是项目负责人，不该暗示执行人员是另一个主责人：
+        // "项目负责人-陈洁-手下的2笔视频项目进度长时间未流转"
         String prefix;
         if (audienceEmployeeId != null) {
             Employee emp = employeeCache.findById(audienceEmployeeId);
@@ -653,8 +658,11 @@ public class ProgressReminderService {
      *   - ADMIN 或 员工角色=管理层 → 全部提醒（老两类 + 新三类，全部，不按人过滤）——
      *     保持管理层原有可见范围不变，只是新3类现在也对他们可见。
      *   - 员工角色=财务 → 额外看到 FINANCE_PROGRESS_STALL。
-     *   - 有 employeeId（任何角色）→ 额外看到 audienceEmployeeId=自己 的行
-     *     （覆盖 PM_EXECUTOR_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE）。
+     *   - 有 employeeId（任何角色）→ 额外看到"我是项目负责人"或"我是这条记录涉及的执行
+     *     人员之一"的行（覆盖 PM_EXECUTOR_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE，
+     *     2026-07 起这两类统一只按项目负责人生成卡片，执行人员通过 involvedEmployeeIds
+     *     获得同一张卡片的可见性，不再单独生成"执行人员"卡片——见 runPmExecutorProgressStall
+     *     顶部注释，避免管理层的全量视角里同一条记录被算两遍）。
      *   - 都不满足（没关联员工，或访客）→ 空列表。
      */
     @Transactional(readOnly = true)
@@ -671,6 +679,9 @@ public class ProgressReminderService {
         return r.getUrgency() != null ? r.getUrgency().ordinal() : 0;
     }
 
+    private static final Set<ReminderCategory> EMPLOYEE_OWNED_CATEGORIES = PROJECT_FLOW_CATEGORIES.stream()
+            .filter(c -> c != ReminderCategory.FINANCE_PROGRESS_STALL).collect(Collectors.toSet());
+
     private List<ProgressReminder> resolveVisibleReminders() {
         if (hasFullReminderVisibility()) {
             return new ArrayList<>(reminderRepo.findAllByIsDeletedFalse());
@@ -682,7 +693,12 @@ public class ProgressReminderService {
         }
         Long employeeId = employeeRoleUtil.getCurrentEmployeeId();
         if (employeeId != null) {
-            result.addAll(reminderRepo.findByAudienceEmployeeId(employeeId));
+            String idStr = String.valueOf(employeeId);
+            for (ProgressReminder r : reminderRepo.findByCategoryIn(EMPLOYEE_OWNED_CATEGORIES)) {
+                boolean isOwner = employeeId.equals(r.getAudienceEmployeeId());
+                boolean isInvolvedExecutor = MultiValueUtil.splitMulti(r.getInvolvedEmployeeIds()).contains(idStr);
+                if (isOwner || isInvolvedExecutor) result.add(r);
+            }
         }
         return result;
     }
@@ -692,7 +708,11 @@ public class ProgressReminderService {
         return RoleUtil.isAdmin() || isCurrentUserManagement();
     }
 
-    /** 某条提醒的明细，按离最迟结款日的接近程度/超期天数排序（两种排序方向巧合共用同一列） */
+    /**
+     * 某条提醒的明细，按离最迟结款日的接近程度/超期天数排序（两种排序方向巧合共用同一列）。
+     * 如果当前登录人不是这条卡片的项目负责人本人（而是作为"涉及的执行人员"看到这张卡片），
+     * 明细会额外按自己实际执行的那部分过滤——卡片本身不拆分，但执行人员点进去只看自己相关的。
+     */
     @Transactional(readOnly = true)
     public List<ProgressReminderDetail> listDetails(Long reminderId) {
         ProgressReminder reminder = reminderRepo.findById(reminderId).orElse(null);
@@ -700,10 +720,50 @@ public class ProgressReminderService {
             return Collections.emptyList();
         }
         List<ProgressReminderDetail> details = detailRepo.findByReminderIdOrderByDeadlineDateAsc(reminderId);
-        if (ACKNOWLEDGEABLE_CATEGORIES.contains(reminder.getCategory()) && !hasFullReminderVisibility()) {
-            details = filterAcknowledged(reminder.getCategory(), details);
+        if (!hasFullReminderVisibility()) {
+            if (ACKNOWLEDGEABLE_CATEGORIES.contains(reminder.getCategory())) {
+                details = filterAcknowledged(reminder.getCategory(), details);
+            }
+            if (isViewingAsInvolvedExecutor(reminder)) {
+                details = filterToMyExecutorRecords(reminder.getCategory(), details);
+            }
         }
         return details;
+    }
+
+    /** 当前登录人不是这条卡片的项目负责人本人，只是作为"涉及的执行人员"看到 */
+    private boolean isViewingAsInvolvedExecutor(ProgressReminder r) {
+        Long employeeId = employeeRoleUtil.getCurrentEmployeeId();
+        return employeeId != null && !employeeId.equals(r.getAudienceEmployeeId());
+    }
+
+    /**
+     * 把明细过滤到"我实际是执行人员"的那部分——PM_EXECUTOR_PROGRESS_STALL 直接看该合作跟踪
+     * 记录当前的执行人员是不是我；REQUIREMENT_INVOICE_OVERDUE 看这个需求关联的合作跟踪记录里
+     * 有没有我作为执行人员的（只要有一条就算，因为这条提醒本身是按"需求"整体展示的）。
+     */
+    private List<ProgressReminderDetail> filterToMyExecutorRecords(ReminderCategory category, List<ProgressReminderDetail> details) {
+        Long employeeId = employeeRoleUtil.getCurrentEmployeeId();
+        if (employeeId == null || details.isEmpty()) return Collections.emptyList();
+
+        if (category == ReminderCategory.REQUIREMENT_INVOICE_OVERDUE) {
+            return details.stream().filter(d -> {
+                if (d.getInternalRequirementNo() == null) return false;
+                List<CollaborationTracking> linked =
+                        trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(d.getInternalRequirementNo());
+                return linked.stream().anyMatch(t -> employeeId.equals(t.getExecutorId()));
+            }).collect(Collectors.toList());
+        }
+
+        List<Long> trackingIds = details.stream().map(ProgressReminderDetail::getTrackingId)
+                .filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        if (trackingIds.isEmpty()) return Collections.emptyList();
+        Map<Long, CollaborationTracking> trackingById = new HashMap<>();
+        for (CollaborationTracking t : trackingRepo.findAllById(trackingIds)) trackingById.put(t.getId(), t);
+        return details.stream().filter(d -> {
+            CollaborationTracking t = trackingById.get(d.getTrackingId());
+            return t != null && employeeId.equals(t.getExecutorId());
+        }).collect(Collectors.toList());
     }
 
     // ============ 标记已处理（2026-07 新增） ============
@@ -788,7 +848,10 @@ public class ProgressReminderService {
         if (hasFullReminderVisibility()) return true;
         if (r.getAudienceEmployeeId() != null) {
             Long empId = employeeRoleUtil.getCurrentEmployeeId();
-            return empId != null && empId.equals(r.getAudienceEmployeeId());
+            if (empId == null) return false;
+            if (empId.equals(r.getAudienceEmployeeId())) return true;
+            // 我不是这条卡片的项目负责人本人，但可能是"涉及的执行人员"之一
+            return MultiValueUtil.splitMulti(r.getInvolvedEmployeeIds()).contains(String.valueOf(empId));
         }
         String role = employeeRoleUtil.getCurrentEmployeeRole();
         return role != null && role.equals(r.getAudienceEmployeeRole());

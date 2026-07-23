@@ -72,12 +72,24 @@ public class ProgressReminder extends BaseEntity {
     private String audienceEmployeeRole;
 
     /**
-     * 2026-07 新增：按具体员工定向的提醒（PM_EXECUTOR_PROGRESS_STALL/
-     * REQUIREMENT_INVOICE_OVERDUE），只有这个员工本人 + ADMIN/管理层能看到这一行。
-     * 老两类和 FINANCE_PROGRESS_STALL 留空，走角色级可见（audienceEmployeeRole）。
+     * PM_EXECUTOR_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE 专用：这条记录/需求名下这批
+     * 红人合作跟踪的"主责人"——项目负责人。这两类现在统一只按项目负责人归类（2026-07
+     * 起不再单独按执行人员归类，那样会导致同一条记录在管理层视角下被算两遍——见下面
+     * involvedEmployeeIds 的注释）。老两类和 FINANCE_PROGRESS_STALL 留空，走角色级可见
+     * （audienceEmployeeRole）。
      */
     @Column(name = "audience_employee_id")
     private Long audienceEmployeeId;
+
+    /**
+     * 2026-07 新增：这一批记录里涉及到的执行人员 id（换行分隔，MultiValueUtil 约定），
+     * 只用于可见性判断——执行人员本人也能看到"项目负责人-XX-手下的"这条卡片（因为他们负责
+     * 执行其中一部分），但卡片始终以项目负责人命名，不会单独再生成一条"执行人员"的卡片
+     * （红人合作跟踪的主责人始终是项目负责人，执行人员不是"另一个主责人"）。查看详情时，
+     * 执行人员看到的明细会按自己实际执行的那部分动态过滤，项目负责人/管理层看到全部。
+     */
+    @Column(name = "involved_employee_ids", columnDefinition = "TEXT")
+    private String involvedEmployeeIds;
 
     /** 预先算好的展示文案，前端直接展示（BRAND_MONTH_END_PAYMENT_DUE 就是完整消息本身） */
     @Column(name = "title", length = 500)
