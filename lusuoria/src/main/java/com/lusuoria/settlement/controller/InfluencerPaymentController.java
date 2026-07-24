@@ -49,6 +49,8 @@ public class InfluencerPaymentController {
             @RequestParam(required = false) Long teamId,
             @RequestParam(required = false) String internalRequirementNo,
             @RequestParam(required = false) InfluencerPaymentStatus paymentStatus,
+            @RequestParam(defaultValue = "settlementMonth") String sortBy,
+            @RequestParam(defaultValue = "desc") String sortDir,
             @RequestParam(defaultValue = "0")  int page,
             @RequestParam(defaultValue = "20") int size) {
         if (!accessUtil.canView()) return ApiResponse.error(403, "无权限查看红人结款");
@@ -64,7 +66,13 @@ public class InfluencerPaymentController {
         List<Long> reqMatchingIds = filterByReqNo
                 ? trackingRepo.findPaymentIdsByRequirementNo(internalRequirementNo.trim()) : Collections.emptyList();
         if (reqMatchingIds.isEmpty()) reqMatchingIds = Collections.singletonList(-1L);
-        PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "settlementMonth"));
+        // 默认排序（没有点列头时）保持"结算月份倒序+结款单号正序"跟以前一致；
+        // 点了具体列头排序时，只按那一列排，不强行叠加结款单号兜底
+        Sort.Direction direction = "asc".equalsIgnoreCase(sortDir) ? Sort.Direction.ASC : Sort.Direction.DESC;
+        Sort sort = "settlementMonth".equals(sortBy)
+                ? Sort.by(direction, "settlementMonth").and(Sort.by(Sort.Direction.ASC, "paymentNo"))
+                : Sort.by(direction, sortBy);
+        PageRequest pageable = PageRequest.of(page, size, sort);
         Page<InfluencerPayment> result = paymentRepo.findByFilters(
                 settlementMonth, brandId, filterByTeam, matchingIds, filterByReqNo, reqMatchingIds, paymentStatus, pageable);
         paymentService.attachTeamIds(result.getContent());

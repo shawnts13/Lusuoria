@@ -22,6 +22,10 @@ public interface InfluencerPaymentRepository extends JpaRepository<InfluencerPay
      * ids 非空时按"涉及了这个团队"过滤（Controller 先查
      * InfluencerPaymentTeamRepository.findPaymentIdsByTeamId 拿到符合条件的结款记录 id 列表，
      * 再传进来），因为"涉及哪些团队"现在是关联表，不是这张表自己的列，没法直接 JOIN 简单表达。
+     *
+     * 排序特意不写死在这条 JPQL 里（2026-07 起支持前端列头点击排序），完全交给调用方传入的
+     * Pageable 决定——Controller 没收到具体排序请求时会自己填一个"结算月份倒序+结款单号正序"
+     * 的默认 Sort，保持原来的默认展示顺序不变。
      */
     @EntityGraph(attributePaths = {"brand"})
     @Query("SELECT ip FROM InfluencerPayment ip " +
@@ -30,8 +34,7 @@ public interface InfluencerPaymentRepository extends JpaRepository<InfluencerPay
            "AND (:brandId IS NULL OR ip.brandId = :brandId) " +
            "AND (:filterByTeam = false OR ip.id IN :matchingIds) " +
            "AND (:filterByReqNo = false OR ip.id IN :reqMatchingIds) " +
-           "AND (:paymentStatus IS NULL OR ip.paymentStatus = :paymentStatus) " +
-           "ORDER BY ip.settlementMonth DESC, ip.paymentNo ASC")
+           "AND (:paymentStatus IS NULL OR ip.paymentStatus = :paymentStatus)")
     Page<InfluencerPayment> findByFilters(
             @Param("settlementMonth") String settlementMonth,
             @Param("brandId") Long brandId,
