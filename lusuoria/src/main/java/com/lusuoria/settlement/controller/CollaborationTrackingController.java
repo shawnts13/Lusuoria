@@ -261,7 +261,11 @@ public class CollaborationTrackingController {
                 brandId, teamId, countryMarket, accountName, platform,
                 progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
                 clientOrderId, clientPaymentBatch, projectManagerId, all).getContent();
-        excelHandler.export(list, RoleUtil.canViewBaselineFinancials(), response);
+        // canViewFull：汇率/其他外部成本/内部执行成本/毛利/提成/公司利润这些财务字段，
+        // 只有导出的人是 ADMIN/AUDITOR，或员工角色是"管理层"/"财务"才包含在导出文件里，
+        // 复用 ProjectFieldVisibility 的 FULL 层级判定，跟列表页/表单页这批字段的可见规则一致
+        boolean canViewFull = fieldVisibility.resolve().isFull();
+        excelHandler.export(list, RoleUtil.canViewBaselineFinancials(), canViewFull, response);
     }
 
     @GetMapping("/template")

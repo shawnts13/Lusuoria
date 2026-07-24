@@ -71,9 +71,10 @@ public class CollaborationTrackingExcelHandler {
     @Autowired private ProjectNoGenerator projectNoGenerator;
 
     /** 导出/模板列顺序 */
-    // 列定义：[列名, 是否敏感(1=是), 是否仅导出(1=模板不含)]
+    // 列定义：[列名, 权限档位(0=都能看/1=canViewSensitive即非GUEST/2=canViewFull即管理层财务ADMIN/AUDITOR), 是否仅导出(1=模板不含)]
     private static final String[][] COLUMNS = {
         {"内部需求编号（可选，关联红人需求管理）", "0", "0"},
+        {"内部项目编号",               "0", "1"},  // 系统自动生成，不是用户填的，只在导出里展示，不放进导入模板
         {"品牌方",                     "0", "0"},
         {"红人团队",                   "0", "0"},  // 该红人在此品牌方下有多个团队可选时必须填写，否则可留空
         {"服务国家/市场",              "0", "0"},  // 该红人维护了多个服务国家/市场时必须填写，否则可留空
@@ -92,6 +93,19 @@ public class CollaborationTrackingExcelHandler {
         {"客户方付款批次",             "0", "0"},
         {"红人视频制作与发布成本（美金）", "1", "0"},
         {"客户合作价格（美金）",       "1", "0"},
+        // 以下财务字段（2026-07 新增，导出专属）：只有 canViewFull（ADMIN/AUDITOR，或员工角色
+        // 是"管理层"/"财务"）导出时才包含，跟列表页 costBookkeeping/sensitive 那两类字段是同一批，
+        // 导出是整份文件给到 FULL 权限的人，不像列表页那样按行脱敏，所以统一按导出人整体权限判定
+        {"汇率",                       "2", "1"},
+        {"其他外部成本（人民币）",     "2", "1"},
+        {"外部成本备注",               "2", "1"},
+        {"内部执行成本（人民币）",     "2", "1"},
+        {"项目毛利",                   "2", "1"},
+        {"可分配利润",                 "2", "1"},
+        {"提成比例",                   "2", "1"},
+        {"负责人提成",                 "2", "1"},
+        {"公司利润（美金）",           "2", "1"},
+        {"公司利润（人民币）",         "2", "1"},
         {"备注",                       "0", "0"},
     };
 
@@ -134,7 +148,7 @@ public class CollaborationTrackingExcelHandler {
     };
 
     // ============ 导出 ============
-    public void export(List<CollaborationTracking> list, boolean canViewSensitive,
+    public void export(List<CollaborationTracking> list, boolean canViewSensitive, boolean canViewFull,
                        HttpServletResponse response) throws IOException {
         XSSFWorkbook wb = new XSSFWorkbook();
         XSSFSheet sheet = wb.createSheet("红人合作跟踪");
@@ -147,9 +161,10 @@ public class CollaborationTrackingExcelHandler {
         int hc = 0;
         for (String[] col : COLUMNS) {
             if ("1".equals(col[1]) && !canViewSensitive) continue;
+            if ("2".equals(col[1]) && !canViewFull) continue;
             Cell cell = header.createCell(hc++);
             cell.setCellValue(col[0]);
-            cell.setCellStyle("1".equals(col[1]) ? hdrS : hdrN);
+            cell.setCellStyle(("1".equals(col[1]) || "2".equals(col[1])) ? hdrS : hdrN);
         }
 
         SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd");
@@ -174,6 +189,7 @@ public class CollaborationTrackingExcelHandler {
             Row row = sheet.createRow(r++);
             int c = 0;
             setCellStr(row, c++, t.getInternalRequirementNo(), wrap);
+            setCellStr(row, c++, t.getInternalProjectNo(), wrap);
             Brand brand = brandCache.findById(t.getBrandId());
             setCellStr(row, c++, brand != null ? brand.getName() : "", wrap);
             InfluencerTeam team = t.getTeamId() != null ? teamCache.findById(t.getTeamId()) : null;
@@ -197,6 +213,18 @@ public class CollaborationTrackingExcelHandler {
             if (canViewSensitive) {
                 setCellMoney(row, c++, t.getInfluencerCost(), wrap);
                 setCellMoney(row, c++, t.getClientPrice(),    wrap);
+            }
+            if (canViewFull) {
+                setCellMoney(row, c++, t.getExchangeRate(), wrap);
+                setCellMoney(row, c++, t.getOtherExternalCost(), wrap);
+                setCellStr(row, c++, t.getOtherExternalCostNote(), wrap);
+                setCellMoney(row, c++, t.getInternalExecutionCost(), wrap);
+                setCellMoney(row, c++, t.getGrossProfit(), wrap);
+                setCellMoney(row, c++, t.getDistributableProfit(), wrap);
+                setCellMoney(row, c++, t.getCommissionRate(), wrap);
+                setCellMoney(row, c++, t.getCommissionAmount(), wrap);
+                setCellMoney(row, c++, t.getCompanyNetProfit(), wrap);
+                setCellMoney(row, c++, t.getRmbRevenue(), wrap);
             }
             setCellStr(row, c++, t.getNotes(), wrap);
         }
