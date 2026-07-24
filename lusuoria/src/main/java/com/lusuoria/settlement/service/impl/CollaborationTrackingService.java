@@ -591,6 +591,20 @@ public class CollaborationTrackingService {
         // executeProgressRollback() 负责，不需要也不能靠这里校验请求里传的值来维护
         InfluencerPaymentProgress newPayment = t.getInfluencerPaymentProgress();
 
+        // AUDITOR（财务账号通常是这个 SysUser 角色，本身"只读+导出"）2026-07 起单独开的口子：
+        // 只能在已经进入结算区间的三个阶段（已发布未结算/已加入客户未结算列表/客户已结算）
+        // 之间流转视频项目进度，不能用状态流转去碰前期制作流程的状态，也不能流转到"折损"。
+        // 删除/进度倒退这两个操作走 assertOwnerOrAdmin，AUDITOR 本来就不是记录的项目负责人/
+        // 执行人员，天然会被那边挡掉，这里不用重复处理。
+        if ("AUDITOR".equals(RoleUtil.getCurrentRole())) {
+            boolean withinSettlementZone = oldProgress != null && oldProgress.allowsPaymentProgress()
+                    && newProgress != null && newProgress.allowsPaymentProgress();
+            if (!withinSettlementZone) {
+                throw new RuntimeException("财务账号只能在\"已发布（未结算）\"、\"已加入客户未结算列表\"、"
+                        + "\"客户已结算\"这三个阶段之间流转视频项目进度");
+            }
+        }
+
         // "已加入客户未结算列表"/"客户已结算"这两个状态只能由财务/管理层流转进入，
         // 普通员工（项目负责人/执行人员/基础权限）只能流转到"已发布（未结算）"和"折损"这两个终态。
         // 只拦截真正的变动——原样提交回去（值没变）不受影响，跟下面 isSystemManagedChange 的

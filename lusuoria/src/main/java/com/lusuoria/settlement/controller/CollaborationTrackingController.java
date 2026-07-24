@@ -190,9 +190,14 @@ public class CollaborationTrackingController {
      * 正常情况下改动立即生效；但如果是"视频项目进度"从符合条件的状态倒退回不符合条件的状态、
      * 且当前记录"红人结款进度"已经有值，这种改动不会立即生效，而是提交一条待审核事项，
      * 由管理员在"待处理"模块同意后才真正生效（见 CollaborationTrackingService.updateStatus）。
+     *
+     * 2026-07 起放开给 AUDITOR（财务账号通常是这个 SysUser 角色）：财务需要能把"已发布
+     * （未结算）"流转到"已加入客户未结算列表"/"客户已结算"这两个财务专属终态。AUDITOR
+     * 能不能真的改、能改成什么，由 Service 内部按"只能在已经进入结算区间的三个阶段之间流转"
+     * 这条规则精确校验（见 updateStatus 里的 AUDITOR 专属校验），不是这里简单放行了事。
      */
     @PatchMapping("/{id}/status")
-    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF','AUDITOR')")
     public ApiResponse<CollaborationStatusUpdateResult> updateStatus(
             @PathVariable Long id, @RequestBody CollaborationTrackingStatusRequest req) {
         CollaborationStatusUpdateResult result = trackingService.updateStatus(id, req);
