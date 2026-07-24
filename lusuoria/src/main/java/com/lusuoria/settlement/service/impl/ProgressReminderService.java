@@ -478,43 +478,70 @@ public class ProgressReminderService {
     }
 
     /**
-     * Part D（2026-07 新增，2026-07 修正）：财务视角，"已发布（未结算）"/"已加入客户未结算列表"
-     * 长时间没到"客户已结算"，阈值统一14工作日。目前只有1个财务，按角色整体可见
+     * Part D（2026-07 新增，2026-07 修正两次）：财务视角，"已发布（未结算）"/"已加入客户未结算
+     * 列表"长时间没到"客户已结算"，阈值统一14工作日。目前只有1个财务，按角色整体可见
      * （audienceEmployeeRole="财务"），不做按人定向。
      *
      * 按"视频项目进度"和严重度两个维度分桶——两个阶段分开报数，不合并成一句笼统的提醒，
-     * 财务能一眼看出是卡在"已发布（未结算）"还是"已加入客户未结算列表"没往下流转
-     * （之前是不管卡在哪个阶段，只按严重度合并成一条"XX笔视频项目进度长时间未到客户已结算"，
-     * 不够精确，2026-07 改成两个阶段各自独立生成提醒）。
+     * 财务能一眼看出是卡在"已发布（未结算）"还是"已加入客户未结算列表"没往下流转。
+     *
+     * 严重度判定 2026-07 改成"临近阈值"模式，跟"临近结款"提醒（ReminderUrgency）用同一套
+     * 档位，不再是"超出阈值之后才算"：距离14个工作日阈值还有4-7天=3-7天档（绿），还有1-3天=
+     * 1-3天档（橙），到了/超过阈值=0天或已超期档（红）；还剩8天以上不提醒。之前用的
+     * OverdueUrgency 是"超出阈值之后才分档"（1-3/4-7/8+天超出），这里改用 ReminderUrgency
+     * 本身就是"距离阈值还有几天"的语义，直接复用即可，不需要另外发明一套。
      */
     private void runFinanceProgressStall(LocalDate today, Date batchDate) {
         List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
         Map<Long, String> accountNameById = buildAccountNameIndex(all);
 
-        Map<CollaborationProgress, Map<OverdueUrgency, List<ProgressReminderDetail>>> byProgressAndUrgency
+        Map<CollaborationProgress, Map<ReminderUrgency, List<ProgressReminderDetail>>> byProgressAndUrgency
                 = new EnumMap<>(CollaborationProgress.class);
         for (CollaborationTracking t : all) {
             if (!isFinanceStallCandidate(t.getProgress()) || t.getProgressChangedAt() == null) continue;
             int workdays = WorkdayUtil.countWeekdaysInclusive(toLocalDate(t.getProgressChangedAt()), today);
-            int overdueDays = workdays - 14;
-            OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays);
+            int daysRemaining = 14 - workdays; // 正数=离阈值还有几天，0或负数=已到/超过阈值
+            ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining);
             if (urgency == null) continue;
+            int overdueDays = Math.max(0, -daysRemaining); // 明细"超出天数"列用，还没到阈值时是0
             byProgressAndUrgency
-                    .computeIfAbsent(t.getProgress(), k -> new EnumMap<>(OverdueUrgency.class))
+                    .computeIfAbsent(t.getProgress(), k -> new EnumMap<>(ReminderUrgency.class))
                     .computeIfAbsent(urgency, k -> new ArrayList<>())
                     .add(buildStallDetail(t, accountNameById, overdueDays, 14));
         }
 
-        for (Map.Entry<CollaborationProgress, Map<OverdueUrgency, List<ProgressReminderDetail>>> progressEntry
+        for (Map.Entry<CollaborationProgress, Map<ReminderUrgency, List<ProgressReminderDetail>>> progressEntry
                 : byProgressAndUrgency.entrySet()) {
             String titleSuffix = "笔视频项目进度长时间在“" + progressEntry.getKey().getLabel() + "”未流转";
-            for (OverdueUrgency urgency : OverdueUrgency.values()) {
+            for (ReminderUrgency urgency : ReminderUrgency.values()) {
                 List<ProgressReminderDetail> details = progressEntry.getValue().get(urgency);
                 if (details == null || details.isEmpty()) continue;
-                saveStallReminder(batchDate, ReminderCategory.FINANCE_PROGRESS_STALL,
-                        null, FINANCE_ROLE, urgency, details, titleSuffix, null);
+                saveFinanceStallReminder(batchDate, ReminderCategory.FINANCE_PROGRESS_STALL,
+                        FINANCE_ROLE, urgency, details, titleSuffix);
             }
         }
+    }
+
+    /**
+     * 跟 saveStallReminder 类似，但用"临近结款"那一套 ReminderUrgency（而不是 OverdueUrgency），
+     * 目前只有 runFinanceProgressStall 用——财务视角的进度滞留提醒 2026-07 改成"临近阈值"模式，
+     * 需要真正的 urgency 值（不是占位），其余两类"进度滞留-项目"/"Invoice逾期"仍然是"超出阈值
+     * 之后才算"，继续走 saveStallReminder/OverdueUrgency，不受影响。
+     */
+    private void saveFinanceStallReminder(Date batchDate, ReminderCategory category, String audienceRoleLabel,
+                                            ReminderUrgency urgency, List<ProgressReminderDetail> details,
+                                            String titleSuffix) {
+        ProgressReminder reminder = new ProgressReminder();
+        reminder.setIsDeleted(false);
+        reminder.setBatchDate(batchDate);
+        reminder.setCategory(category);
+        reminder.setUrgency(urgency);
+        reminder.setAudienceEmployeeRole(audienceRoleLabel);
+        reminder.setCount(details.size());
+        reminder.setTitle(details.size() + titleSuffix);
+        reminder = reminderRepo.save(reminder);
+        for (ProgressReminderDetail d : details) d.setReminderId(reminder.getId());
+        detailRepo.saveAll(details);
     }
 
     /**
@@ -679,8 +706,9 @@ public class ProgressReminderService {
     // ============ 查询（供 Controller 用） ============
 
     /**
-     * 当前登录账号能看到的提醒列表，按 category、urgency（老两类走 ReminderUrgency，
-     * 新三类走 OverdueUrgency）排序（2026-07 泛化，不再是"非管理层直接返回空列表"）：
+     * 当前登录账号能看到的提醒列表，按 category、urgency（老两类 + FINANCE_PROGRESS_STALL
+     * 走 ReminderUrgency"临近阈值"语义，PM_EXECUTOR_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE
+     * 走 OverdueUrgency"超出阈值"语义）排序（2026-07 泛化，不再是"非管理层直接返回空列表"）：
      *   - ADMIN 或 员工角色=管理层 → 全部提醒（老两类 + 新三类，全部，不按人过滤）——
      *     保持管理层原有可见范围不变，只是新3类现在也对他们可见。
      *   - 员工角色=财务 → 额外看到 FINANCE_PROGRESS_STALL。
