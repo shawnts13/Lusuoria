@@ -58,6 +58,14 @@ public class InfluencerPayment extends BaseEntity {
     @Column(name = "payable_amount", precision = 15, scale = 2)
     private BigDecimal payableAmount;
 
+    /**
+     * 涉及的内部需求编号：勾选条目里出现过的 internalRequirementNo 去重后换行拼接
+     * （一次结款可能涉及多个需求，所以是多值字段，沿用 MultiValueUtil 那一套"换行分隔存一列"
+     * 的约定），只读，由后端在 create()/update() 时算出来存库。没关联任何需求的条目不计入。
+     */
+    @Column(name = "involved_requirement_nos", columnDefinition = "TEXT")
+    private String involvedRequirementNos;
+
     /** 币种，目前固定 USD（红人视频合作都是美元结算） */
     @Column(name = "currency", length = 10)
     private String currency;

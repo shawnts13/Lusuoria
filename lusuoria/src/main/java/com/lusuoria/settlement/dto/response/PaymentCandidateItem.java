@@ -19,6 +19,8 @@ public class PaymentCandidateItem {
     /** 团队原始 id（null 代表这条记录没有团队），前端用来在确认勾选后修正"红人团队"范围 */
     private Long teamId;
     private String accountName;
+    /** 内部需求编号（可能为空，没关联"红人需求管理"需求的记录没有这个值） */
+    private String internalRequirementNo;
     private String demandContent;
     private BigDecimal influencerCost;
     private String progressLabel;

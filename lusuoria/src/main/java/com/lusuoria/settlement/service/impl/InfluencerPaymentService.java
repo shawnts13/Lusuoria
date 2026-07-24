@@ -138,6 +138,7 @@ public class InfluencerPaymentService {
             item.setTeamName(team != null ? team.getName() : null);
             item.setTeamId(t.getTeamId());
             item.setAccountName(accountNameById.get(t.getInfluencerId()));
+            item.setInternalRequirementNo(t.getInternalRequirementNo());
             item.setDemandContent(t.getDemandContent());
             item.setInfluencerCost(t.getInfluencerCost());
             item.setProgressLabel(t.getProgress() != null ? t.getProgress().getLabel() : null);
@@ -237,6 +238,7 @@ public class InfluencerPaymentService {
         }
         payment.setCooperationQuantity(items.size());
         payment.setPayableAmount(sumCost(items));
+        payment.setInvolvedRequirementNos(computeInvolvedRequirementNos(items));
 
         // 汇率创建时不接受前端手填，按结算月份自动从汇率维护取（取不到就留空）
         exchangeRateCacheRepo.findByYearMonth(req.getSettlementMonth())
@@ -301,6 +303,7 @@ public class InfluencerPaymentService {
 
         payment.setCooperationQuantity(newItems.size());
         payment.setPayableAmount(sumCost(newItems));
+        payment.setInvolvedRequirementNos(computeInvolvedRequirementNos(newItems));
         payment.setReconcileDate(req.getReconcileDate());
         payment.setExpectedPaymentDate(req.getExpectedPaymentDate());
         payment.setNotes(req.getNotes());
@@ -400,6 +403,17 @@ public class InfluencerPaymentService {
             if (t.getInfluencerCost() != null) sum = sum.add(t.getInfluencerCost());
         }
         return sum.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /** 涉及的内部需求编号：勾选条目里出现过的编号去重、排序后换行拼接；一个都没有时返回 null */
+    private String computeInvolvedRequirementNos(List<CollaborationTracking> items) {
+        Set<String> nos = new java.util.TreeSet<>();
+        for (CollaborationTracking t : items) {
+            if (t.getInternalRequirementNo() != null && !t.getInternalRequirementNo().trim().isEmpty()) {
+                nos.add(t.getInternalRequirementNo().trim());
+            }
+        }
+        return nos.isEmpty() ? null : String.join("\n", nos);
     }
 
     private void recomputeRmb(InfluencerPayment payment) {
