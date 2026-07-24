@@ -28,6 +28,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.JpaSort;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -85,16 +86,34 @@ public class CollaborationTrackingController {
         // accountName 是关联的红人记录上的字段，不是本表自己的属性，
         // 排序时要用 JPQL 的关联路径写法（influencer.accountName），不能直接用列名
         String sortProperty = "accountName".equals(sortBy) ? "influencer.accountName" : sortBy;
-        Sort sort = sortDir.equalsIgnoreCase("asc")
-                ? Sort.by(Sort.Direction.ASC, sortProperty)
-                : Sort.by(Sort.Direction.DESC, sortProperty);
+        Sort.Direction userSortDirection = sortDir.equalsIgnoreCase("asc") ? Sort.Direction.ASC : Sort.Direction.DESC;
+        Long priorityEmployeeId = resolvePriorityEmployeeId();
+        boolean prioritizeFinance = resolvePrioritizeFinance();
+        // "优先展示"的两级 CASE 排序不能写死在 @Query 的 ORDER BY 里，会触发 Spring Data 2.7.x
+        // 对复杂括号嵌套查询的 ORDER BY 检测 bug（详见 CollaborationTrackingRepository.findByFilters
+        // 上的注释），所以改成用 JpaSort.unsafe(...) 拼进 Pageable 的 Sort，最终效果不变，
+        // 且从根上避免了同一条 JPQL 出现两个 ORDER BY 关键字导致的 QuerySyntaxException。
+        Sort sort = JpaSort.unsafe(Sort.Direction.ASC,
+                        "CASE WHEN (:priorityEmployeeId IS NOT NULL " +
+                        "AND (c.projectManagerId = :priorityEmployeeId OR c.executorId = :priorityEmployeeId)) " +
+                        "OR (:prioritizeFinance = true AND c.progress IN (" +
+                        "com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
+                        "com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST)) " +
+                        "THEN 0 ELSE 1 END")
+                .andUnsafe(Sort.Direction.ASC,
+                        "CASE WHEN :onlyMyResponsibility = true AND :priorityEmployeeId IS NOT NULL " +
+                        "AND c.progress NOT IN (" +
+                        "com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
+                        "com.lusuoria.settlement.enums.CollaborationProgress.DELAYED) " +
+                        "THEN 0 ELSE 1 END")
+                .and(Sort.by(userSortDirection, sortProperty));
         PageRequest pageable = PageRequest.of(page, size, sort);
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         Page<CollaborationTracking> result = trackingRepo.findByFilters(
                 brandId, teamId, countryMarket, accountName, platform,
                 progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
                 clientOrderId, clientPaymentBatch, projectManagerId,
-                resolvePriorityEmployeeId(), resolvePrioritizeFinance(), onlyMyResponsibility, pageable);
+                priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, pageable);
 
         // 批量标记"当前是否有待审核的删除申请 / 进度倒退申请"，避免逐行查库
         Set<Long> pendingDeleteIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(

@@ -83,14 +83,22 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      * 由 Controller 按当前登录账号的员工角色决定，两者互斥（一次只会有一个生效，另一个传
      * null/false）；都不适用的角色（管理层/ADMIN/AUDITOR/GUEST等）两个参数都传
      * null/false，这条 ORDER BY 对所有行算出来的优先级都一样，不影响原有排序。
-     * Spring Data 会把 Pageable 里的排序追加在这条 ORDER BY 后面，所以"优先展示"是最高优先级，
-     * 用户点的列头排序在同一优先级分组内生效。
+     * "优先展示"这两级 CASE 排序不写死在这条 ORDER BY 里，改由 Controller 通过
+     * JpaSort.unsafe(...) 拼进 Pageable 的 Sort（见 CollaborationTrackingController.list）。
+     * 原因：Spring Data 2.7.x 的 QueryUtils.hasOrderByClause() 用一个基于括号计数的正则来判断
+     * 查询里是否已经有一条"顶层" ORDER BY（用来排除窗口函数/子查询里的 order by）；这条 WHERE
+     * 子句本身有大量 (...) 分组，加上 ORDER BY 里的 CASE WHEN (...) ... END 后面又跟着括号，
+     * 会让这个正则误判成"没有顶层 order by"，于是 Spring 会在这条 ORDER BY 后面再盲目拼一个
+     * "order by c.id desc"（Pageable 的排序），导致同一条 JPQL 里出现两个 ORDER BY 关键字，
+     * Hibernate 解析直接报 QuerySyntaxException: unexpected token: order（所有角色都会触发，
+     * 因为问题在查询文本结构本身，跟参数值/角色无关）。
+     * 这条 @Query 现在不写 ORDER BY，避免这个检测逻辑被触发；排序完全交给 Pageable 的 Sort。
      *
-     * onlyMyResponsibility：前端"查看由我负责的记录"按钮用，把上面那条"软优先排序"变成硬筛选——
+     * onlyMyResponsibility：前端"查看由我负责的记录"按钮用，把"软优先排序"变成硬筛选——
      * 项目负责人/执行人员只看自己是负责人/执行人员的记录，财务只看需要处理的两个阶段。
      * 为 false/null 时完全不影响原有筛选结果（向后兼容，老的调用方不用管这个参数）。
      * 命中筛选后，项目负责人/执行人员视角额外按"是否还没到已发布（未结算）/折损这两个不需要
-     * 他们再跟进的终态"做二级排序，还需要跟进的排前面。
+     * 他们再跟进的终态"做二级排序，还需要跟进的排前面（这条二级 CASE 同样由 Controller 拼进 Sort）。
      */
     @Query("SELECT c FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false " +
@@ -112,18 +120,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "     OR (:priorityEmployeeId IS NOT NULL AND (c.projectManagerId = :priorityEmployeeId OR c.executorId = :priorityEmployeeId)) " +
            "     OR (:prioritizeFinance = true AND c.progress IN (" +
            "           com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
-           "           com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST))) " +
-           "ORDER BY CASE WHEN (:priorityEmployeeId IS NOT NULL " +
-           "                    AND (c.projectManagerId = :priorityEmployeeId OR c.executorId = :priorityEmployeeId)) " +
-           "              OR (:prioritizeFinance = true AND c.progress IN (" +
-           "                    com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
-           "                    com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST)) " +
-           "         THEN 0 ELSE 1 END, " +
-           "         CASE WHEN :onlyMyResponsibility = true AND :priorityEmployeeId IS NOT NULL " +
-           "                   AND c.progress NOT IN (" +
-           "                    com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
-           "                    com.lusuoria.settlement.enums.CollaborationProgress.DELAYED) " +
-           "              THEN 0 ELSE 1 END")
+           "           com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST)))")
     Page<CollaborationTracking> findByFilters(
             @Param("brandId") Long brandId,
             @Param("teamId") Long teamId,
