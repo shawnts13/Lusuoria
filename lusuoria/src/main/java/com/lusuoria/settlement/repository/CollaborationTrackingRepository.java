@@ -2,6 +2,7 @@ package com.lusuoria.settlement.repository;
 
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.enums.CollaborationProgress;
+import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.VideoType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -84,6 +85,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:accountName IS NULL OR c.influencer.accountName LIKE %:accountName%) " +
            "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
            "AND (:progress IS NULL OR c.progress = :progress) " +
+           "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress = :influencerPaymentProgress) " +
            "AND (:videoType IS NULL OR c.videoType = :videoType) " +
            "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth) " +
            "AND (:internalProjectNo IS NULL OR c.internalProjectNo LIKE %:internalProjectNo%) " +
@@ -98,6 +100,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("accountName") String accountName,
             @Param("platform") String platform,
             @Param("progress") CollaborationProgress progress,
+            @Param("influencerPaymentProgress") InfluencerPaymentProgress influencerPaymentProgress,
             @Param("videoType") VideoType videoType,
             @Param("videoMonth") String videoMonth,
             @Param("internalProjectNo") String internalProjectNo,

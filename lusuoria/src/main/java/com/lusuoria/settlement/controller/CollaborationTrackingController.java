@@ -11,6 +11,7 @@ import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.ImportBatch;
 import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.enums.CollaborationProgress;
+import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.PendingApprovalCategory;
 import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.enums.VideoType;
@@ -65,6 +66,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) String accountName,
             @RequestParam(required = false) String platform,
             @RequestParam(required = false) CollaborationProgress progress,
+            @RequestParam(required = false) InfluencerPaymentProgress influencerPaymentProgress,
             @RequestParam(required = false) VideoType videoType,
             @RequestParam(required = false) String videoMonth,
             @RequestParam(required = false) String internalProjectNo,
@@ -87,7 +89,7 @@ public class CollaborationTrackingController {
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         Page<CollaborationTracking> result = trackingRepo.findByFilters(
                 brandId, teamId, countryMarket, accountName, platform,
-                progress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
+                progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
                 clientOrderId, clientPaymentBatch, projectManagerId, pageable);
 
         // 批量标记"当前是否有待审核的删除申请 / 进度倒退申请"，避免逐行查库
@@ -243,6 +245,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) String accountName,
             @RequestParam(required = false) String platform,
             @RequestParam(required = false) CollaborationProgress progress,
+            @RequestParam(required = false) InfluencerPaymentProgress influencerPaymentProgress,
             @RequestParam(required = false) VideoType videoType,
             @RequestParam(required = false) String videoMonth,
             @RequestParam(required = false) String internalProjectNo,
@@ -256,7 +259,7 @@ public class CollaborationTrackingController {
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         List<CollaborationTracking> list = trackingRepo.findByFilters(
                 brandId, teamId, countryMarket, accountName, platform,
-                progress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
+                progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
                 clientOrderId, clientPaymentBatch, projectManagerId, all).getContent();
         excelHandler.export(list, RoleUtil.canViewBaselineFinancials(), response);
     }
