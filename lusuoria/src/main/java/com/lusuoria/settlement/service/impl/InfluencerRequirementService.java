@@ -331,11 +331,18 @@ public class InfluencerRequirementService {
         }
     }
 
-    /** 需求完成进度点击详情：这条需求下所有已关联的红人合作跟踪记录（含折损） */
+    /**
+     * 需求完成进度点击详情：这条需求下所有已关联的红人合作跟踪记录（含折损）。
+     * "需求条目"这一列（第几个条目）不落库，现算：按 (videoType, platform, 两个单价)
+     * 精确匹配到需求条目列表里的第几个（1-based，按条目创建顺序），同一个大需求下
+     * 有很多条目时方便一眼看出某条记录具体对应哪个条目——不加这层匹配的话，同一
+     * videoType/platform、只是单价不同的多个条目混在一起会分不清楚。
+     */
     @Transactional(readOnly = true)
     public List<RequirementTrackingSummaryResponse> progressDetail(Long requirementId) {
         InfluencerRequirement requirement = requirementRepo.findByIdAndIsDeletedFalse(requirementId)
                 .orElseThrow(() -> new RuntimeException("需求记录不存在：" + requirementId));
+        List<InfluencerRequirementItem> items = itemRepo.findByRequirementIdOrderByIdAsc(requirement.getId());
         List<CollaborationTracking> linked =
                 trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(requirement.getInternalRequirementNo());
         List<RequirementTrackingSummaryResponse> result = new ArrayList<>();
@@ -344,12 +351,30 @@ public class InfluencerRequirementService {
             r.setTrackingId(t.getId());
             r.setInternalProjectNo(t.getInternalProjectNo());
             r.setVideoTypeLabel(t.getVideoType() != null ? t.getVideoType().getLabel() : null);
+            r.setVideoType(t.getVideoType() != null ? t.getVideoType().name() : null);
             r.setPlatform(t.getPlatform());
             r.setDemandContent(t.getDemandContent());
             r.setProgressLabel(t.getProgress() != null ? t.getProgress().getLabel() : null);
+            r.setProgress(t.getProgress() != null ? t.getProgress().name() : null);
+            r.setItemIndex(matchItemIndex(items, t));
             result.add(r);
         }
         return result;
+    }
+
+    /** 按 (videoType, platform, 两个单价) 精确匹配，找出这条记录对应需求条目列表里的第几个（1-based） */
+    private Integer matchItemIndex(List<InfluencerRequirementItem> items, CollaborationTracking t) {
+        String canonicalPlatform = canonicalTrackingPlatform(t.getPlatform());
+        for (int i = 0; i < items.size(); i++) {
+            InfluencerRequirementItem item = items.get(i);
+            if (item.getVideoType() == t.getVideoType()
+                    && java.util.Objects.equals(item.getPlatform(), canonicalPlatform)
+                    && amountsEqual(item.getInfluencerUnitCostPrice(), t.getInfluencerCost())
+                    && amountsEqual(item.getClientUnitPrice(), t.getClientPrice())) {
+                return i + 1;
+            }
+        }
+        return null;
     }
 
     public RequirementContentParseResponse parseContent(String content) {
