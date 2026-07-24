@@ -22,6 +22,8 @@ public class PaymentCandidateItem {
     private String demandContent;
     private BigDecimal influencerCost;
     private String progressLabel;
+    /** 视频项目进度的原始枚举值（前端按值上色用，progressLabel 只是显示文案） */
+    private String progress;
     private String paymentProgressLabel;
     /** 红人结款进度的原始枚举值（前端按值上色用，paymentProgressLabel 只是显示文案） */
     private String paymentProgress;

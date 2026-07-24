@@ -141,6 +141,7 @@ public class InfluencerPaymentService {
             item.setDemandContent(t.getDemandContent());
             item.setInfluencerCost(t.getInfluencerCost());
             item.setProgressLabel(t.getProgress() != null ? t.getProgress().getLabel() : null);
+            item.setProgress(t.getProgress() != null ? t.getProgress().name() : null);
             item.setPaymentProgressLabel(t.getInfluencerPaymentProgress() != null ? t.getInfluencerPaymentProgress().getLabel() : null);
             item.setPaymentProgress(t.getInfluencerPaymentProgress() != null ? t.getInfluencerPaymentProgress().name() : null);
             item.setPublishDate(t.getPublishDate());
