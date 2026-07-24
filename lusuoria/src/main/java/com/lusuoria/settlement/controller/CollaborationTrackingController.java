@@ -20,6 +20,7 @@ import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.ImportBatchRepository;
 import com.lusuoria.settlement.repository.PendingApprovalRepository;
 import com.lusuoria.settlement.service.impl.CollaborationTrackingService;
+import com.lusuoria.settlement.util.EmployeeRoleUtil;
 import com.lusuoria.settlement.util.ProjectFieldVisibility;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.BeanUtils;
@@ -57,6 +58,7 @@ public class CollaborationTrackingController {
     @Autowired private BrandCache brandCache;
     @Autowired private PendingApprovalRepository pendingApprovalRepo;
     @Autowired private ProjectFieldVisibility fieldVisibility;
+    @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
     @GetMapping
     public ApiResponse<Page<CollaborationTracking>> list(
@@ -74,6 +76,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) String clientOrderId,
             @RequestParam(required = false) String clientPaymentBatch,
             @RequestParam(required = false) Long projectManagerId,
+            @RequestParam(defaultValue = "false") boolean onlyMyResponsibility,
             @RequestParam(defaultValue = "id") String sortBy,
             @RequestParam(defaultValue = "desc") String sortDir,
             @RequestParam(defaultValue = "0")  int page,
@@ -90,7 +93,8 @@ public class CollaborationTrackingController {
         Page<CollaborationTracking> result = trackingRepo.findByFilters(
                 brandId, teamId, countryMarket, accountName, platform,
                 progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
-                clientOrderId, clientPaymentBatch, projectManagerId, pageable);
+                clientOrderId, clientPaymentBatch, projectManagerId,
+                resolvePriorityEmployeeId(), resolvePrioritizeFinance(), onlyMyResponsibility, pageable);
 
         // 批量标记"当前是否有待审核的删除申请 / 进度倒退申请"，避免逐行查库
         Set<Long> pendingDeleteIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(
@@ -109,6 +113,27 @@ public class CollaborationTrackingController {
             return ApiResponse.success(result.map(t -> applyFieldVisibility(t, ctx)));
         }
         return ApiResponse.success(result);
+    }
+
+    /**
+     * "优先展示"用：当前登录人是项目负责人/执行人员时，返回其员工 id（列表页会把自己是
+     * 负责人/执行人员的记录排到最前面）；其余角色（管理层/财务/ADMIN/AUDITOR/GUEST等）
+     * 返回 null，findByFilters 里对应的 ORDER BY 分支不生效。
+     */
+    private Long resolvePriorityEmployeeId() {
+        String role = employeeRoleUtil.getCurrentEmployeeRole();
+        if ("项目负责人".equals(role) || "执行人员".equals(role)) {
+            return employeeRoleUtil.getCurrentEmployeeId();
+        }
+        return null;
+    }
+
+    /**
+     * "优先展示"用：当前登录人是财务时，视频项目进度是"已发布（未结算）"/"已加入客户未结算
+     * 列表"（财务需要处理的两个阶段）的记录排到最前面。
+     */
+    private boolean resolvePrioritizeFinance() {
+        return "财务".equals(employeeRoleUtil.getCurrentEmployeeRole());
     }
 
     @GetMapping("/{id}")
@@ -257,10 +282,11 @@ public class CollaborationTrackingController {
         // 导出按当前筛选条件，取全部（不分页）
         PageRequest all = PageRequest.of(0, Integer.MAX_VALUE, Sort.by(Sort.Direction.DESC, "id"));
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
+        // 导出是整份文件全量拿走，不需要"优先展示"/"只看我负责的"这几个参数，传 null/false
         List<CollaborationTracking> list = trackingRepo.findByFilters(
                 brandId, teamId, countryMarket, accountName, platform,
                 progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
-                clientOrderId, clientPaymentBatch, projectManagerId, all).getContent();
+                clientOrderId, clientPaymentBatch, projectManagerId, null, false, false, all).getContent();
         // canViewFull：汇率/其他外部成本/内部执行成本/毛利/提成/公司利润这些财务字段，
         // 只有导出的人是 ADMIN/AUDITOR，或员工角色是"管理层"/"财务"才包含在导出文件里，
         // 复用 ProjectFieldVisibility 的 FULL 层级判定，跟列表页/表单页这批字段的可见规则一致

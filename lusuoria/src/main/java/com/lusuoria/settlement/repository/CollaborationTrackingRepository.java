@@ -76,6 +76,21 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      *
      * accountName 筛选走 c.influencer.accountName（通过关联的红人记录做模糊匹配，
      * 不再是本表自己的字段，改名后筛选结果始终反映红人当前的最新名字）。
+     *
+     * 2026-07 新增按当前登录人角色"优先展示"：project负责人/执行人员登录时，自己是负责人/
+     * 执行人员的记录排最前；财务登录时，视频项目进度是"已发布（未结算）"/"已加入客户未结算
+     * 列表"（财务需要处理的两个阶段）的记录排最前。priorityEmployeeId/prioritizeFinance
+     * 由 Controller 按当前登录账号的员工角色决定，两者互斥（一次只会有一个生效，另一个传
+     * null/false）；都不适用的角色（管理层/ADMIN/AUDITOR/GUEST等）两个参数都传
+     * null/false，这条 ORDER BY 对所有行算出来的优先级都一样，不影响原有排序。
+     * Spring Data 会把 Pageable 里的排序追加在这条 ORDER BY 后面，所以"优先展示"是最高优先级，
+     * 用户点的列头排序在同一优先级分组内生效。
+     *
+     * onlyMyResponsibility：前端"查看由我负责的记录"按钮用，把上面那条"软优先排序"变成硬筛选——
+     * 项目负责人/执行人员只看自己是负责人/执行人员的记录，财务只看需要处理的两个阶段。
+     * 为 false/null 时完全不影响原有筛选结果（向后兼容，老的调用方不用管这个参数）。
+     * 命中筛选后，项目负责人/执行人员视角额外按"是否还没到已发布（未结算）/折损这两个不需要
+     * 他们再跟进的终态"做二级排序，还需要跟进的排前面。
      */
     @Query("SELECT c FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false " +
@@ -92,7 +107,23 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:internalRequirementNo IS NULL OR c.internalRequirementNo LIKE %:internalRequirementNo%) " +
            "AND (:clientOrderId IS NULL OR c.clientOrderId LIKE %:clientOrderId%) " +
            "AND (:clientPaymentBatch IS NULL OR c.clientPaymentBatch LIKE %:clientPaymentBatch%) " +
-           "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId)")
+           "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId) " +
+           "AND (:onlyMyResponsibility = false " +
+           "     OR (:priorityEmployeeId IS NOT NULL AND (c.projectManagerId = :priorityEmployeeId OR c.executorId = :priorityEmployeeId)) " +
+           "     OR (:prioritizeFinance = true AND c.progress IN (" +
+           "           com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
+           "           com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST))) " +
+           "ORDER BY CASE WHEN (:priorityEmployeeId IS NOT NULL " +
+           "                    AND (c.projectManagerId = :priorityEmployeeId OR c.executorId = :priorityEmployeeId)) " +
+           "              OR (:prioritizeFinance = true AND c.progress IN (" +
+           "                    com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
+           "                    com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST)) " +
+           "         THEN 0 ELSE 1 END, " +
+           "         CASE WHEN :onlyMyResponsibility = true AND :priorityEmployeeId IS NOT NULL " +
+           "                   AND c.progress NOT IN (" +
+           "                    com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
+           "                    com.lusuoria.settlement.enums.CollaborationProgress.DELAYED) " +
+           "              THEN 0 ELSE 1 END")
     Page<CollaborationTracking> findByFilters(
             @Param("brandId") Long brandId,
             @Param("teamId") Long teamId,
@@ -108,6 +139,9 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("clientOrderId") String clientOrderId,
             @Param("clientPaymentBatch") String clientPaymentBatch,
             @Param("projectManagerId") Long projectManagerId,
+            @Param("priorityEmployeeId") Long priorityEmployeeId,
+            @Param("prioritizeFinance") Boolean prioritizeFinance,
+            @Param("onlyMyResponsibility") Boolean onlyMyResponsibility,
             Pageable pageable);
 
     /**
