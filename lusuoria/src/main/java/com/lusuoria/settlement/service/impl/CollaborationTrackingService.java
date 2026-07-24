@@ -591,12 +591,20 @@ public class CollaborationTrackingService {
         // executeProgressRollback() 负责，不需要也不能靠这里校验请求里传的值来维护
         InfluencerPaymentProgress newPayment = t.getInfluencerPaymentProgress();
 
-        // AUDITOR（财务账号通常是这个 SysUser 角色，本身"只读+导出"）2026-07 起单独开的口子：
-        // 只能在已经进入结算区间的三个阶段（已发布未结算/已加入客户未结算列表/客户已结算）
-        // 之间流转视频项目进度，不能用状态流转去碰前期制作流程的状态，也不能流转到"折损"。
-        // 删除/进度倒退这两个操作走 assertOwnerOrAdmin，AUDITOR 本来就不是记录的项目负责人/
-        // 执行人员，天然会被那边挡掉，这里不用重复处理。
-        if ("AUDITOR".equals(RoleUtil.getCurrentRole())) {
+        // 2026-07 新增：非 ADMIN/STAFF 的账号（@PreAuthorize 现在也放行 AUDITOR 了）想调这个
+        // 接口，必须是员工角色="财务"或"管理层"才行——AUDITOR 只是"全字段只读+导出"的通用
+        // SysUser 角色，可能被分配给财务，也可能被分配给法务/其他只读岗位，不能只凭
+        // "SysUser角色是AUDITOR"就当成财务放行，必须再看关联员工的业务角色，避免法务这类
+        // 同样是 AUDITOR 的账号被误放行。财务角色本身也只能在已经进入结算区间的三个阶段
+        // （已发布未结算/已加入客户未结算列表/客户已结算）之间流转，不能碰前期制作流程的状态
+        // 或"折损"。删除/进度倒退这两个操作走 assertOwnerOrAdmin，财务本来就不是记录的项目
+        // 负责人/执行人员，天然会被那边挡掉，这里不用重复处理。
+        boolean isAdminOrStaff = "ADMIN".equals(RoleUtil.getCurrentRole()) || "STAFF".equals(RoleUtil.getCurrentRole());
+        if (!isAdminOrStaff) {
+            String currentEmployeeRole = employeeRoleUtil.getCurrentEmployeeRole();
+            if (!"财务".equals(currentEmployeeRole) && !"管理层".equals(currentEmployeeRole)) {
+                throw new RuntimeException("无权限执行此操作");
+            }
             boolean withinSettlementZone = oldProgress != null && oldProgress.allowsPaymentProgress()
                     && newProgress != null && newProgress.allowsPaymentProgress();
             if (!withinSettlementZone) {
