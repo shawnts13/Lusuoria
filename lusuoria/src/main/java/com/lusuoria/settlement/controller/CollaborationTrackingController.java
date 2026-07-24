@@ -136,12 +136,14 @@ public class CollaborationTrackingController {
 
     /**
      * "优先展示"用：当前登录人是项目负责人/执行人员时，返回其员工 id（列表页会把自己是
-     * 负责人/执行人员的记录排到最前面）；其余角色（管理层/财务/ADMIN/AUDITOR/GUEST等）
-     * 返回 null，findByFilters 里对应的 ORDER BY 分支不生效。
+     * 负责人/执行人员的记录排到最前面）；管理层是一个特殊的项目负责人（部分红人合作跟踪记录的
+     * projectManagerId 直接指向管理层本人，见 CollaborationTrackingExcelHandler/前端负责人下拉
+     * 都允许选"管理层"角色），所以这里跟"项目负责人"一视同仁；其余角色（财务/ADMIN/AUDITOR/
+     * GUEST等）返回 null，list() 里拼进 Sort 的那两级 CASE 分支不生效。
      */
     private Long resolvePriorityEmployeeId() {
         String role = employeeRoleUtil.getCurrentEmployeeRole();
-        if ("项目负责人".equals(role) || "执行人员".equals(role)) {
+        if ("项目负责人".equals(role) || "执行人员".equals(role) || "管理层".equals(role)) {
             return employeeRoleUtil.getCurrentEmployeeId();
         }
         return null;
