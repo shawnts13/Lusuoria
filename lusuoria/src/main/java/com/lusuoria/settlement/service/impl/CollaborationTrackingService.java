@@ -883,6 +883,29 @@ public class CollaborationTrackingService {
     }
 
     /**
+     * 解除这条记录跟"红人需求管理"内部需求编号的关联（误关联到别的需求时用，不需要重新走
+     * 完整的编辑表单）。只清空 internalRequirementNo 这一个字段，不影响其他任何字段；
+     * 权限跟"删除"/"进度倒退"一致，收窄成该记录的项目负责人/执行人员或 ADMIN 才能操作——
+     * 解绑跟删除/倒退一样是纠正性质的破坏操作，不应该被无关的人随便点。
+     * 解绑后原需求的"需求完成进度"分子会变化，调用 refreshCompletedAt 保持同步
+     * （如果这条记录本来占着某个需求条目的名额，解绑后名额也就腾出来了）。
+     */
+    @Transactional
+    public CollaborationTracking unlinkRequirement(Long id) {
+        CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
+                .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
+        assertOwnerOrAdmin(t, "解除需求关联");
+        String oldRequirementNo = t.getInternalRequirementNo();
+        if (oldRequirementNo == null) {
+            throw new RuntimeException("这条记录当前没有关联任何内部需求编号");
+        }
+        t.setInternalRequirementNo(null);
+        CollaborationTracking saved = trackingRepo.save(t);
+        requirementService.refreshCompletedAt(oldRequirementNo);
+        return saved;
+    }
+
+    /**
      * 批量重新计算所有未删除记录的毛利/可分配利润/提成/公司利润这些自动计算字段。
      *
      * 用途：项目毛利这些字段是"保存时计算好存进数据库"的，不是每次读取都现算——正常情况下

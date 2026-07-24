@@ -210,6 +210,19 @@ public class CollaborationTrackingController {
     }
 
     /**
+     * 解除跟"红人需求管理"内部需求编号的关联（误关联到别的需求时用）。权限收窄成该记录的
+     * 项目负责人/执行人员或 ADMIN，见 CollaborationTrackingService.unlinkRequirement。
+     */
+    @PatchMapping("/{id}/unlink-requirement")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    public ApiResponse<CollaborationTracking> unlinkRequirement(@PathVariable Long id) {
+        CollaborationTracking saved = trackingService.unlinkRequirement(id);
+        ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
+        CollaborationTracking out = ctx.isFull() ? saved : applyFieldVisibility(saved, ctx);
+        return ApiResponse.success(out);
+    }
+
+    /**
      * 批量重新计算所有记录的毛利/可分配利润/提成/公司利润（仅 ADMIN）。
      * 用途见 CollaborationTrackingService.recomputeAllProfits() 的说明——主要是给"有人绕过
      * 系统直接改了数据库里的红人成本/客户合作价格之类原始值"这种情况做善后。
