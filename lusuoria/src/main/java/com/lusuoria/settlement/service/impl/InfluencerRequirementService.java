@@ -474,8 +474,13 @@ public class InfluencerRequirementService {
     /**
      * 上传/修改 Invoice 链接：该品牌方不需要 invoice 时直接拒绝（正常情况下前端按钮已禁用，
      * 这里是后端兜底）；需要 invoice 时必须"需求完成进度"100%才允许。成功后级联把所有关联的
-     * "红人合作跟踪"记录（按 internalRequirementNo）的红人结款进度改成"红人已提供invoice"——
-     * 已经纳入结款批次的记录（isSystemManagedOnly）跳过，不破坏批次联动。
+     * "红人合作跟踪"记录（按 internalRequirementNo）的红人结款进度更新：
+     *   - "待红人发送invoice" -> "红人已提供invoice"；
+     *   - "已纳入红人结款批次（缺少invoice）" -> "已纳入红人结款批次"（去掉"缺少invoice"标记，
+     *     同时把 preBatchPaymentProgress 快照也同步更新成"红人已提供invoice"，避免这条记录
+     *     以后被移出结款批次时，误恢复成纳入批次前的"待红人发送invoice"——那个快照是纳入批次
+     *     那一刻的状态，invoice 补上之后已经不准确了）；
+     *   - 已经是"已纳入红人结款批次"（没有缺invoice问题）的，不需要动。
      */
     @Transactional
     public InfluencerRequirement uploadInvoiceLink(Long requirementId, String invoiceLink) {
@@ -501,10 +506,16 @@ public class InfluencerRequirementService {
                 trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(requirement.getInternalRequirementNo());
         List<CollaborationTracking> toUpdate = new ArrayList<>();
         for (CollaborationTracking t : linked) {
-            if (t.getInfluencerPaymentProgress() != null && t.getInfluencerPaymentProgress().isSystemManagedOnly()) {
-                continue;
+            InfluencerPaymentProgress current = t.getInfluencerPaymentProgress();
+            if (current == InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH) {
+                continue; // 已经在结款批次里且不缺invoice，不需要动
             }
-            t.setInfluencerPaymentProgress(InfluencerPaymentProgress.INVOICE_PROVIDED);
+            if (current == InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH_MISSING_INVOICE) {
+                t.setInfluencerPaymentProgress(InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH);
+                t.setPreBatchPaymentProgress(InfluencerPaymentProgress.INVOICE_PROVIDED);
+            } else {
+                t.setInfluencerPaymentProgress(InfluencerPaymentProgress.INVOICE_PROVIDED);
+            }
             toUpdate.add(t);
         }
         if (!toUpdate.isEmpty()) trackingRepo.saveAll(toUpdate);
