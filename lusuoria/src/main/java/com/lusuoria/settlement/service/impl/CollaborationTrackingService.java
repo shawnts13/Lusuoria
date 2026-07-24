@@ -585,12 +585,11 @@ public class CollaborationTrackingService {
 
         CollaborationProgress oldProgress = t.getProgress();
         CollaborationProgress newProgress = req.getProgress();
-        InfluencerPaymentProgress newPayment = req.getInfluencerPaymentProgress();
-
-        // 基本前置条件校验：想设置红人结款进度的值，视频项目进度必须已经达到要求
-        if (newPayment != null && (newProgress == null || !newProgress.allowsPaymentProgress())) {
-            throw new RuntimeException(InfluencerPaymentProgress.PRECONDITION_ERROR);
-        }
+        // 红人结款进度不再由"状态流转"请求手动指定（2026-07 起），默认保持数据库现有值不变，
+        // 只有下面"首次进入已发布（未结算）"这一处会覆盖成系统自动判定的初始值；
+        // "进度倒退需要清空红人结款进度"这个约束由 isRollback 分支（提交审核）和审核通过时的
+        // executeProgressRollback() 负责，不需要也不能靠这里校验请求里传的值来维护
+        InfluencerPaymentProgress newPayment = t.getInfluencerPaymentProgress();
 
         // "已加入客户未结算列表"/"客户已结算"这两个状态只能由财务/管理层流转进入，
         // 普通员工（项目负责人/执行人员/基础权限）只能流转到"已发布（未结算）"和"折损"这两个终态。
