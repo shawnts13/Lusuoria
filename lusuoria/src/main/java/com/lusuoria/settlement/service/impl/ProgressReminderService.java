@@ -323,7 +323,9 @@ public class ProgressReminderService {
             reminder.setUrgency(urgency);
             reminder.setAudienceEmployeeRole(MANAGEMENT_ROLE);
             reminder.setCount(details.size());
-            reminder.setTitle(urgency.getLabel() + "：" + details.size() + "笔临近结款的红人合作跟踪记录");
+            // 严重度已经用单独的彩色标签展示在卡片上了（见前端 ProgressReminderCardList.vue
+            // 的 urgencyLabel），标题文字里不需要再重复一遍"3-7天"这种档位描述
+            reminder.setTitle(details.size() + "笔临近结款的红人合作跟踪记录");
             reminder = reminderRepo.save(reminder);
 
             for (ProgressReminderDetail d : details) d.setReminderId(reminder.getId());
@@ -657,13 +659,16 @@ public class ProgressReminderService {
         // 一起，不是只看自己的），标题里必须带上具体是谁的、以及是"谁手下的"，不用"作为XX"这种
         // 口吻——红人合作跟踪的主责人始终是项目负责人，不该暗示执行人员是另一个主责人：
         // "项目负责人-陈洁-手下的2笔视频项目进度长时间未流转"
+        // 严重度已经用单独的彩色标签展示在卡片上了（ProgressReminderCardList.vue 的
+        // urgencyLabel），标题文字里不需要再重复一遍"3-7天"这种档位描述（之前财务视角这里
+        // 会拼出"3-7天：18笔..."，跟旁边的严重度标签重复）
         String prefix;
         if (audienceEmployeeId != null) {
             Employee emp = employeeCache.findById(audienceEmployeeId);
             String empName = emp != null ? emp.getName() : ("员工#" + audienceEmployeeId);
             prefix = audienceRoleLabel + "-" + empName + "-手下的";
         } else {
-            prefix = urgency.getLabel() + "：";
+            prefix = "";
         }
         reminder.setTitle(prefix + details.size() + titleSuffix);
         reminder = reminderRepo.save(reminder);
