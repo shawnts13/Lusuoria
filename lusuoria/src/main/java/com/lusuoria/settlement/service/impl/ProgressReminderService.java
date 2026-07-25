@@ -89,7 +89,7 @@ public class ProgressReminderService {
     /** "项目流转后更新提示内容"手动触发范围（2026-07 新增） */
     private static final Set<ReminderCategory> PROJECT_FLOW_CATEGORIES = EnumSet.of(
             ReminderCategory.PM_EXECUTOR_PROGRESS_STALL, ReminderCategory.FINANCE_PROGRESS_STALL,
-            ReminderCategory.REQUIREMENT_INVOICE_OVERDUE);
+            ReminderCategory.REQUIREMENT_INVOICE_OVERDUE, ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE);
 
     @Autowired private ProgressReminderRepository reminderRepo;
     @Autowired private ProgressReminderDetailRepository detailRepo;
@@ -120,6 +120,7 @@ public class ProgressReminderService {
             runPmExecutorProgressStall(today, batchDate);
             runFinanceProgressStall(today, batchDate);
             runRequirementInvoiceOverdue(today, batchDate);
+            runRequirementContractOverdue(today, batchDate);
         } catch (RuntimeException e) {
             // GlobalExceptionHandler 只会把异常包成 400 返回给前端，不会打印堆栈，
             // 排查问题时看不到具体原因，这里手动记一下，方便去 Render 日志里查
@@ -149,7 +150,7 @@ public class ProgressReminderService {
             Set<Long> trackingTargetIds = new HashSet<>();
             Set<Long> requirementTargetIds = new HashSet<>();
             for (ReminderAcknowledgement ack : all) {
-                if (ack.getCategory() == ReminderCategory.REQUIREMENT_INVOICE_OVERDUE) {
+                if (isRequirementBasedCategory(ack.getCategory())) {
                     requirementTargetIds.add(ack.getTargetId());
                 } else {
                     trackingTargetIds.add(ack.getTargetId());
@@ -166,7 +167,7 @@ public class ProgressReminderService {
 
             List<Long> staleIds = new ArrayList<>();
             for (ReminderAcknowledgement ack : all) {
-                boolean stale = ack.getCategory() == ReminderCategory.REQUIREMENT_INVOICE_OVERDUE
+                boolean stale = isRequirementBasedCategory(ack.getCategory())
                         ? isRequirementAckStale(ack, requirementById.get(ack.getTargetId()))
                         : isTrackingAckStale(ack, trackingById.get(ack.getTargetId()));
                 if (stale) staleIds.add(ack.getId());
@@ -190,11 +191,20 @@ public class ProgressReminderService {
         return t.getProgressChangedAt().after(ack.getSnapshotChangedAt());
     }
 
+    /** REQUIREMENT_INVOICE_OVERDUE/REQUIREMENT_CONTRACT_OVERDUE 都是按"需求"定位（targetId=requirementId），
+     * 其余（PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL）按"红人合作跟踪"定位（targetId=trackingId） */
+    private boolean isRequirementBasedCategory(ReminderCategory category) {
+        return category == ReminderCategory.REQUIREMENT_INVOICE_OVERDUE
+                || category == ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE;
+    }
+
     private boolean isRequirementAckStale(ReminderAcknowledgement ack, InfluencerRequirement r) {
         if (r == null || Boolean.TRUE.equals(r.getIsDeleted())) return true;
-        if (r.getCompletedAt() == null || r.getInvoiceLink() != null) return true;
+        if (r.getCompletedAt() == null) return true;
+        boolean isContract = ack.getCategory() == ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE;
+        if (isContract ? r.getContractLink() != null : r.getInvoiceLink() != null) return true;
         Brand brand = r.getBrandId() != null ? brandCache.findById(r.getBrandId()) : null;
-        if (brand != null && !brand.requiresInvoiceUpload()) return true;
+        if (brand != null && (isContract ? !brand.isPerRequirementContract() : !brand.requiresInvoiceUpload())) return true;
         return r.getCompletedAt().after(ack.getSnapshotChangedAt());
     }
 
@@ -218,9 +228,9 @@ public class ProgressReminderService {
     }
 
     /**
-     * "项目流转后更新提示内容"手动触发（2026-07 新增）：只重算 PM_EXECUTOR_PROGRESS_STALL/
-     * FINANCE_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE 这3类，不影响两类"临近结款"提醒
-     * 当天已经算好的数据。
+     * "项目流转后更新提示内容"手动触发（2026-07 新增，2026-07 新增合同上传逾期）：只重算
+     * PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE/
+     * REQUIREMENT_CONTRACT_OVERDUE 这4类，不影响两类"临近结款"提醒当天已经算好的数据。
      */
     @Transactional
     public void runProjectFlowBatches() {
@@ -231,6 +241,7 @@ public class ProgressReminderService {
             runPmExecutorProgressStall(today, batchDate);
             runFinanceProgressStall(today, batchDate);
             runRequirementInvoiceOverdue(today, batchDate);
+            runRequirementContractOverdue(today, batchDate);
         } catch (RuntimeException e) {
             log.error("进度提醒（项目流转类）手动重算失败：{}", e.toString(), e);
             throw e;
@@ -599,7 +610,60 @@ public class ProgressReminderService {
         }
     }
 
-    // ---- Part C/D/E 共用的小工具 ----
+    /**
+     * Part F（2026-07 新增）：需求完成进度100%后长时间未上传合同——只针对品牌方"每次需求签一次
+     * 合同"的场景（Brand.isPerRequirementContract()）；"一年签一次合同"的品牌方暂时不做这类
+     * 提醒（那种场景改由红人在"红人管理"维护年度合同，不是每个需求单独催）。阈值14工作日，
+     * 分组/归类逻辑完全跟 Part E（Invoice逾期）一致，按需求关联的合作跟踪记录的项目负责人归类。
+     */
+    private void runRequirementContractOverdue(LocalDate today, Date batchDate) {
+        List<InfluencerRequirement> candidates =
+                requirementRepo.findByIsDeletedFalseAndCompletedAtIsNotNullAndContractLinkIsNull();
+        if (candidates.isEmpty()) return;
+
+        Map<String, List<ProgressReminderDetail>> byKey = new LinkedHashMap<>();
+        Map<String, Long> pmIdByKey = new HashMap<>();
+        Map<String, OverdueUrgency> urgencyByKey = new HashMap<>();
+        Map<String, Set<Long>> involvedByKey = new HashMap<>();
+
+        for (InfluencerRequirement r : candidates) {
+            Brand brand = r.getBrandId() != null ? brandCache.findById(r.getBrandId()) : null;
+            if (brand != null && !brand.isPerRequirementContract()) continue; // 一年签一次合同的品牌方暂不提醒
+            int workdays = WorkdayUtil.countWeekdaysInclusive(toLocalDate(r.getCompletedAt()), today);
+            int overdueDays = workdays - 14;
+            OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays);
+            if (urgency == null) continue;
+
+            List<CollaborationTracking> linked =
+                    trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(r.getInternalRequirementNo());
+            if (linked.isEmpty()) continue; // 理论上不会发生，防御性跳过
+            Long placeholderTrackingId = linked.get(0).getId();
+
+            Map<Long, Set<Long>> executorsByPm = new LinkedHashMap<>();
+            for (CollaborationTracking t : linked) {
+                if (t.getProjectManagerId() == null) continue;
+                Set<Long> execs = executorsByPm.computeIfAbsent(t.getProjectManagerId(), k -> new LinkedHashSet<>());
+                if (t.getExecutorId() != null && !t.getExecutorId().equals(t.getProjectManagerId())) {
+                    execs.add(t.getExecutorId());
+                }
+            }
+            for (Map.Entry<Long, Set<Long>> pmEntry : executorsByPm.entrySet()) {
+                addToOwnerBucket(byKey, pmIdByKey, urgencyByKey, involvedByKey,
+                        pmEntry.getKey(), urgency,
+                        buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays),
+                        pmEntry.getValue());
+            }
+        }
+
+        for (Map.Entry<String, List<ProgressReminderDetail>> entry : byKey.entrySet()) {
+            String key = entry.getKey();
+            saveStallReminder(batchDate, ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE,
+                    pmIdByKey.get(key), "项目负责人", urgencyByKey.get(key), entry.getValue(),
+                    "个需求完成后长时间未上传合同", involvedByKey.get(key));
+        }
+    }
+
+    // ---- Part C/D/E/F 共用的小工具 ----
 
     private Map<Long, String> buildAccountNameIndex(List<CollaborationTracking> list) {
         Set<Long> influencerIds = new HashSet<>();
@@ -800,7 +864,7 @@ public class ProgressReminderService {
         Long employeeId = employeeRoleUtil.getCurrentEmployeeId();
         if (employeeId == null || details.isEmpty()) return Collections.emptyList();
 
-        if (category == ReminderCategory.REQUIREMENT_INVOICE_OVERDUE) {
+        if (isRequirementBasedCategory(category)) {
             return details.stream().filter(d -> {
                 if (d.getInternalRequirementNo() == null) return false;
                 List<CollaborationTracking> linked =
@@ -855,9 +919,9 @@ public class ProgressReminderService {
         ackRepo.save(ack);
     }
 
-    /** REQUIREMENT_INVOICE_OVERDUE 用 completedAt，其余（trackingId 定位）用 progressChangedAt */
+    /** REQUIREMENT_INVOICE_OVERDUE/REQUIREMENT_CONTRACT_OVERDUE 用 completedAt，其余（trackingId 定位）用 progressChangedAt */
     private Date resolveCurrentChangedAt(ReminderCategory category, Long targetId) {
-        if (category == ReminderCategory.REQUIREMENT_INVOICE_OVERDUE) {
+        if (isRequirementBasedCategory(category)) {
             return requirementRepo.findById(targetId).map(InfluencerRequirement::getCompletedAt).orElse(null);
         }
         return trackingRepo.findById(targetId).map(CollaborationTracking::getProgressChangedAt).orElse(null);
@@ -871,7 +935,7 @@ public class ProgressReminderService {
         Long employeeId = employeeRoleUtil.getCurrentEmployeeId();
         if (employeeId == null || details.isEmpty()) return details;
 
-        boolean requirementBased = category == ReminderCategory.REQUIREMENT_INVOICE_OVERDUE;
+        boolean requirementBased = isRequirementBasedCategory(category);
         List<Long> targetIds = details.stream()
                 .map(d -> requirementBased ? d.getRequirementId() : d.getTrackingId())
                 .filter(Objects::nonNull).distinct().collect(Collectors.toList());

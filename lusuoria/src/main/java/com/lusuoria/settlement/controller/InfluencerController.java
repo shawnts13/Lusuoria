@@ -54,9 +54,6 @@ public class InfluencerController {
     @Autowired private DomainSyncService domainSyncService;
     @Autowired private ImportBatchRepository importBatchRepo;
 
-    // Google Drive 合同上传页面地址（后续在此配置）
-    private static final String CONTRACT_UPLOAD_URL = "";
-
     @GetMapping
     public ApiResponse<Page<Influencer>> list(
             @RequestParam(required = false) ProjectType influencerType,
@@ -99,12 +96,6 @@ public class InfluencerController {
         attachBrandTeamPairs(Collections.singletonList(inf));
         if (!RoleUtil.canViewBaselineFinancials()) return ApiResponse.success(maskSensitive(inf));
         return ApiResponse.success(inf);
-    }
-
-    /** 获取合同上传页面地址 */
-    @GetMapping("/contract-upload-url")
-    public ApiResponse<String> contractUploadUrl() {
-        return ApiResponse.success(CONTRACT_UPLOAD_URL);
     }
 
     @GetMapping("/export/excel")
@@ -189,7 +180,6 @@ public class InfluencerController {
         inf.setFollowerCount(req.getFollowerCount());
         inf.setLinks(listToStr(req.getLinks(), "\n"));
         inf.setCasesLinks(listToStr(req.getCasesLinks(), "\n"));
-        inf.setContractLink(req.getContractLink());
         inf.setEmail(req.getEmail());
         inf.setContacts(req.getContacts());
         inf.setContactStatus(req.getContactStatus());

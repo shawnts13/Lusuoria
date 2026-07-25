@@ -1,5 +1,6 @@
 package com.lusuoria.settlement.controller;
 
+import com.lusuoria.settlement.dto.request.ContractLinkRequest;
 import com.lusuoria.settlement.dto.request.InfluencerRequirementRequest;
 import com.lusuoria.settlement.dto.request.InvoiceLinkRequest;
 import com.lusuoria.settlement.dto.request.LinkLegacyTrackingsRequest;
@@ -141,6 +142,18 @@ public class InfluencerRequirementController {
     public ApiResponse<InfluencerRequirement> uploadInvoiceLink(
             @PathVariable Long id, @Valid @RequestBody InvoiceLinkRequest req) {
         return ApiResponse.success(requirementService.uploadInvoiceLink(id, req.getInvoiceLink()));
+    }
+
+    /**
+     * 上传/修改合同链接：只针对品牌方"每次需求签一次合同"的场景，一年签一次合同的品牌方
+     * 后端会拒绝（前端按钮正常情况下也不会出现，这里是兜底），见
+     * InfluencerRequirementService.uploadContractLink()。
+     */
+    @PostMapping("/{id}/contract-link")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    public ApiResponse<InfluencerRequirement> uploadContractLink(
+            @PathVariable Long id, @Valid @RequestBody ContractLinkRequest req) {
+        return ApiResponse.success(requirementService.uploadContractLink(id, req.getContractLink()));
     }
 
     @GetMapping("/export/excel")

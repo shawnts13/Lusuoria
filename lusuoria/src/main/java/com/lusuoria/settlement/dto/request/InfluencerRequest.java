@@ -29,7 +29,6 @@ public class InfluencerRequest {
     private Long   followerCount;
     private List<String> links;
     private List<String> casesLinks;
-    private String contractLink;     // 已签署合同链接
 
     private String email;
 

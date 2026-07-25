@@ -95,6 +95,16 @@ public class InfluencerRequirement extends BaseEntity {
     private String invoiceLink;
 
     /**
+     * 合同链接（2026-07 新增）。品牌方"每次需求签一次合同"时，通过
+     * InfluencerRequirementService.uploadContractLink() 写入，任何时候都可以上传/修改，
+     * 不像 invoiceLink 那样要求需求先100%完成。品牌方"一年签一次合同"时这个字段不使用——
+     * 那种品牌方的合同链接改在"红人管理"维护（见 InfluencerContract），前端会按品牌方的
+     * Brand.contractCycleType 决定展示这个字段还是跳转去红人管理。
+     */
+    @Column(name = "contract_link", columnDefinition = "TEXT")
+    private String contractLink;
+
+    /**
      * 需求完成进度达到100%（completedCount >= totalItemCount）那一刻的时间（2026-07 新增，
      * 供"Invoice逾期"提醒批次计算"完成后第几个工作日还没上传invoice"）。如果后续某条关联的
      * 合作跟踪记录被"进度倒退"审批通过、导致完成数重新低于总数，这个字段会被清空。由

@@ -59,10 +59,6 @@ public class Influencer extends BaseEntity {
     @Column(name = "cases_links", columnDefinition = "TEXT")
     private String casesLinks;
 
-    /** 已签署合同链接（Google Drive 链接） */
-    @Column(name = "contract_link")
-    private String contractLink;
-
     // ===== 联系方式 =====
     @Column(name = "email")
     private String email;

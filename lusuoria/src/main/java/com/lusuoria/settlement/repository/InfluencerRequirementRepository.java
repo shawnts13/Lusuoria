@@ -45,4 +45,7 @@ public interface InfluencerRequirementRepository extends JpaRepository<Influence
 
     /** "Invoice逾期"提醒批次用：已完成（completedAt有值）但还没上传invoice的需求 */
     List<InfluencerRequirement> findByIsDeletedFalseAndCompletedAtIsNotNullAndInvoiceLinkIsNull();
+
+    /** "合同上传逾期"提醒批次用：已完成（completedAt有值）但还没上传合同的需求 */
+    List<InfluencerRequirement> findByIsDeletedFalseAndCompletedAtIsNotNullAndContractLinkIsNull();
 }

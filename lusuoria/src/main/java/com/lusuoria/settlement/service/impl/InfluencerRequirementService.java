@@ -524,6 +524,26 @@ public class InfluencerRequirementService {
     }
 
     /**
+     * 上传/修改合同链接（2026-07 新增）：只针对品牌方"每次需求签一次合同"（Brand.isPerRequirementContract()）
+     * 的场景，任何时候都可以点击上传/修改，不像 invoice 那样要求需求先100%完成。品牌方"一年签一次
+     * 合同"时这个接口直接拒绝——那种品牌方的合同改在"红人管理"维护（InfluencerContract），前端按钮
+     * 正常情况下也不会出现，这里是后端兜底。跟 invoice 不同，合同上传不需要联动红人结款进度。
+     */
+    @Transactional
+    public InfluencerRequirement uploadContractLink(Long requirementId, String contractLink) {
+        InfluencerRequirement requirement = requirementRepo.findByIdAndIsDeletedFalse(requirementId)
+                .orElseThrow(() -> new RuntimeException("需求记录不存在：" + requirementId));
+
+        Brand brand = requirement.getBrandId() != null ? brandCache.findById(requirement.getBrandId()) : null;
+        if (brand != null && !brand.isPerRequirementContract()) {
+            throw new RuntimeException("该品牌方是一年签一次合同，请在红人管理处上传");
+        }
+
+        requirement.setContractLink(contractLink);
+        return requirementRepo.save(requirement);
+    }
+
+    /**
      * "红人合作跟踪"关联需求校验：内部需求编号存在、红人/品牌方/团队跟需求一致、
      * videoType+platform+两个单价精确匹配需求里的某一个条目且该条目还有剩余名额
      * （excludeTrackingId 排除自身，编辑已关联记录时不把自己算进"已占用"）。供

@@ -9,14 +9,16 @@ package com.lusuoria.settlement.enums;
  *   PM_EXECUTOR_PROGRESS_STALL  - 项目负责人/执行人员视角：视频项目进度长时间未流转
  *   FINANCE_PROGRESS_STALL      - 财务视角：视频项目进度长时间未流转（已发布未结算/已加入客户
  *                                 未结算列表迟迟没到客户已结算）
- *   REQUIREMENT_INVOICE_OVERDUE - 需求完成后长时间未上传 Invoice
+ *   REQUIREMENT_INVOICE_OVERDUE  - 需求完成后长时间未上传 Invoice
+ *   REQUIREMENT_CONTRACT_OVERDUE - 需求完成后长时间未上传合同（仅品牌方"每次需求签一次合同"）
  */
 public enum ReminderCategory {
     COLLAB_PAYMENT_DUE("红人合作跟踪临近结款"),
     BRAND_MONTH_END_PAYMENT_DUE("品牌方月结临近结款"),
     PM_EXECUTOR_PROGRESS_STALL("进度滞留-项目"),
     FINANCE_PROGRESS_STALL("进度滞留-财务"),
-    REQUIREMENT_INVOICE_OVERDUE("Invoice逾期");
+    REQUIREMENT_INVOICE_OVERDUE("Invoice逾期"),
+    REQUIREMENT_CONTRACT_OVERDUE("合同上传逾期");
 
     private final String label;
 

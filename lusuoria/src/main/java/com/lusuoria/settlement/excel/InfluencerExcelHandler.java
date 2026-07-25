@@ -106,7 +106,6 @@ public class InfluencerExcelHandler {
         cols.add(new String[]{"红人WhatsApp",        "0"});
         cols.add(new String[]{"红人Line",            "0"});
         cols.add(new String[]{"红人Telegram",        "0"});
-        cols.add(new String[]{"已签署合同链接",      "0"});
 
         Row headerRow = sheet.createRow(0);
         int colIdx = 0;
@@ -146,7 +145,6 @@ public class InfluencerExcelHandler {
             setCellStr(row, c++, contacts.getOrDefault("whatsapp", ""), wrap);  // 红人WhatsApp
             setCellStr(row, c++, contacts.getOrDefault("line",     ""), wrap);  // 红人Line
             setCellStr(row, c++, contacts.getOrDefault("telegram", ""), wrap);  // 红人Telegram
-            setCellStr(row, c++, inf.getContractLink(),  wrap);                 // 已签署合同链接
         }
 
         sheet.createFreezePane(0, 1);
@@ -208,7 +206,6 @@ public class InfluencerExcelHandler {
         cols.add(new String[]{"红人WhatsApp",             "0"});
         cols.add(new String[]{"红人Line",                 "0"});
         cols.add(new String[]{"红人Telegram",             "0"});
-        cols.add(new String[]{"已签署合同链接",           "0"});
 
         Row headerRow = sheet.createRow(0);
         int colIdx = 0;
@@ -247,7 +244,6 @@ public class InfluencerExcelHandler {
         examples.put("粉丝量",                   "500000");
         examples.put("主页链接(多条用换行分隔)", "https://tiktok.com/xxx");
         examples.put("合作案例链接(多条用换行分隔)", "https://youtube.com/xxx");
-        examples.put("已签署合同链接",           "https://drive.google.com/xxx");
         examples.put("红人邮箱",                 "influencer@email.com");
         examples.put("红人电话",                 "+1 234 567 8900");
         examples.put("红人WhatsApp",             "+1 234 567 8900");
@@ -365,7 +361,6 @@ public class InfluencerExcelHandler {
             {"主页链接(多条用换行分隔)", "主页链接"},
             {"所属领域(多个用换行分隔)", "所属领域"},
             {"合作案例链接(多条用换行分隔)", "合作案例链接"},
-            {"已签署合同链接"},
             {"粉丝量"},
             {"建联情况"},
             {"跟进人"},
@@ -551,7 +546,6 @@ public class InfluencerExcelHandler {
                 if (casesRaw == null) casesRaw = getStr(row, colMap, "合作案例链接");
                 if (hasValue(casesRaw)) inf.setCasesLinks(parseLinks(casesRaw));
 
-                setIfPresent(inf::setContractLink, getStr(row, colMap, "已签署合同链接"));
                 setIfPresent(inf::setEmail,        getStr(row, colMap, "红人邮箱"));
 
                 // 联系方式：有任意一个非空才更新
@@ -799,7 +793,6 @@ public class InfluencerExcelHandler {
             || !eqLong(original.getFollowerCount(), updated.getFollowerCount())
             || !eq(original.getLinks(),          updated.getLinks())
             || !eq(original.getCasesLinks(),     updated.getCasesLinks())
-            || !eq(original.getContractLink(),   updated.getContractLink())
             || !eq(original.getEmail(),          updated.getEmail())
             || !eq(original.getContacts(),       updated.getContacts())
             || !eq(original.getContactStatus() != null ? original.getContactStatus().name() : null,

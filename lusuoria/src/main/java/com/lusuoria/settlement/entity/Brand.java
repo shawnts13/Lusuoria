@@ -65,7 +65,7 @@ public class Brand extends BaseEntity {
     @Column(name = "requires_invoice")
     private Boolean requiresInvoice;
 
-    /** 合同签订周期（目前没有配套的合同上传功能，先落地配置项供以后使用） */
+    /** 合同签订周期（2026-07 起配套"红人需求管理"合同上传功能落地使用） */
     @Enumerated(EnumType.STRING)
     @Column(name = "contract_cycle_type")
     private ContractCycleType contractCycleType;
@@ -73,5 +73,15 @@ public class Brand extends BaseEntity {
     /** null 按"需要 invoice"处理，只有显式设成 false 才是"不涉及"——统一用这个方法判断，不要在别处重复 !Boolean.FALSE.equals(...) */
     public boolean requiresInvoiceUpload() {
         return !Boolean.FALSE.equals(requiresInvoice);
+    }
+
+    /**
+     * 合同是否按"每次需求签一次"（true）还是"一年签一次"（false）。null 按"每次需求签一次"
+     * 处理（还没配置的品牌方默认走更宽松、不需要额外去红人管理跳转的分支），跟
+     * requiresInvoiceUpload() 的 null 安全默认思路一致——统一用这个方法判断，不要在别处
+     * 重复写 contractCycleType != ContractCycleType.ANNUAL。
+     */
+    public boolean isPerRequirementContract() {
+        return contractCycleType != ContractCycleType.ANNUAL;
     }
 }
