@@ -96,6 +96,21 @@ public class InfluencerContractController {
         return ApiResponse.success(contractRepo.save(contract));
     }
 
+    /**
+     * 硬删除（不是软删除）：这张表本身就没有 isDeleted 字段、没走软删除那一套（见
+     * InfluencerContract 类注释），合同记录本来就是"新增一条/编辑一条"的独立 CRUD，
+     * 删除就直接把数据库行删掉，方便手动清理很久以前（比如2年前）的历史合同。
+     */
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    public ApiResponse<Void> delete(@PathVariable Long id) {
+        if (!contractRepo.existsById(id)) {
+            throw new RuntimeException("合同记录不存在：" + id);
+        }
+        contractRepo.deleteById(id);
+        return ApiResponse.success();
+    }
+
     private Brand resolveBrand(Long brandId) {
         Brand brand = brandCache.findById(brandId);
         if (brand == null) throw new RuntimeException("品牌方不存在：" + brandId);
