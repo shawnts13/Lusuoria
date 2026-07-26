@@ -309,6 +309,35 @@ public class InfluencerRequirementService {
         return incomplete;
     }
 
+    /**
+     * "需求列表页 - 查看未完成的需求"按钮专用：跟 findByFilters 走同一套筛选条件，只是额外
+     * 只保留"需求完成进度"没到100%的（含 totalItemCount 为空/0 的情况——一条需求还没有任何
+     * 条目，进度显示是0%，也算"未完成"，跟 listIncompleteByInfluencer 那条"completed<total"
+     * 的口径略有不同，那个方法是给"关联红人需求"选择器用的，不在这里复用）。
+     * completedCount 分子没法下推到 SQL WHERE，只能整批查出来后在内存里筛+手动分页。
+     */
+    @Transactional(readOnly = true)
+    public org.springframework.data.domain.Page<InfluencerRequirement> pageIncomplete(
+            Long brandId, Long teamId, String accountName, String requirementMonth,
+            String internalRequirementNo, org.springframework.data.domain.Pageable pageable) {
+        List<InfluencerRequirement> all = requirementRepo.findByFiltersNoPaging(
+                brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable.getSort());
+        List<String> nos = all.stream().map(InfluencerRequirement::getInternalRequirementNo).collect(Collectors.toList());
+        Map<String, Integer> completedByNo = completedCountByNos(nos);
+        List<InfluencerRequirement> incomplete = new ArrayList<>();
+        for (InfluencerRequirement r : all) {
+            int completed = completedByNo.getOrDefault(r.getInternalRequirementNo(), 0);
+            r.setCompletedCount(completed);
+            int total = r.getTotalItemCount() != null ? r.getTotalItemCount() : 0;
+            boolean isComplete = total > 0 && completed >= total;
+            if (!isComplete) incomplete.add(r);
+        }
+        int start = Math.min((int) pageable.getOffset(), incomplete.size());
+        int end = Math.min(start + pageable.getPageSize(), incomplete.size());
+        return new org.springframework.data.domain.PageImpl<>(
+                incomplete.subList(start, end), pageable, incomplete.size());
+    }
+
     /** 需求列表页用：按 internalRequirementNo 批量算"需求完成进度"分子，避免逐条查库 */
     @Transactional(readOnly = true)
     public Map<String, Integer> completedCountByNos(List<String> nos) {

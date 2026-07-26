@@ -45,6 +45,7 @@ public class InfluencerRequirementController {
             @RequestParam(required = false) String accountName,
             @RequestParam(required = false) String requirementMonth,
             @RequestParam(required = false) String internalRequirementNo,
+            @RequestParam(defaultValue = "false") boolean onlyIncomplete,
             @RequestParam(defaultValue = "id") String sortBy,
             @RequestParam(defaultValue = "desc") String sortDir,
             @RequestParam(defaultValue = "0")  int page,
@@ -55,6 +56,13 @@ public class InfluencerRequirementController {
                 ? Sort.by(Sort.Direction.ASC, sortProperty)
                 : Sort.by(Sort.Direction.DESC, sortProperty);
         PageRequest pageable = PageRequest.of(page, size, sort);
+
+        // "查看未完成的需求"：走单独的全量查询+内存筛选+手动分页，见 pageIncomplete 的注释
+        if (onlyIncomplete) {
+            return ApiResponse.success(requirementService.pageIncomplete(
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable));
+        }
+
         Page<InfluencerRequirement> result = requirementRepo.findByFilters(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable);
 
