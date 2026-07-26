@@ -172,32 +172,18 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("startMonth") String startMonth, @Param("endMonth") String endMonth);
 
     /**
-     * 内部执行成本梯度分档计算专用：某执行人员在某"发布时间"月份下，
-     * 已经赋值过内部执行成本的旧素材重发记录，且项目负责人必须是指定的这个人
-     * （目前是"管理层"那唯一一个人，因为费率梯度是管理层跟执行人员之间的约定，
-     * 不应该把这个执行人员给其他项目负责人干的活也算进这个梯度里）。
-     * 按 id 升序排列（用 id 顺序近似代表实际处理顺序，用来判断第几笔、分档、
-     * 以及当月101条以上部分的累计封顶金额）。
+     * 内部执行成本梯度分档计算专用：某执行人员在某"发布时间"月份下、某个具体项目负责人名下，
+     * 已经赋值过内部执行成本的全部记录（不分视频类型，按 id 升序排列，用 id 顺序近似代表实际
+     * 处理顺序）。2026-07 起四个视频类型统一走"按当月累计条数分档"的梯度结构
+     * （见 ExecutorPayRateTier），CollaborationTrackingService 在内存里按 videoType 再分桶，
+     * 分别判断第几笔、分档、以及"不封顶那档"的当月累计封顶金额，不需要针对某个视频类型
+     * 单独开一条查询。
      */
     @Query("SELECT c FROM CollaborationTracking c WHERE c.isDeleted = false " +
            "AND c.executorId = :executorId AND c.projectManagerId = :managerId " +
-           "AND c.videoType = com.lusuoria.settlement.enums.VideoType.OLD_MATERIAL_REPOST " +
            "AND c.internalExecutionCost IS NOT NULL " +
            "AND FUNCTION('to_char', c.publishDate, 'YYYYMM') = :month " +
            "ORDER BY c.id ASC")
-    List<CollaborationTracking> findCostedOldMaterialOrdersForExecutor(
-            @Param("executorId") Long executorId, @Param("managerId") Long managerId, @Param("month") String month);
-
-    /**
-     * 非管理层项目负责人场景下，弹窗里的提示信息用：这个执行人员在某"发布时间"月份下，
-     * 已经为这个具体的项目负责人结算过的记录（已赋值内部执行成本），用来告诉这个项目负责人
-     * "这个执行人员这个月已经帮你干了多少活"，本身不参与任何金额计算（这种情况下金额是
-     * 项目负责人自己填的，系统不提供默认值），只是给个参考。
-     */
-    @Query("SELECT c FROM CollaborationTracking c WHERE c.isDeleted = false " +
-           "AND c.executorId = :executorId AND c.projectManagerId = :managerId " +
-           "AND c.internalExecutionCost IS NOT NULL " +
-           "AND FUNCTION('to_char', c.publishDate, 'YYYYMM') = :month")
     List<CollaborationTracking> findCostedOrdersForExecutorAndManager(
             @Param("executorId") Long executorId, @Param("managerId") Long managerId, @Param("month") String month);
 
