@@ -33,15 +33,18 @@ import java.util.stream.Collectors;
  *     exchangeRate 可能有例外，必须逐条算）。
  *   - 执行人员：薪酬 = 名下记录 internalExecutionCost 原始值求和（人民币），不看这条记录是不是
  *     "管理层负责"——那个只影响"是否冲减公司利润"，不影响执行人员自己该拿多少钱。
- *   - 管理层：项目毛利/可分配利润/负责人提成/内部执行人力成本/内部其他员工成本/公司利润，
- *     公式跟 DashboardStatsService.getSummary() 完全一致（同样复用 compute()），
- *     再扣掉当月所有"已确认"的其他员工的阶梯Bonus+奖金（这两项在 getSummary 里没有被扣减）。
+ *   - 管理层：项目毛利/可分配利润/负责人提成/内部其他员工成本/公司利润是公司整体口径；
+ *     "内部执行人力成本"只算管理层自己名下（projectManagerId=管理层自己）的执行人员工资，
+ *     其他项目负责人名下的执行人员是那位项目负责人自己发工资，不计入这一项。
+ *     再扣掉当月所有"已确认"的其他员工的阶梯Bonus+奖金（这两项本身不在上述公式里）。
  *
- * 性能：管理层视角的"工资单列表"要一次性展示全体员工，如果每个员工各自查一遍整月的合作跟踪
- * 记录（原来的写法），员工一多就是明显的 N+1，整页会很慢。这里改成跟 DashboardStatsService
- * 一样的套路——整月记录只查一次，在内存里按项目负责人/执行人员分组一次算完所有人
- * （见 {@link #batchComputeCommissionRoles}），管理层确认前置校验用到的"其他员工是否都已确认"
- * 也改成一次查完当月所有工资单行，不再按员工循环查。
+ * 性能：
+ *   1. 管理层视角的"工资单列表"整月合作跟踪记录只查一次，在内存里按项目负责人/执行人员
+ *      分组一次算完所有人（见 {@link #batchComputeCommissionRoles}），不再按员工循环查。
+ *   2. 月度汇率（ExchangeRateCache）在一次请求里只查一次——员工数量再多，也只有一次
+ *      exchangeRateService.getRateForMonth() 调用，通过参数把 rate/liveRateInfo 一路传下去，
+ *      不在 resolveDisplay/toDisplayResponse/buildProjectManagerDetail 等每员工都会调用一次的
+ *      方法里各自再查一遍（那样是另一种隐蔽的 N+1，员工一多同样会明显变慢）。
  */
 @Service
 public class PayslipService {
@@ -69,17 +72,22 @@ public class PayslipService {
     public PayslipDetailResponse detail(Long employeeId, String yearMonth, String currency) {
         Employee emp = employeeRepo.findByIdAndIsDeletedFalse(employeeId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
+        ExchangeRateInfo liveRateInfo = exchangeRateService.getRateForMonth(yearMonth);
         Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(employeeId, yearMonth).orElse(null);
-        p = autoConfirmFixedSalaryIfMissing(emp, yearMonth, p);
-        return resolveDisplay(emp, yearMonth, currency, null, p);
+        p = autoConfirmFixedSalaryIfMissing(emp, yearMonth, p, liveRateInfo.getUsdToCny());
+        return resolveDisplay(emp, yearMonth, currency, null, p, liveRateInfo);
     }
 
     /**
      * 管理层视角的员工列表（不含管理层自己，见 {@link #managementRow}）。
-     * 整月合作跟踪记录、整月工资单确认状态各只查一次，员工数量再多也不会变成 N 次查询。
+     * 整月合作跟踪记录、整月工资单确认状态、月度汇率各只查一次，员工数量再多也不会变成
+     * N 次查询。
      */
     @Transactional
     public List<PayslipRowResponse> listForMonth(String yearMonth, String roleFilter, String currency) {
+        ExchangeRateInfo liveRateInfo = exchangeRateService.getRateForMonth(yearMonth);
+        BigDecimal rate = liveRateInfo.getUsdToCny();
+
         List<Employee> employees = employeeRepo.findByIsDeletedFalseOrderByNameAsc().stream()
                 .filter(e -> e.getResignDate() == null)
                 .filter(e -> !"管理层".equals(e.getRole()))
@@ -89,7 +97,7 @@ public class PayslipService {
         List<Employee> commissionRoleEmployees = employees.stream()
                 .filter(e -> "项目负责人".equals(e.getRole()) || "执行人员".equals(e.getRole()))
                 .collect(Collectors.toList());
-        Map<Long, PayslipDetailResponse> liveMap = batchComputeCommissionRoles(commissionRoleEmployees, yearMonth);
+        Map<Long, PayslipDetailResponse> liveMap = batchComputeCommissionRoles(commissionRoleEmployees, yearMonth, rate);
 
         Map<Long, Payslip> payslipByEmployeeId = payslipRepo.findByYearMonthAndIsDeletedFalse(yearMonth).stream()
                 .collect(Collectors.toMap(Payslip::getEmployeeId, p -> p, (a, b) -> a));
@@ -97,13 +105,13 @@ public class PayslipService {
         // 不需要每月都手动点一次"确认"，要改的话照旧先"取消确认"）
         for (Employee e : employees) {
             if (FIXED_SALARY_ROLES.contains(e.getRole()) && !payslipByEmployeeId.containsKey(e.getId())) {
-                payslipByEmployeeId.put(e.getId(), autoConfirmFixedSalaryIfMissing(e, yearMonth, null));
+                payslipByEmployeeId.put(e.getId(), autoConfirmFixedSalaryIfMissing(e, yearMonth, null, rate));
             }
         }
 
         List<PayslipRowResponse> result = new ArrayList<>();
         for (Employee e : employees) {
-            result.add(toRowResponse(e, yearMonth, currency, liveMap.get(e.getId()), payslipByEmployeeId.get(e.getId())));
+            result.add(toRowResponse(e, yearMonth, currency, liveMap.get(e.getId()), payslipByEmployeeId.get(e.getId()), liveRateInfo));
         }
         return result;
     }
@@ -112,8 +120,9 @@ public class PayslipService {
     public PayslipRowResponse managementRow(String yearMonth, String currency) {
         Employee mgmt = employeeCache.findManagementEmployee();
         if (mgmt == null) throw new RuntimeException("系统里还没有配置角色为\"管理层\"的员工");
+        ExchangeRateInfo liveRateInfo = exchangeRateService.getRateForMonth(yearMonth);
         Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(mgmt.getId(), yearMonth).orElse(null);
-        return toRowResponse(mgmt, yearMonth, currency, null, p);
+        return toRowResponse(mgmt, yearMonth, currency, null, p, liveRateInfo);
     }
 
     // ================= 手动维护字段 =================
@@ -142,7 +151,8 @@ public class PayslipService {
         // 财务/IT后勤：这是当月第一次涉及这条工资单记录（比如管理层还没看过这个月就直接先设了
         // 奖金），默认直接确认，不需要另外再点一次"确认"
         if (isNew && FIXED_SALARY_ROLES.contains(emp.getRole())) {
-            applyConfirmedSnapshot(emp, yearMonth, p, null);
+            BigDecimal rate = exchangeRateService.getRateForMonth(yearMonth).getUsdToCny();
+            applyConfirmedSnapshot(emp, yearMonth, p, null, rate);
         }
         payslipRepo.save(p);
     }
@@ -162,12 +172,13 @@ public class PayslipService {
     public void confirm(Long employeeId, String yearMonth) {
         Employee emp = employeeRepo.findByIdAndIsDeletedFalse(employeeId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
+        BigDecimal rate = exchangeRateService.getRateForMonth(yearMonth).getUsdToCny();
         if ("管理层".equals(emp.getRole())) {
-            String blocked = managementBlockReason(yearMonth, employeeId);
+            String blocked = managementBlockReason(yearMonth, employeeId, rate);
             if (blocked != null) throw new RuntimeException(blocked);
         }
         Payslip p = getOrCreateForWrite(employeeId, yearMonth);
-        applyConfirmedSnapshot(emp, yearMonth, p, employeeRoleUtil.getCurrentEmployeeId());
+        applyConfirmedSnapshot(emp, yearMonth, p, employeeRoleUtil.getCurrentEmployeeId(), rate);
         payslipRepo.save(p);
     }
 
@@ -181,17 +192,17 @@ public class PayslipService {
 
     // ================= 按角色计算：单个员工（明细弹窗/我的工资单/确认时用） =================
 
-    private PayslipDetailResponse computeLive(Employee emp, String yearMonth, Payslip draft) {
+    private PayslipDetailResponse computeLive(Employee emp, String yearMonth, Payslip draft, BigDecimal rate) {
         String role = emp.getRole();
-        if ("项目负责人".equals(role)) return computeProjectManager(emp, yearMonth);
+        if ("项目负责人".equals(role)) return computeProjectManager(emp, yearMonth, rate);
         if ("执行人员".equals(role)) return computeExecutor(emp, yearMonth);
         if (FIXED_SALARY_ROLES.contains(role)) return computeFixedSalary(emp);
         if ("法务".equals(role)) return computeLegal(draft);
-        if ("管理层".equals(role)) return computeManagement(emp, yearMonth);
+        if ("管理层".equals(role)) return computeManagement(emp, yearMonth, rate);
         throw new RuntimeException("该角色暂不支持工资单：" + role);
     }
 
-    private PayslipDetailResponse computeProjectManager(Employee emp, String yearMonth) {
+    private PayslipDetailResponse computeProjectManager(Employee emp, String yearMonth, BigDecimal rate) {
         List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
         Map<String, PayslipDimensionRow> grouped = new LinkedHashMap<>();
         BigDecimal totalCommission = BigDecimal.ZERO;
@@ -201,7 +212,7 @@ public class PayslipService {
             totalCommission = totalCommission.add(c.commissionAmount);
             accumulatePmRow(grouped, o, c.clientPrice);
         }
-        return buildProjectManagerDetail(emp, new ArrayList<>(grouped.values()), totalCommission, yearMonth);
+        return buildProjectManagerDetail(emp, new ArrayList<>(grouped.values()), totalCommission, rate);
     }
 
     private PayslipDetailResponse computeExecutor(Employee emp, String yearMonth) {
@@ -235,7 +246,7 @@ public class PayslipService {
                 .build();
     }
 
-    private PayslipDetailResponse computeManagement(Employee mgmt, String yearMonth) {
+    private PayslipDetailResponse computeManagement(Employee mgmt, String yearMonth, BigDecimal rate) {
         List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
         Map<String, PayslipDimensionRow> grouped = new LinkedHashMap<>();
         BigDecimal totalGrossProfit = BigDecimal.ZERO;
@@ -270,7 +281,6 @@ public class PayslipService {
         rows.sort((a, b) -> b.getVideoCount().compareTo(a.getVideoCount()));
         rows.add(buildSummaryRow(rows));
 
-        BigDecimal rate = dashboardStatsService.rateForRange(yearMonth);
         // 内部其他员工成本：财务/IT后勤固定月薪合计（人民币），换算成美金扣减
         BigDecimal otherStaffCostRmb = BigDecimal.ZERO;
         for (Employee e : employeeRepo.findByIsDeletedFalseOrderByNameAsc()) {
@@ -323,7 +333,7 @@ public class PayslipService {
      * 项目负责人/执行人员批量实时预览：整月合作跟踪记录只查一次，在内存里按人分组，
      * 避免工资单列表页挨个员工各查一次整月数据（原来的写法在员工多的时候明显变慢）。
      */
-    private Map<Long, PayslipDetailResponse> batchComputeCommissionRoles(List<Employee> employees, String yearMonth) {
+    private Map<Long, PayslipDetailResponse> batchComputeCommissionRoles(List<Employee> employees, String yearMonth, BigDecimal rate) {
         Map<Long, Employee> pmById = new HashMap<>();
         Map<Long, Employee> execById = new HashMap<>();
         for (Employee e : employees) {
@@ -359,7 +369,7 @@ public class PayslipService {
             List<PayslipDimensionRow> rows = new ArrayList<>(
                     pmGrouped.getOrDefault(e.getId(), Collections.emptyMap()).values());
             result.put(e.getId(), buildProjectManagerDetail(
-                    e, rows, pmCommission.getOrDefault(e.getId(), BigDecimal.ZERO), yearMonth));
+                    e, rows, pmCommission.getOrDefault(e.getId(), BigDecimal.ZERO), rate));
         }
         for (Employee e : execById.values()) {
             List<PayslipDimensionRow> rows = new ArrayList<>(
@@ -397,13 +407,13 @@ public class PayslipService {
     }
 
     private PayslipDetailResponse buildProjectManagerDetail(Employee emp, List<PayslipDimensionRow> rowsNoSummary,
-                                                             BigDecimal totalCommission, String yearMonth) {
+                                                             BigDecimal totalCommission, BigDecimal rate) {
         List<PayslipDimensionRow> rows = new ArrayList<>(rowsNoSummary);
         rows.sort((a, b) -> b.getVideoCount().compareTo(a.getVideoCount()));
         rows.add(buildSummaryRow(rows));
 
         BigDecimal tierBonus = commissionBonusService.hasBonusTierConfigured(emp)
-                ? commissionBonusService.computeBonus(emp, totalCommission, dashboardStatsService.rateForRange(yearMonth))
+                ? commissionBonusService.computeBonus(emp, totalCommission, rate)
                 : null;
 
         return PayslipDetailResponse.builder()
@@ -460,20 +470,27 @@ public class PayslipService {
 
     // ================= 展示层：换算成请求币种，现算总工资 =================
 
-    /** 已确认走快照，未确认实时算（优先用调用方批量算好的 precomputedLive，没有才现查现算） */
+    /**
+     * 已确认走快照，未确认实时算（优先用调用方批量算好的 precomputedLive，没有才现查现算）。
+     * liveRateInfo 由调用方在整个请求里只查一次，这里不再重复查汇率。
+     */
     private PayslipDetailResponse resolveDisplay(Employee emp, String yearMonth, String currency,
-                                                  PayslipDetailResponse precomputedLive, Payslip p) {
+                                                  PayslipDetailResponse precomputedLive, Payslip p,
+                                                  ExchangeRateInfo liveRateInfo) {
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
         if (p != null && Boolean.TRUE.equals(p.getConfirmed())) {
-            return toDisplayResponse(readSnapshot(p), p, p.getExchangeRateSnapshot(), toRmb, true, yearMonth);
+            BigDecimal snapshotRate = p.getExchangeRateSnapshot();
+            ExchangeRateInfo snapshotRateInfo = ExchangeRateInfo.builder()
+                    .yearMonth(yearMonth).usdToCny(snapshotRate).isMissing(snapshotRate == null).build();
+            return toDisplayResponse(readSnapshot(p), p, snapshotRate, toRmb, true, snapshotRateInfo);
         }
-        PayslipDetailResponse live = precomputedLive != null ? precomputedLive : computeLive(emp, yearMonth, p);
-        BigDecimal rate = dashboardStatsService.rateForRange(yearMonth);
-        return toDisplayResponse(live, p, rate, toRmb, false, yearMonth);
+        BigDecimal rate = liveRateInfo.getUsdToCny();
+        PayslipDetailResponse live = precomputedLive != null ? precomputedLive : computeLive(emp, yearMonth, p, rate);
+        return toDisplayResponse(live, p, rate, toRmb, false, liveRateInfo);
     }
 
     private PayslipDetailResponse toDisplayResponse(PayslipDetailResponse src, Payslip draft, BigDecimal rate,
-                                                     boolean toRmb, boolean confirmed, String yearMonth) {
+                                                     boolean toRmb, boolean confirmed, ExchangeRateInfo rateInfo) {
         String type = src.getType();
         boolean rowsAreRmb = "EXECUTOR".equals(type);
         boolean baseIsRmb = "EXECUTOR".equals(type) || "FIXED_SALARY".equals(type) || "LEGAL".equals(type);
@@ -509,10 +526,6 @@ public class PayslipService {
         }
 
         BigDecimal total = "MANAGEMENT".equals(type) ? companyProfit : safeAdd(safeAdd(baseAmount, tierBonus), extraBonus);
-
-        ExchangeRateInfo rateInfo = confirmed
-                ? ExchangeRateInfo.builder().yearMonth(yearMonth).usdToCny(rate).isMissing(rate == null).build()
-                : exchangeRateService.getRateForMonth(yearMonth);
 
         return PayslipDetailResponse.builder()
                 .type(type).rows(convertedRows)
@@ -550,15 +563,17 @@ public class PayslipService {
     }
 
     private PayslipRowResponse toRowResponse(Employee emp, String yearMonth, String currency,
-                                              PayslipDetailResponse precomputedLive, Payslip payslip) {
-        PayslipDetailResponse d = resolveDisplay(emp, yearMonth, currency, precomputedLive, payslip);
+                                              PayslipDetailResponse precomputedLive, Payslip payslip,
+                                              ExchangeRateInfo liveRateInfo) {
+        PayslipDetailResponse d = resolveDisplay(emp, yearMonth, currency, precomputedLive, payslip, liveRateInfo);
         Long videoCount = null;
         if (("项目负责人".equals(emp.getRole()) || "执行人员".equals(emp.getRole()))
                 && d.getRows() != null && !d.getRows().isEmpty()) {
             videoCount = d.getRows().get(d.getRows().size() - 1).getVideoCount();
         }
         Boolean legalSalarySet = "法务".equals(emp.getRole()) ? (payslip != null && payslip.getLegalSalaryRmb() != null) : null;
-        String blockedReason = "管理层".equals(emp.getRole()) ? managementBlockReason(yearMonth, emp.getId()) : null;
+        String blockedReason = "管理层".equals(emp.getRole())
+                ? managementBlockReason(yearMonth, emp.getId(), liveRateInfo.getUsdToCny()) : null;
 
         return PayslipRowResponse.builder()
                 .employeeId(emp.getId()).employeeName(emp.getName()).employeeRole(emp.getRole())
@@ -582,7 +597,7 @@ public class PayslipService {
      * 当月工资单确认状态只查一次（不按员工循环查），只在"管理层这一行"触发，请求量本身
      * 就是 O(1)，不受员工数量影响。
      */
-    private String managementBlockReason(String yearMonth, Long managementEmployeeId) {
+    private String managementBlockReason(String yearMonth, Long managementEmployeeId, BigDecimal rate) {
         List<Employee> activeOthers = employeeRepo.findByIsDeletedFalseOrderByNameAsc().stream()
                 .filter(e -> e.getResignDate() == null)
                 .filter(e -> !e.getId().equals(managementEmployeeId))
@@ -595,7 +610,7 @@ public class PayslipService {
         for (Employee e : activeOthers) {
             Payslip p = payslipByEmployeeId.get(e.getId());
             if (p == null) {
-                p = autoConfirmFixedSalaryIfMissing(e, yearMonth, null);
+                p = autoConfirmFixedSalaryIfMissing(e, yearMonth, null, rate);
             }
             if (p == null || !Boolean.TRUE.equals(p.getConfirmed())) {
                 return "请先确认其他员工的工资单后再确认管理层工资单";
@@ -625,19 +640,19 @@ public class PayslipService {
      * 管理层账号手动点的。非固定月薪角色、或 existing 已存在（不管确认与否，都不覆盖已有
      * 记录/已有的人为操作状态）时原样返回 existing。
      */
-    private Payslip autoConfirmFixedSalaryIfMissing(Employee emp, String yearMonth, Payslip existing) {
+    private Payslip autoConfirmFixedSalaryIfMissing(Employee emp, String yearMonth, Payslip existing, BigDecimal rate) {
         if (existing != null || !FIXED_SALARY_ROLES.contains(emp.getRole())) return existing;
         Payslip p = Payslip.builder().employeeId(emp.getId()).yearMonth(yearMonth).confirmed(false).build();
-        applyConfirmedSnapshot(emp, yearMonth, p, null);
+        applyConfirmedSnapshot(emp, yearMonth, p, null, rate);
         return payslipRepo.save(p);
     }
 
     /** 计算当前实时数据、写入确认快照并把 confirmed 置 true，不负责 save（调用方决定何时落库） */
-    private void applyConfirmedSnapshot(Employee emp, String yearMonth, Payslip p, Long confirmedByEmployeeId) {
-        PayslipDetailResponse live = computeLive(emp, yearMonth, p);
+    private void applyConfirmedSnapshot(Employee emp, String yearMonth, Payslip p, Long confirmedByEmployeeId, BigDecimal rate) {
+        PayslipDetailResponse live = computeLive(emp, yearMonth, p, rate);
         p.setEmployeeRole(emp.getRole());
         p.setDetailJson(writeSnapshot(live));
-        p.setExchangeRateSnapshot(dashboardStatsService.rateForRange(yearMonth));
+        p.setExchangeRateSnapshot(rate);
         p.setConfirmed(true);
         p.setConfirmedAt(new Date());
         p.setConfirmedByEmployeeId(confirmedByEmployeeId);
