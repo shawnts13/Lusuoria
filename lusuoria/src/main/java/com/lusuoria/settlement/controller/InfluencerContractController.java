@@ -1,9 +1,13 @@
 package com.lusuoria.settlement.controller;
 
+import com.lusuoria.settlement.config.BrandCache;
+import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.dto.request.InfluencerContractRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
+import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.InfluencerContract;
+import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.repository.InfluencerContractRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,13 +15,16 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import javax.validation.Valid;
+import java.text.SimpleDateFormat;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
- * 红人已签署合同（2026-07 新增，"红人管理"编辑弹窗里的"已签署合同"区块）。
- * 一个红人可以有多条（一年一条），"新增"/"编辑"各自独立操作，不走整份表单的 save()。
+ * 红人已签署合同（"红人管理"编辑弹窗里的"已签署合同"区块）。
+ * 一个红人可以有多条，按 (品牌方,团队) 各自维护任意有效期区间，"新增"/"编辑"各自独立操作，
+ * 不走整份表单的 save()。
  */
 @RestController
 @RequestMapping("/api/influencer-contracts")
@@ -25,23 +32,28 @@ public class InfluencerContractController {
 
     @Autowired private InfluencerContractRepository contractRepo;
     @Autowired private InfluencerRepository influencerRepo;
+    @Autowired private BrandCache brandCache;
+    @Autowired private InfluencerTeamCache teamCache;
 
-    /** 某个红人的合同列表（年份倒序），供"红人管理"编辑弹窗展示 */
+    private static final SimpleDateFormat DATE_FMT = new SimpleDateFormat("yyyy-MM-dd");
+
+    /** 某个红人的合同列表（有效期起始日期倒序），供"红人管理"编辑弹窗展示 */
     @GetMapping("/by-influencer/{influencerId}")
     public ApiResponse<List<InfluencerContract>> byInfluencer(@PathVariable Long influencerId) {
-        return ApiResponse.success(contractRepo.findByInfluencerIdOrderByYearDesc(influencerId));
+        return ApiResponse.success(contractRepo.findByInfluencerIdOrderByStartDateDesc(influencerId));
     }
 
     /**
-     * 批量按红人 id 取合同，返回 influencerId -> {year -> contractLink}。
-     * 供"红人需求管理"列表页按每条需求自己的需求年份，交叉核对该红人是否已经在"红人管理"
-     * 上传过对应年份的合同（品牌方"一年签一次合同"场景），避免逐条查库。
+     * 批量按红人 id 取合同，返回 influencerId -> 该红人名下的全部合同列表。
+     * 供"红人需求管理"列表页按每条需求自己的品牌方/团队/需求月份，交叉核对该红人在这个
+     * 品牌方这个团队下是否已经有一条"需求月份落在有效期内"的合同（品牌方"一年签一次合同"场景），
+     * 具体的品牌方/团队/日期区间匹配逻辑在前端做，这里只负责一次性把数据都吐出来，避免逐条查库。
      */
     @GetMapping("/by-influencer-ids")
-    public ApiResponse<Map<Long, Map<Integer, String>>> byInfluencerIds(@RequestParam List<Long> ids) {
-        Map<Long, Map<Integer, String>> result = new HashMap<>();
+    public ApiResponse<Map<Long, List<InfluencerContract>>> byInfluencerIds(@RequestParam List<Long> ids) {
+        Map<Long, List<InfluencerContract>> result = new HashMap<>();
         for (InfluencerContract c : contractRepo.findByInfluencerIdIn(ids)) {
-            result.computeIfAbsent(c.getInfluencerId(), k -> new HashMap<>()).put(c.getYear(), c.getContractLink());
+            result.computeIfAbsent(c.getInfluencerId(), k -> new java.util.ArrayList<>()).add(c);
         }
         return ApiResponse.success(result);
     }
@@ -51,13 +63,17 @@ public class InfluencerContractController {
     public ApiResponse<InfluencerContract> create(@Valid @RequestBody InfluencerContractRequest req) {
         Influencer influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getInfluencerId())
                 .orElseThrow(() -> new RuntimeException("红人不存在：" + req.getInfluencerId()));
-        if (contractRepo.existsByInfluencerIdAndYear(req.getInfluencerId(), req.getYear())) {
-            throw new RuntimeException("该红人已有" + req.getYear() + "年的合同记录，请编辑已有记录");
-        }
+        Brand brand = resolveBrand(req.getBrandId());
+        InfluencerTeam team = resolveTeam(req.getTeamId());
+        validateDateRange(req);
+        rejectOverlap(req, null);
 
         InfluencerContract contract = new InfluencerContract();
         contract.setInfluencer(influencer);
-        contract.setYear(req.getYear());
+        contract.setBrand(brand);
+        contract.setTeam(team);
+        contract.setStartDate(req.getStartDate());
+        contract.setEndDate(req.getEndDate());
         contract.setContractLink(req.getContractLink());
         return ApiResponse.success(contractRepo.save(contract));
     }
@@ -67,12 +83,50 @@ public class InfluencerContractController {
     public ApiResponse<InfluencerContract> update(@PathVariable Long id, @Valid @RequestBody InfluencerContractRequest req) {
         InfluencerContract contract = contractRepo.findById(id)
                 .orElseThrow(() -> new RuntimeException("合同记录不存在：" + id));
-        if (contractRepo.existsByInfluencerIdAndYearAndIdNot(req.getInfluencerId(), req.getYear(), id)) {
-            throw new RuntimeException("该红人已有" + req.getYear() + "年的合同记录，请编辑已有记录");
-        }
+        Brand brand = resolveBrand(req.getBrandId());
+        InfluencerTeam team = resolveTeam(req.getTeamId());
+        validateDateRange(req);
+        rejectOverlap(req, id);
 
-        contract.setYear(req.getYear());
+        contract.setBrand(brand);
+        contract.setTeam(team);
+        contract.setStartDate(req.getStartDate());
+        contract.setEndDate(req.getEndDate());
         contract.setContractLink(req.getContractLink());
         return ApiResponse.success(contractRepo.save(contract));
+    }
+
+    private Brand resolveBrand(Long brandId) {
+        Brand brand = brandCache.findById(brandId);
+        if (brand == null) throw new RuntimeException("品牌方不存在：" + brandId);
+        if (brand.isPerRequirementContract()) {
+            throw new RuntimeException("该品牌方是\"一次需求签一次合同\"，请在红人需求管理处上传合同");
+        }
+        return brand;
+    }
+
+    private InfluencerTeam resolveTeam(Long teamId) {
+        if (teamId == null) return null;
+        InfluencerTeam team = teamCache.findById(teamId);
+        if (team == null) throw new RuntimeException("红人团队不存在：" + teamId);
+        return team;
+    }
+
+    private void validateDateRange(InfluencerContractRequest req) {
+        if (req.getStartDate().after(req.getEndDate())) {
+            throw new RuntimeException("合同生效日期不能晚于失效日期");
+        }
+    }
+
+    private void rejectOverlap(InfluencerContractRequest req, Long excludeId) {
+        List<InfluencerContract> overlapping = contractRepo.findOverlapping(
+                req.getInfluencerId(), req.getBrandId(), req.getTeamId(),
+                req.getStartDate(), req.getEndDate(), excludeId);
+        if (!overlapping.isEmpty()) {
+            String ranges = overlapping.stream()
+                    .map(c -> DATE_FMT.format(c.getStartDate()) + " 至 " + DATE_FMT.format(c.getEndDate()))
+                    .collect(Collectors.joining("、"));
+            throw new RuntimeException("该红人在这个品牌方/团队下，已有有效期重叠的合同记录（" + ranges + "），请先编辑或调整已有记录");
+        }
     }
 }
