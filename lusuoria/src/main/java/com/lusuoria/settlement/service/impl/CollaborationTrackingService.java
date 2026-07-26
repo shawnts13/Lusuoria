@@ -9,6 +9,7 @@ import com.lusuoria.settlement.dto.response.ExecutorCostSuggestionResponse;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
+import com.lusuoria.settlement.entity.ExecutorPayRate;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.enums.CollaborationProgress;
@@ -16,6 +17,7 @@ import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
+import com.lusuoria.settlement.repository.ExecutorPayRateRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.config.InfluencerTeamCache;
@@ -40,6 +42,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 红人合作跟踪 - 业务逻辑
@@ -77,6 +80,7 @@ public class CollaborationTrackingService {
     @Autowired private ProjectFieldVisibility fieldVisibility;
     @Autowired private InfluencerRequirementService requirementService;
     @Autowired private com.lusuoria.settlement.util.EmployeeRoleUtil employeeRoleUtil;
+    @Autowired private ExecutorPayRateRepository executorPayRateRepo;
 
     /** 自定义异常：去重命中 */
     public static class DuplicateTrackingException extends RuntimeException {
@@ -672,6 +676,17 @@ public class CollaborationTrackingService {
         // 在这三个阶段之间来回流转时被反复覆盖成"今天"，抹掉真实的发布日期。
         boolean enteringPublishedZone = newProgress != null && newProgress.allowsPaymentProgress()
                 && (oldProgress == null || !oldProgress.allowsPaymentProgress());
+
+        // 2026-07 新增：视频发布链接为空时，不允许通过"状态流转"手动进入已发布相关的三个阶段——
+        // 唯一合法路径是去编辑表单里设置视频发布链接，链接非空会自动带动进度流转到"已发布
+        // （未结算）"（见 doSave() 的 autoTransitionedToPublished 分支），同时触发"设置内部
+        // 执行成本"弹窗跟视频链接+状态一次性合并保存。如果这里放行了没有链接的手动流转，
+        // 会绕开那个合并保存流程，破坏"取消=整个操作一次性取消"的原子性。
+        if (enteringPublishedZone && (t.getPublishLink() == null || t.getPublishLink().trim().isEmpty())) {
+            throw new RuntimeException("该记录尚未填写视频发布链接，请先在编辑表单中设置视频发布链接"
+                    + "（链接会自动带动进度流转到\"已发布（未结算）\"），无法在没有视频发布链接的情况下"
+                    + "手动流转到该状态");
+        }
         if (enteringPublishedZone && t.getPublishDate() == null) {
             t.setPublishDate(new Date());
         }
@@ -775,23 +790,29 @@ public class CollaborationTrackingService {
         String month = new SimpleDateFormat("yyyyMM").format(t.getPublishDate());
         String monthLabel = Integer.parseInt(month.substring(4)) + "月";
 
-        // 关键业务规则：内部执行成本是不是按员工管理里维护的费率梯度算，取决于这条记录
-        // 的项目负责人是不是"管理层"（目前系统里只有一个人是管理层）——
-        //   - 是管理层：按费率梯度自动算出建议金额，这部分成本会影响公司利润
-        //   - 不是管理层：说明这个执行人员的工资是这个项目负责人自己掏钱付的，
-        //     系统不知道他们之间是怎么谈的价格，默认给0让他自己填，只是告诉他
-        //     "这个执行人员这个月已经帮你结算过多少笔、分别是什么类型"作为参考，
-        //     这部分金额不会影响公司利润（在 ProfitCalculator 里已经处理）
-        if (!profitCalculator.isManagementOrder(t)) {
-            resp.setSuggestedAmount(java.math.BigDecimal.ZERO);
+        // 关键业务规则（2026-07 改）：内部执行成本是不是按费率梯度算，取决于这条记录的项目
+        // 负责人有没有在"执行人员管理"/"员工管理"给这个执行人员配置过 ExecutorPayRate——
+        //   - 配置过：按费率梯度自动算出建议金额（是否冲减公司利润仍然只看项目负责人是不是
+        //     "管理层"，见 ProfitCalculator.isManagementOrder()，这里不受影响）
+        //   - 没配置过：默认给 null 纯手填，红字提示先去配置
+        ExecutorPayRate payRate = executorPayRateRepo
+                .findByManagerIdAndExecutorIdAndIsDeletedFalse(t.getProjectManagerId(), executor.getId())
+                .orElse(null);
+
+        List<CollaborationTracking> costed = trackingRepo.findCostedOrdersForExecutorAndManager(
+                executor.getId(), t.getProjectManagerId(), month);
+
+        if (payRate == null) {
+            resp.setSuggestedAmount(null);
             resp.setRateBasedSuggestion(false);
-            List<CollaborationTracking> costed = trackingRepo.findCostedOrdersForExecutorAndManager(
-                    executor.getId(), t.getProjectManagerId(), month);
+            resp.setNoRateConfigured(true);
             Map<VideoType, Long> countByType = new java.util.EnumMap<>(VideoType.class);
             for (CollaborationTracking c : costed) {
                 if (c.getVideoType() != null) countByType.merge(c.getVideoType(), 1L, Long::sum);
             }
             StringBuilder sb = new StringBuilder();
+            sb.append("该项目负责人尚未在\"执行人员管理\"模块为其设置薪资信息，请先进行设置后，"
+                    + "再手动设置该视频条目的执行人员薪酬。");
             sb.append(monthLabel).append("该执行人员已为你结算：");
             if (countByType.isEmpty()) {
                 sb.append("暂无记录");
@@ -803,7 +824,6 @@ public class CollaborationTrackingService {
                 sb.append(String.join("、", parts));
             }
             sb.append("，共计 ").append(costed.size()).append(" 笔。");
-            sb.append("工资由你自行支付和约定，请手动填写金额。");
             resp.setBreakdown(sb.toString());
             return resp;
         }
@@ -811,7 +831,7 @@ public class CollaborationTrackingService {
         resp.setRateBasedSuggestion(true);
         switch (videoType) {
             case REAL_SHOT_NEW: {
-                java.math.BigDecimal rate = executor.getRateRealShotNew();
+                java.math.BigDecimal rate = payRate.getRateRealShotNew();
                 resp.setSuggestedAmount(rate);
                 resp.setBreakdown(monthLabel + "该执行人员处理实拍新视频：¥" + fmtAmount(rate));
                 break;
@@ -822,48 +842,99 @@ public class CollaborationTrackingService {
                 break;
             }
             case AI_NEW_MATERIAL: {
-                java.math.BigDecimal rate = executor.getRateAiNewMaterial();
+                java.math.BigDecimal rate = payRate.getRateAiNewMaterial();
                 resp.setSuggestedAmount(rate);
                 resp.setBreakdown(monthLabel + "该执行人员处理AI新素材：¥" + fmtAmount(rate));
                 break;
             }
             case OLD_MATERIAL_REPOST: {
-                List<CollaborationTracking> costed = trackingRepo
+                List<CollaborationTracking> oldMaterialCosted = trackingRepo
                         .findCostedOldMaterialOrdersForExecutor(executor.getId(), t.getProjectManagerId(), month);
-                int countSoFar = costed.size();
+                int countSoFar = oldMaterialCosted.size();
                 int thisOrderNumber = countSoFar + 1;
-                java.math.BigDecimal rate;
-                String tierLabel;
-                if (thisOrderNumber <= 50) {
-                    rate = executor.getRateOldMaterialTier1();
-                    tierLabel = "1-50";
-                } else if (thisOrderNumber <= 100) {
-                    rate = executor.getRateOldMaterialTier2();
-                    tierLabel = "51-100";
-                } else {
-                    rate = executor.getRateOldMaterialTier3();
-                    tierLabel = "101及以上";
-                    java.math.BigDecimal cap = executor.getOldMaterialMonthlyCap();
-                    if (cap != null && rate != null) {
-                        // 累计"第101条及以上"这部分已经挣到的钱（在这批已赋值的记录里，
-                        // 排在第101个及以后的才算，前100个属于tier1/tier2，不计入这个封顶）
-                        java.math.BigDecimal tier3EarnedSoFar = java.math.BigDecimal.ZERO;
-                        for (int idx = 100; idx < costed.size(); idx++) {
-                            java.math.BigDecimal c = costed.get(idx).getInternalExecutionCost();
-                            if (c != null) tier3EarnedSoFar = tier3EarnedSoFar.add(c);
-                        }
-                        java.math.BigDecimal remaining = cap.subtract(tier3EarnedSoFar);
-                        if (remaining.compareTo(java.math.BigDecimal.ZERO) < 0) remaining = java.math.BigDecimal.ZERO;
-                        if (rate.compareTo(remaining) > 0) rate = remaining;
-                    }
-                }
+                java.math.BigDecimal tier3EarnedSoFar = sumTier3Earned(oldMaterialCosted, countSoFar);
+                java.math.BigDecimal rate = oldMaterialTierRate(payRate, thisOrderNumber, tier3EarnedSoFar);
+                String tierLabel = thisOrderNumber <= 50 ? "1-50" : thisOrderNumber <= 100 ? "51-100" : "101及以上";
                 resp.setSuggestedAmount(rate);
                 resp.setBreakdown(monthLabel + "该执行人员已经处理了" + countSoFar + "笔旧素材重发记录，该笔(第"
                         + thisOrderNumber + "笔)旧素材重发(" + tierLabel + ")：¥" + fmtAmount(rate));
                 break;
             }
         }
+
+        // 3f：特殊薪酬实时推算——按当前梯度重新推算这个月该负责人+该执行人员所有已确认金额
+        // 的记录"应该是多少钱"，跟实际填的值对不上的归入"特殊薪酬"，纯查询时计算，不落库
+        String specialPayNote = computeSpecialPayNote(costed, payRate);
+        if (specialPayNote != null) {
+            resp.setBreakdown(resp.getBreakdown() + " " + specialPayNote);
+        }
         return resp;
+    }
+
+    /** 累计"第101条及以上"这部分已经挣到的钱（排在第101个及以后的才算，前100个属于tier1/tier2） */
+    private java.math.BigDecimal sumTier3Earned(List<CollaborationTracking> oldMaterialCosted, int countBefore) {
+        java.math.BigDecimal earned = java.math.BigDecimal.ZERO;
+        for (int idx = 100; idx < countBefore; idx++) {
+            java.math.BigDecimal c = oldMaterialCosted.get(idx).getInternalExecutionCost();
+            if (c != null) earned = earned.add(c);
+        }
+        return earned;
+    }
+
+    /** 旧素材重发分档取值：position 是第几笔（从1开始），tier3EarnedSoFar 是该笔之前tier3部分已挣的钱 */
+    private java.math.BigDecimal oldMaterialTierRate(ExecutorPayRate rate, int position, java.math.BigDecimal tier3EarnedSoFar) {
+        if (position <= 50) return rate.getRateOldMaterialTier1();
+        if (position <= 100) return rate.getRateOldMaterialTier2();
+        java.math.BigDecimal r = rate.getRateOldMaterialTier3();
+        java.math.BigDecimal cap = rate.getOldMaterialMonthlyCap();
+        if (cap != null && r != null) {
+            java.math.BigDecimal remaining = cap.subtract(tier3EarnedSoFar);
+            if (remaining.compareTo(java.math.BigDecimal.ZERO) < 0) remaining = java.math.BigDecimal.ZERO;
+            if (r.compareTo(remaining) > 0) r = remaining;
+        }
+        return r;
+    }
+
+    /**
+     * 3f：按当前梯度重新推算 costed（该月该负责人+该执行人员所有已确认内部执行成本的记录，
+     * 按 id 升序）里每一笔"应该是多少钱"，跟实际填的值不一致的记为"特殊薪酬"。
+     * 旧素材重发需要在这批记录里单独按类型重新排位算档位，跟 suggestExecutorCost 主逻辑的
+     * 排位口径保持一致（只看已赋值内部执行成本的旧素材重发记录）。
+     * @return 没有任何已确认记录时返回 null（没什么好说明的）
+     */
+    private String computeSpecialPayNote(List<CollaborationTracking> costed, ExecutorPayRate payRate) {
+        if (costed.isEmpty()) return null;
+        List<CollaborationTracking> oldMaterialOnly = costed.stream()
+                .filter(c -> c.getVideoType() == VideoType.OLD_MATERIAL_REPOST)
+                .collect(Collectors.toList());
+
+        int specialCount = 0;
+        java.math.BigDecimal specialTotal = java.math.BigDecimal.ZERO;
+        int oldMaterialIdx = 0;
+        for (CollaborationTracking c : costed) {
+            java.math.BigDecimal actual = c.getInternalExecutionCost();
+            if (actual == null || c.getVideoType() == null) continue;
+            java.math.BigDecimal expected;
+            switch (c.getVideoType()) {
+                case REAL_SHOT_NEW: expected = payRate.getRateRealShotNew(); break;
+                case AI_NEW_MATERIAL: expected = payRate.getRateAiNewMaterial(); break;
+                case OLD_MATERIAL_REPOST: {
+                    int position = oldMaterialIdx + 1;
+                    java.math.BigDecimal tier3EarnedSoFar = sumTier3Earned(oldMaterialOnly, oldMaterialIdx);
+                    expected = oldMaterialTierRate(payRate, position, tier3EarnedSoFar);
+                    oldMaterialIdx++;
+                    break;
+                }
+                default: expected = null; // 实拍新图片等暂无费率定义，无法比对，跳过
+            }
+            if (expected != null && expected.compareTo(actual) != 0) {
+                specialCount++;
+                specialTotal = specialTotal.add(actual);
+            }
+        }
+        if (specialCount == 0) return null;
+        return "本月共 " + costed.size() + " 笔已确认工资，其中 " + specialCount + " 笔（合计 ¥"
+                + fmtAmount(specialTotal) + "）为特殊薪酬（与当前梯度价不符）。";
     }
 
     private String fmtAmount(java.math.BigDecimal v) {

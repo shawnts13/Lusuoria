@@ -44,5 +44,11 @@ public class DashboardDrilldownResponse {
 
         /** 金额值（仅金额类下钻使用，视频数量下钻为 null） */
         private BigDecimal amount;
+
+        /** 提成 bonus 金额，仅"负责人提成明细"下钻使用，其余下钻为 null */
+        private BigDecimal bonusAmount;
+
+        /** amount + bonusAmount，仅"负责人提成明细"下钻使用，其余下钻为 null */
+        private BigDecimal totalAmount;
     }
 }

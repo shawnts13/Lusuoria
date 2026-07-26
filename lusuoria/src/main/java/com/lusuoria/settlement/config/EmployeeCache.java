@@ -60,4 +60,16 @@ public class EmployeeCache {
     public List<Employee> getAll() {
         return new java.util.ArrayList<Employee>(nameMap.values());
     }
+
+    /**
+     * 返回角色="管理层"的唯一一条员工记录（目前系统里只有一个人是管理层），没有则返回 null。
+     * 供 ADMIN 在"员工管理"页面配置执行人员薪资梯度时使用——ADMIN 本身不一定关联了员工记录，
+     * 这种场景下本质是代表这唯一的管理层在维护 ExecutorPayRate。
+     */
+    public Employee findManagementEmployee() {
+        for (Employee e : nameMap.values()) {
+            if ("管理层".equals(e.getRole())) return e;
+        }
+        return null;
+    }
 }

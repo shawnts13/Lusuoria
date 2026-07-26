@@ -4,6 +4,7 @@ import lombok.Data;
 import javax.validation.constraints.NotBlank;
 import java.math.BigDecimal;
 import java.util.Date;
+import java.util.List;
 
 @Data
 public class EmployeeRequest {
@@ -20,16 +21,23 @@ public class EmployeeRequest {
     // 项目负责人 / 管理层
     private BigDecimal defaultCommissionRate;
 
+    /** 提成 bonus 阶梯判档币种："RMB"/"USD"，仅项目负责人/管理层维护 */
+    private String bonusTierCurrency;
+
+    /** 提成 bonus 阶梯列表，仅项目负责人/管理层维护 */
+    private List<BonusTierItem> bonusTiers;
+
     // 财务 / IT后勤：固定月薪（人民币）
     private BigDecimal fixedMonthlySalary;
 
-    // 执行人员：按项目视频类型/件计算工资
-    private BigDecimal rateRealShotNew;        // 实拍新视频（元/条）
-    private BigDecimal rateAiNewMaterial;      // AI新素材（元/条）
-    private BigDecimal rateOldMaterialTier1;   // 旧素材重发 第1-50条（元/条）
-    private BigDecimal rateOldMaterialTier2;   // 旧素材重发 第51-100条（元/条）
-    private BigDecimal rateOldMaterialTier3;   // 旧素材重发 第101条及以上（元/条）
-    private BigDecimal oldMaterialMonthlyCap;  // 旧素材重发 第101条及以上部分，当月封顶金额（元/月）
-
     private String notes;
+
+    @Data
+    public static class BonusTierItem {
+        private BigDecimal minAmount;
+        /** 最高金额，留空表示不封顶 */
+        private BigDecimal maxAmount;
+        /** bonus 比例，如 0.05 表示 5% */
+        private BigDecimal bonusRate;
+    }
 }

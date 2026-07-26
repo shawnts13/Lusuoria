@@ -7,9 +7,11 @@ import com.lusuoria.settlement.dto.response.DashboardSummaryResponse;
 import com.lusuoria.settlement.dto.response.ExchangeRateInfo;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
+import com.lusuoria.settlement.entity.CommissionBonusTier;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
+import com.lusuoria.settlement.repository.CommissionBonusTierRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -51,6 +53,7 @@ public class DashboardStatsService {
     @Autowired private EmployeeCache employeeCache;
     @Autowired private ExchangeRateService exchangeRateService;
     @Autowired private com.lusuoria.settlement.util.ProfitCalculator profitCalculator;
+    @Autowired private CommissionBonusTierRepository bonusTierRepo;
 
     // ============ 顶部汇总 ============
 
@@ -301,35 +304,79 @@ public class DashboardStatsService {
 
     // ============ 下钻：负责人提成合计（仅按负责人） ============
 
+    /** {@link #drilldownCommission} 分组用：projectManagerId 为 null（未指定负责人）时的占位 key */
+    private static final Long NO_MANAGER_KEY = -1L;
+
+    /**
+     * 2026-07 新增：提成明细面板要把"管理层"这个特殊项目负责人整行剔除（他提成固定是 0，
+     * 且不参与 bonus 阶梯），其他下钻面板（客户合作价格/红人成本等）不受影响，继续按
+     * managerNameOf() 用姓名字符串分组，不跟这里共用。
+     */
     public DashboardDrilldownResponse drilldownCommission(String startMonth, String endMonth, String currency) {
         List<CollaborationTracking> orders = trackingRepo.findByPublishMonthBetween(startMonth, endMonth);
         BigDecimal rate = rateForRange(endMonth);
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
-        Map<String, BigDecimal> grouped = new LinkedHashMap<>();
-        Map<String, Long> counted = new LinkedHashMap<>();
+        Map<Long, BigDecimal> grouped = new LinkedHashMap<>();
+        Map<Long, Long> counted = new LinkedHashMap<>();
         for (CollaborationTracking o : orders) {
             Computed c = compute(o);
-            String managerName = managerNameOf(o.getProjectManagerId());
-            grouped.merge(managerName, c.commissionAmount, BigDecimal::add);
-            counted.merge(managerName, 1L, Long::sum);
+            Long managerId = o.getProjectManagerId() != null ? o.getProjectManagerId() : NO_MANAGER_KEY;
+            grouped.merge(managerId, c.commissionAmount, BigDecimal::add);
+            counted.merge(managerId, 1L, Long::sum);
         }
 
-        List<DashboardDrilldownResponse.DrilldownRow> rows = grouped.entrySet().stream()
-                .map(e -> DashboardDrilldownResponse.DrilldownRow.builder()
-                        .dimensionLabel(e.getKey())
-                        .dimensionType("manager")
-                        .videoCount(counted.get(e.getKey()))
-                        .amount(convert(e.getValue(), rate, toRmb))
-                        .build())
-                .sorted((a, b) -> b.getAmount().compareTo(a.getAmount()))
-                .collect(Collectors.toList());
+        List<DashboardDrilldownResponse.DrilldownRow> rows = new ArrayList<>();
+        for (Map.Entry<Long, BigDecimal> e : grouped.entrySet()) {
+            Long managerId = e.getKey();
+            Employee manager = managerId.equals(NO_MANAGER_KEY) ? null : employeeCache.findById(managerId);
+            // 管理层这个特殊项目负责人整行剔除：他提成固定是0，不参与 bonus 阶梯
+            if (manager != null && "管理层".equals(manager.getRole())) continue;
+
+            BigDecimal commissionUsd = e.getValue();
+            BigDecimal bonusUsd = computeBonus(manager, commissionUsd, rate);
+            String label = managerId.equals(NO_MANAGER_KEY) ? "未指定负责人"
+                    : (manager != null ? manager.getName() : "未知负责人");
+            rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
+                    .dimensionLabel(label)
+                    .dimensionType("manager")
+                    .videoCount(counted.get(managerId))
+                    .amount(convert(commissionUsd, rate, toRmb))
+                    .bonusAmount(convert(bonusUsd, rate, toRmb))
+                    .totalAmount(convert(commissionUsd.add(bonusUsd), rate, toRmb))
+                    .build());
+        }
+        rows.sort((a, b) -> b.getTotalAmount().compareTo(a.getTotalAmount()));
 
         return DashboardDrilldownResponse.builder()
                 .currency(toRmb ? "RMB" : "USD")
                 .exchangeRateInfo(exchangeRateService.getRateForMonth(endMonth))
                 .rows(rows)
                 .build();
+    }
+
+    /**
+     * 按项目负责人配置的 bonus 阶梯，用这个负责人在当前下钻时间范围内的提成总额（美金）判档，
+     * 命中区间后 bonus = 提成总额（美金） × 该档位 bonusRate。没配置阶梯（bonusTierCurrency
+     * 为空，或没有任何档位）的负责人返回 0。
+     */
+    private BigDecimal computeBonus(Employee manager, BigDecimal commissionTotalUsd, BigDecimal monthRate) {
+        if (manager == null || manager.getBonusTierCurrency() == null) return BigDecimal.ZERO;
+        List<CommissionBonusTier> tiers = bonusTierRepo
+                .findByEmployeeIdAndIsDeletedFalseOrderByMinAmountAsc(manager.getId());
+        if (tiers.isEmpty()) return BigDecimal.ZERO;
+
+        BigDecimal amountInChosenCurrency = "RMB".equals(manager.getBonusTierCurrency()) && monthRate != null
+                ? commissionTotalUsd.multiply(monthRate) : commissionTotalUsd;
+        for (CommissionBonusTier tier : tiers) {
+            boolean aboveMin = amountInChosenCurrency.compareTo(tier.getMinAmount()) >= 0;
+            boolean withinMax = tier.getMaxAmount() == null
+                    || amountInChosenCurrency.compareTo(tier.getMaxAmount()) <= 0;
+            if (aboveMin && withinMax) {
+                return commissionTotalUsd.multiply(tier.getBonusRate()).setScale(SCALE, RoundingMode.HALF_UP);
+            }
+        }
+        return BigDecimal.ZERO;
     }
 
     // ============ 通用：按品牌方 + 红人团队 拆分金额 ============

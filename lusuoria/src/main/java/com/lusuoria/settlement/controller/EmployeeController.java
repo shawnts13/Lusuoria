@@ -3,9 +3,13 @@ package com.lusuoria.settlement.controller;
 import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.dto.request.EmployeeRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
+import com.lusuoria.settlement.entity.CommissionBonusTier;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.excel.EmployeeExcelHandler;
+import com.lusuoria.settlement.repository.CommissionBonusTierRepository;
 import com.lusuoria.settlement.repository.EmployeeRepository;
+import com.lusuoria.settlement.util.EmployeeRoleUtil;
+import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -13,6 +17,7 @@ import org.springframework.web.bind.annotation.*;
 import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -26,6 +31,8 @@ public class EmployeeController {
     @Autowired private EmployeeRepository employeeRepo;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private EmployeeExcelHandler excelHandler;
+    @Autowired private CommissionBonusTierRepository bonusTierRepo;
+    @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
     /** 获取员工列表（完全走缓存） */
     @GetMapping
@@ -48,14 +55,35 @@ public class EmployeeController {
         return ApiResponse.success(employee);
     }
 
+    /**
+     * 获取某个项目负责人/管理层配置的提成 bonus 阶梯（编辑表单打开时调用）。
+     * 单独开接口而不是挂在 Employee 对象上一起返回，是因为 Employee 走的是内存缓存，
+     * 缓存对象是多个请求共享的可变实例，不适合在这上面挂运行时查出来的关联数据。
+     */
+    @GetMapping("/{id}/bonus-tiers")
+    public ApiResponse<List<com.lusuoria.settlement.entity.CommissionBonusTier>> getBonusTiers(@PathVariable Long id) {
+        return ApiResponse.success(bonusTierRepo.findByEmployeeIdAndIsDeletedFalseOrderByMinAmountAsc(id));
+    }
+
     // 角色分组：不同角色只能维护各自适用的薪资字段，避免脏数据
     private static final Set<String> COMMISSION_ROLES = new HashSet<String>(Arrays.asList("项目负责人", "管理层"));
     private static final Set<String> FIXED_SALARY_ROLES = new HashSet<String>(Arrays.asList("财务", "IT后勤"));
-    private static final String EXECUTOR_ROLE = "执行人员";
+
+    /**
+     * "员工管理"（新建/编辑/删除）2026-07 起放开给"管理层" STAFF 账号，不再是 ADMIN 独占——
+     * 该账号将获得和 ADMIN 一样的完整能力（查看全部员工、删除）。ADMIN 之外的账号，必须关联的
+     * 员工角色正好是"管理层"才放行，其余一律拒绝。
+     */
+    private void assertCanManageEmployees() {
+        if (RoleUtil.isAdmin()) return;
+        if ("管理层".equals(employeeRoleUtil.getCurrentEmployeeRole())) return;
+        throw new RuntimeException("无权限维护员工信息");
+    }
 
     @PostMapping
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Employee> save(@Valid @RequestBody EmployeeRequest req) {
+        assertCanManageEmployees();
         Employee employee;
         if (req.getId() != null) {
             employee = employeeRepo.findByIdAndIsDeletedFalse(req.getId())
@@ -75,44 +103,50 @@ public class EmployeeController {
 
         // 薪资字段按角色分组维护，非本角色适用的字段一律清空，防止脏数据残留
         String role = req.getRole();
-        if (COMMISSION_ROLES.contains(role)) {
+        boolean isCommissionRole = COMMISSION_ROLES.contains(role);
+        if (isCommissionRole) {
             employee.setDefaultCommissionRate(req.getDefaultCommissionRate());
             employee.setFixedMonthlySalary(null);
-            clearExecutorRates(employee);
+            employee.setBonusTierCurrency(req.getBonusTierCurrency());
         } else if (FIXED_SALARY_ROLES.contains(role)) {
             employee.setFixedMonthlySalary(req.getFixedMonthlySalary());
             employee.setDefaultCommissionRate(null);
-            clearExecutorRates(employee);
-        } else if (EXECUTOR_ROLE.equals(role)) {
-            employee.setRateRealShotNew(req.getRateRealShotNew());
-            employee.setRateAiNewMaterial(req.getRateAiNewMaterial());
-            employee.setRateOldMaterialTier1(req.getRateOldMaterialTier1());
-            employee.setRateOldMaterialTier2(req.getRateOldMaterialTier2());
-            employee.setRateOldMaterialTier3(req.getRateOldMaterialTier3());
-            employee.setOldMaterialMonthlyCap(req.getOldMaterialMonthlyCap());
-            employee.setDefaultCommissionRate(null);
-            employee.setFixedMonthlySalary(null);
+            employee.setBonusTierCurrency(null);
         } else {
-            // 其他角色（如"法务"，薪资规则待补充）：暂不维护任何薪资字段
+            // 其他角色（含"执行人员"——费率梯度已改由 ExecutorPayRate 按项目负责人独立维护，
+            // 不再挂在 Employee 自己身上；"法务"薪资规则待补充）：暂不维护任何薪资字段
             employee.setDefaultCommissionRate(null);
             employee.setFixedMonthlySalary(null);
-            clearExecutorRates(employee);
+            employee.setBonusTierCurrency(null);
         }
 
         employee.setNotes(req.getNotes());
 
         Employee saved = employeeRepo.save(employee);
+
+        // bonus 阶梯：仅项目负责人/管理层维护，先删后插整批替换；非本角色一律清空阶梯配置
+        bonusTierRepo.deleteByEmployeeId(saved.getId());
+        if (isCommissionRole && req.getBonusTiers() != null) {
+            for (EmployeeRequest.BonusTierItem item : req.getBonusTiers()) {
+                if (item.getMinAmount() == null || item.getBonusRate() == null) continue;
+                if (item.getMinAmount().compareTo(BigDecimal.ZERO) < 0) {
+                    throw new RuntimeException("bonus 阶梯最低金额不能为负数");
+                }
+                if (item.getMaxAmount() != null && item.getMaxAmount().compareTo(item.getMinAmount()) <= 0) {
+                    throw new RuntimeException("bonus 阶梯最高金额必须大于最低金额");
+                }
+                bonusTierRepo.save(CommissionBonusTier.builder()
+                        .employeeId(saved.getId())
+                        .minAmount(item.getMinAmount())
+                        .maxAmount(item.getMaxAmount())
+                        .bonusRate(item.getBonusRate())
+                        .isDeleted(false)
+                        .build());
+            }
+        }
+
         employeeCache.refresh();
         return ApiResponse.success(saved);
-    }
-
-    private void clearExecutorRates(Employee employee) {
-        employee.setRateRealShotNew(null);
-        employee.setRateAiNewMaterial(null);
-        employee.setRateOldMaterialTier1(null);
-        employee.setRateOldMaterialTier2(null);
-        employee.setRateOldMaterialTier3(null);
-        employee.setOldMaterialMonthlyCap(null);
     }
 
     @GetMapping("/export/excel")
@@ -125,8 +159,9 @@ public class EmployeeController {
     }
 
     @DeleteMapping("/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Void> delete(@PathVariable Long id) {
+        assertCanManageEmployees();
         Employee emp = employeeRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
         emp.setIsDeleted(true);
