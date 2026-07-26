@@ -16,6 +16,9 @@ public class InfluencerRequirementRequest {
 
     private Long teamId;
 
+    /** 默认项目负责人（可选），供"红人合作跟踪"关联这条需求新建时默认带入项目负责人 */
+    private Long defaultProjectManagerId;
+
     /**
      * 服务国家/市场：红人只维护了 0/1 个时可以不传（后端自动采用）；维护了多个时必须传其中一个。
      */

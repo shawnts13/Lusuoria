@@ -51,6 +51,21 @@ public class InfluencerRequirement extends BaseEntity {
     @JoinColumn(name = "team_id")
     private InfluencerTeam team;
 
+    /**
+     * 默认项目负责人（可选，2026-07 新增）：新建需求时若创建人自己就是"项目负责人"角色，
+     * 前端会自动带入创建人自己，也可以手动改成别人；纯粹起"默认值"作用——"红人合作跟踪"
+     * 关联这条需求新建具体视频记录时，会以此作为项目负责人的默认候选（具体优先级规则见
+     * CollaborationFormModal.onRequirementLinked：如果新建合作跟踪的人自己是"项目负责人"，
+     * 仍然优先填创建人自己，只有创建人不是"项目负责人"时才采用这里的默认值）。
+     */
+    @Column(name = "default_project_manager_id", insertable = false, updatable = false)
+    private Long defaultProjectManagerId;
+
+    @JsonIgnore
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "default_project_manager_id")
+    private Employee defaultProjectManager;
+
     @Column(name = "influencer_id", insertable = false, updatable = false)
     private Long influencerId;
 

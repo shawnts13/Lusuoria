@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.service.impl;
 
 import com.lusuoria.settlement.config.BrandCache;
+import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.dto.request.InfluencerRequirementItemRequest;
 import com.lusuoria.settlement.dto.request.InfluencerRequirementRequest;
@@ -10,6 +11,7 @@ import com.lusuoria.settlement.dto.response.RequirementContentParseResponse;
 import com.lusuoria.settlement.dto.response.RequirementTrackingSummaryResponse;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
+import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.InfluencerBrandTeam;
 import com.lusuoria.settlement.entity.InfluencerRequirement;
@@ -56,6 +58,7 @@ public class InfluencerRequirementService {
     @Autowired private InfluencerBrandTeamRepository influencerBrandTeamRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private InfluencerTeamCache teamCache;
+    @Autowired private EmployeeCache employeeCache;
     @Autowired private RequirementNoAllocator noAllocator;
     @Autowired private RequirementContentParser contentParser;
     @Autowired private CollaborationTrackingRepository trackingRepo;
@@ -118,6 +121,18 @@ public class InfluencerRequirementService {
                 : new SimpleDateFormat("yyyyMM").format(new Date()));
         requirement.setFullRequirementContent(req.getFullRequirementContent());
         requirement.setNotes(req.getNotes());
+
+        // 默认项目负责人：可选，纯粹给"红人合作跟踪"关联这条需求新建时提供默认候选，
+        // 不做角色校验（跟 CollaborationTrackingService.doSave() 对 projectManagerId 的处理一致）
+        if (req.getDefaultProjectManagerId() != null) {
+            Employee defaultManager = employeeCache.findById(req.getDefaultProjectManagerId());
+            if (defaultManager == null) {
+                throw new RuntimeException("默认项目负责人不存在：" + req.getDefaultProjectManagerId());
+            }
+            requirement.setDefaultProjectManager(defaultManager);
+        } else {
+            requirement.setDefaultProjectManager(null);
+        }
 
         boolean isNew = requirement.getId() == null;
 
