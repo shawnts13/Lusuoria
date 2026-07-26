@@ -12,6 +12,7 @@ import com.lusuoria.settlement.util.EmployeeRoleUtil;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import javax.servlet.http.HttpServletResponse;
@@ -80,8 +81,15 @@ public class EmployeeController {
         throw new RuntimeException("无权限维护员工信息");
     }
 
+    /**
+     * bonus 阶梯先删后插，deleteByEmployeeId 这类派生删除方法必须在事务里执行才能真正
+     * remove 掉查到的记录，不然会报 "No EntityManager with actual transaction available
+     * for current thread" —— 没删过东西的时候（比如第一次保存）不会触发这个报错，直到真的
+     * 有档位要删才会暴露出来，所以务必显式声明 @Transactional。
+     */
     @PostMapping
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    @Transactional
     public ApiResponse<Employee> save(@Valid @RequestBody EmployeeRequest req) {
         assertCanManageEmployees();
         Employee employee;

@@ -11,6 +11,7 @@ import com.lusuoria.settlement.util.RoleUtil;
 import lombok.Data;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -81,8 +82,15 @@ public class ExecutorPayRateController {
      * 整批替换某个 (负责人,执行人员) 名下全部视频类型的费率梯度（先删后插）。
      * 请求体按视频类型分组传全部档位，某个视频类型没传或传空列表就表示"这个类型不配置"。
      */
+    /**
+     * 整批替换需要先删后插，deleteByManagerIdAndExecutorId 这类派生删除方法必须在事务里执行
+     * 才能真正 remove 掉查到的记录，不然会报 "No EntityManager with actual transaction available
+     * for current thread" —— 没删过东西的时候（比如第一次保存）不会触发这个报错，直到真的有
+     * 记录要删才会暴露出来，所以务必显式声明 @Transactional。
+     */
     @PostMapping
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    @Transactional
     public ApiResponse<Void> save(@RequestBody SaveRequest req) {
         Long effectiveManagerId = resolveManagerId(req.getManagerId());
         if (req.getExecutorId() == null) throw new RuntimeException("请选择执行人员");
