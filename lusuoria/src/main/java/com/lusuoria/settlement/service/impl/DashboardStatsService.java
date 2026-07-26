@@ -190,6 +190,12 @@ public class DashboardStatsService {
                         ? monthFmt.format(o.getPublishDate()) : "未填写视频发布时间";
                 grouped.merge(key, 1L, Long::sum);
             }
+        } else if ("manager".equals(dimension)) {
+            // 按项目负责人分组
+            dimensionType = "manager";
+            for (CollaborationTracking o : orders) {
+                grouped.merge(managerNameOf(o.getProjectManagerId()), 1L, Long::sum);
+            }
         } else {
             // 默认：按品牌方 + 红人团队分组（没关联团队的记录，团队部分留空，展示成"品牌方 - "）
             dimensionType = "brand_team";
@@ -221,10 +227,11 @@ public class DashboardStatsService {
                 .build();
     }
 
-    // ============ 下钻：客户合作价格（按品牌方 + 红人团队） ============
+    // ============ 下钻：客户合作价格（按品牌方/红人团队，或按项目负责人） ============
 
-    public DashboardDrilldownResponse drilldownClientPrice(String startMonth, String endMonth, String currency) {
-        return drilldownAmountByBrandAndTeam(startMonth, endMonth, currency, c -> c.clientPrice);
+    public DashboardDrilldownResponse drilldownClientPrice(String startMonth, String endMonth,
+                                                            String currency, String dimension) {
+        return drilldownAmountByDimension(startMonth, endMonth, currency, dimension, c -> c.clientPrice);
     }
 
     // ============ 下钻：红人成本（按品牌方/团队/账号/类型） ============
@@ -384,47 +391,7 @@ public class DashboardStatsService {
         return BigDecimal.ZERO;
     }
 
-    // ============ 通用：按品牌方 + 红人团队 拆分金额 ============
-
-    private DashboardDrilldownResponse drilldownAmountByBrandAndTeam(
-            String startMonth, String endMonth, String currency,
-            java.util.function.Function<Computed, BigDecimal> extractor) {
-
-        List<CollaborationTracking> orders = trackingRepo.findByPublishMonthBetween(startMonth, endMonth);
-        BigDecimal rate = rateForRange(endMonth);
-        boolean toRmb = "RMB".equalsIgnoreCase(currency);
-
-        Map<String, BigDecimal> grouped = new LinkedHashMap<>();
-        Map<String, Long> counted = new LinkedHashMap<>();
-        for (CollaborationTracking o : orders) {
-            Computed c = compute(o);
-            String brandName = brandNameOf(o.getBrandId());
-            String teamLabel = teamNameOf(o.getTeam());
-            String key = brandName + "|" + teamLabel;
-            grouped.merge(key, extractor.apply(c), BigDecimal::add);
-            counted.merge(key, 1L, Long::sum);
-        }
-
-        List<DashboardDrilldownResponse.DrilldownRow> rows = new ArrayList<>();
-        for (Map.Entry<String, BigDecimal> e : grouped.entrySet()) {
-            String[] parts = e.getKey().split("\\|", 2);
-            rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
-                    .dimensionLabel(parts[0] + " - " + parts[1])
-                    .dimensionType("brand_team")
-                    .videoCount(counted.get(e.getKey()))
-                    .amount(convert(e.getValue(), rate, toRmb))
-                    .build());
-        }
-        rows.sort((a, b) -> b.getAmount().compareTo(a.getAmount()));
-
-        return DashboardDrilldownResponse.builder()
-                .currency(toRmb ? "RMB" : "USD")
-                .exchangeRateInfo(exchangeRateService.getRateForMonth(endMonth))
-                .rows(rows)
-                .build();
-    }
-
-    // ============ 通用：按品牌方/团队/账号/类型 拆分金额 ============
+    // ============ 通用：按品牌方/团队/账号/类型/项目负责人 拆分金额 ============
 
     private DashboardDrilldownResponse drilldownAmountByDimension(
             String startMonth, String endMonth, String currency, String dimension,

@@ -49,16 +49,17 @@ public class DashboardController {
         return ApiResponse.success(dashboardStatsService.drilldownVideoCount(startMonth, endMonth, dimension));
     }
 
-    /** 下钻：客户合作价格，按品牌方+红人类型拆分 */
+    /** 下钻：客户合作价格，按品牌方/红人团队，或按项目负责人拆分（dimension: brand_team|manager） */
     @GetMapping("/drilldown/client-price")
     public ApiResponse<DashboardDrilldownResponse> drilldownClientPrice(
             @RequestParam String startMonth,
             @RequestParam String endMonth,
-            @RequestParam(defaultValue = "USD") String currency) {
+            @RequestParam(defaultValue = "USD") String currency,
+            @RequestParam(defaultValue = "brand_team") String dimension) {
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.error(403, "无权限查看财务数据");
         }
-        return ApiResponse.success(dashboardStatsService.drilldownClientPrice(startMonth, endMonth, currency));
+        return ApiResponse.success(dashboardStatsService.drilldownClientPrice(startMonth, endMonth, currency, dimension));
     }
 
     /** 下钻：红人成本，按品牌方/团队/账号/类型拆分（dimension: brand|team|account|type） */
