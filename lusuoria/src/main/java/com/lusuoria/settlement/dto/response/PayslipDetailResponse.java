@@ -54,6 +54,8 @@ public class PayslipDetailResponse {
     private BigDecimal managerCommissionTotal;
     private BigDecimal executorPayTotal;
     private BigDecimal otherStaffCost;
+    /** 当月所有员工已确认的"奖金"（管理层手动发放的月度额外奖励）合计，供公司利润计算公式展示用 */
+    private BigDecimal extraBonusPayoutTotal;
     private BigDecimal companyProfit;
 
     // ===== 读取时补上的展示上下文，不参与快照存储 =====

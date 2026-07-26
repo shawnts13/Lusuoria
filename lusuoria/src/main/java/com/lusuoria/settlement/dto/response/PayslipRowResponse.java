@@ -36,6 +36,16 @@ public class PayslipRowResponse {
     /** 法务专属：本月工资是否已录入，前端据此显示"输入本月工资"还是"编辑工资"按钮 */
     private Boolean legalSalarySet;
 
+    // ===== 管理层专属：公司利润计算公式展示用（其余角色为 null），均已按请求币种换算好 =====
+    private BigDecimal grossProfit;
+    private BigDecimal distributableProfit;
+    /** 负责人提成合计（含所有项目负责人的阶梯bonus），跟 baseAmount 不是一回事——管理层这一行的
+     * baseAmount 是 null，总工资走的是 companyProfit（即 totalAmount），这个字段单独给公式展示用 */
+    private BigDecimal managerCommissionTotal;
+    private BigDecimal executorPayTotal;
+    private BigDecimal otherStaffCost;
+    private BigDecimal extraBonusPayoutTotal;
+
     /** 仅管理层自己那一行可能非空："请先确认其他员工的工资单后再确认管理层工资单" */
     private String blockedReason;
 }

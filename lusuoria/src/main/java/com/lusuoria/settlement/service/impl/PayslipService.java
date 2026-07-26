@@ -323,6 +323,7 @@ public class PayslipService {
                 .managerCommissionTotal(managerCommissionTotal.setScale(SCALE, RoundingMode.HALF_UP))
                 .executorPayTotal(execCostUsd)
                 .otherStaffCost(otherStaffCostUsd)
+                .extraBonusPayoutTotal(extraBonusTotalUsd.setScale(SCALE, RoundingMode.HALF_UP))
                 .companyProfit(companyProfit.setScale(SCALE, RoundingMode.HALF_UP))
                 .build();
     }
@@ -517,6 +518,7 @@ public class PayslipService {
         BigDecimal managerCommissionTotal = convertAmount(src.getManagerCommissionTotal(), false, rate, toRmb);
         BigDecimal executorPayTotal = convertAmount(src.getExecutorPayTotal(), false, rate, toRmb);
         BigDecimal otherStaffCost = convertAmount(src.getOtherStaffCost(), false, rate, toRmb);
+        BigDecimal extraBonusPayoutTotal = convertAmount(src.getExtraBonusPayoutTotal(), false, rate, toRmb);
         BigDecimal companyProfit = convertAmount(src.getCompanyProfit(), false, rate, toRmb);
 
         BigDecimal extraBonus = null;
@@ -536,7 +538,8 @@ public class PayslipService {
                 .totalAmount(total)
                 .grossProfit(grossProfit).distributableProfit(distributable)
                 .managerCommissionTotal(managerCommissionTotal).executorPayTotal(executorPayTotal)
-                .otherStaffCost(otherStaffCost).companyProfit(companyProfit)
+                .otherStaffCost(otherStaffCost).extraBonusPayoutTotal(extraBonusPayoutTotal)
+                .companyProfit(companyProfit)
                 .currency(toRmb ? "RMB" : "USD").confirmed(confirmed)
                 .exchangeRateInfo(rateInfo)
                 .build();
@@ -587,6 +590,12 @@ public class PayslipService {
                 .totalAmount(d.getTotalAmount())
                 .legalSalarySet(legalSalarySet)
                 .blockedReason(blockedReason)
+                .grossProfit(d.getGrossProfit())
+                .distributableProfit(d.getDistributableProfit())
+                .managerCommissionTotal(d.getManagerCommissionTotal())
+                .executorPayTotal(d.getExecutorPayTotal())
+                .otherStaffCost(d.getOtherStaffCost())
+                .extraBonusPayoutTotal(d.getExtraBonusPayoutTotal())
                 .build();
     }
 
