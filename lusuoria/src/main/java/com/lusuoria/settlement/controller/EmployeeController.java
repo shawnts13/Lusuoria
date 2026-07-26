@@ -20,8 +20,10 @@ import javax.validation.Valid;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -62,8 +64,21 @@ public class EmployeeController {
      * 缓存对象是多个请求共享的可变实例，不适合在这上面挂运行时查出来的关联数据。
      */
     @GetMapping("/{id}/bonus-tiers")
-    public ApiResponse<List<com.lusuoria.settlement.entity.CommissionBonusTier>> getBonusTiers(@PathVariable Long id) {
+    public ApiResponse<List<CommissionBonusTier>> getBonusTiers(@PathVariable Long id) {
         return ApiResponse.success(bonusTierRepo.findByEmployeeIdAndIsDeletedFalseOrderByMinAmountAsc(id));
+    }
+
+    /**
+     * 批量按员工 id 取 bonus 阶梯，返回 employeeId -> 阶梯列表。供"员工管理"列表页
+     * 直接展示每个项目负责人/管理层已配置的 bonus 规则，避免逐行调用 by-id 接口。
+     */
+    @GetMapping("/bonus-tiers")
+    public ApiResponse<Map<Long, List<CommissionBonusTier>>> getBonusTiersBulk(@RequestParam List<Long> employeeIds) {
+        Map<Long, List<CommissionBonusTier>> result = new HashMap<>();
+        for (CommissionBonusTier t : bonusTierRepo.findByEmployeeIdInAndIsDeletedFalseOrderByMinAmountAsc(employeeIds)) {
+            result.computeIfAbsent(t.getEmployeeId(), k -> new java.util.ArrayList<>()).add(t);
+        }
+        return ApiResponse.success(result);
     }
 
     // 角色分组：不同角色只能维护各自适用的薪资字段，避免脏数据
