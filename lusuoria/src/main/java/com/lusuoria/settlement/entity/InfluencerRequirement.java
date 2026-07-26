@@ -148,4 +148,16 @@ public class InfluencerRequirement extends BaseEntity {
      */
     @Transient
     private Integer completedCount;
+
+    /**
+     * 这条需求下所有条目的"已建立跟踪记录数"（关联到这条需求的红人合作跟踪记录数，不看
+     * progress 状态，只要建立了就算，含折损——口径跟 progressDetail()/关联红人需求选择器
+     * 用的 findByInternalRequirementNoAndIsDeletedFalse 一致），供"新建合作跟踪"按钮判断
+     * 这条需求下是否还有条目没被建立跟踪记录（这个数達到 totalItemCount 时，说明每个条目的
+     * 名额都已经有跟踪记录占上了，即使"需求完成进度"（completedCount，只看已发布/已结算/
+     * 折损这几个终态）还没到100%，也不该再允许新建）。瞬态字段，不落库，由 Controller
+     * 在列表接口里批量查出来再赋值。
+     */
+    @Transient
+    private Integer establishedCount;
 }

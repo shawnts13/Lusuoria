@@ -61,12 +61,16 @@ public class PayslipService {
 
     // ================= 对外主入口 =================
 
-    /** 明细弹窗 + "我的工资单"：单个员工，允许各自查一次（不是列表场景，没有 N+1 问题） */
-    @Transactional(readOnly = true)
+    /**
+     * 明细弹窗 + "我的工资单"：单个员工，允许各自查一次（不是列表场景，没有 N+1 问题）。
+     * 非 readOnly：财务/IT后勤当月第一次被查看时可能顺带自动确认（见 {@link #autoConfirmFixedSalaryIfMissing}）。
+     */
+    @Transactional
     public PayslipDetailResponse detail(Long employeeId, String yearMonth, String currency) {
         Employee emp = employeeRepo.findByIdAndIsDeletedFalse(employeeId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
         Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(employeeId, yearMonth).orElse(null);
+        p = autoConfirmFixedSalaryIfMissing(emp, yearMonth, p);
         return resolveDisplay(emp, yearMonth, currency, null, p);
     }
 
@@ -74,7 +78,7 @@ public class PayslipService {
      * 管理层视角的员工列表（不含管理层自己，见 {@link #managementRow}）。
      * 整月合作跟踪记录、整月工资单确认状态各只查一次，员工数量再多也不会变成 N 次查询。
      */
-    @Transactional(readOnly = true)
+    @Transactional
     public List<PayslipRowResponse> listForMonth(String yearMonth, String roleFilter, String currency) {
         List<Employee> employees = employeeRepo.findByIsDeletedFalseOrderByNameAsc().stream()
                 .filter(e -> e.getResignDate() == null)
@@ -89,6 +93,13 @@ public class PayslipService {
 
         Map<Long, Payslip> payslipByEmployeeId = payslipRepo.findByYearMonthAndIsDeletedFalse(yearMonth).stream()
                 .collect(Collectors.toMap(Payslip::getEmployeeId, p -> p, (a, b) -> a));
+        // 财务/IT后勤：当月还没有工资单记录的，默认直接确认（固定月薪，奖金设置不常发生，
+        // 不需要每月都手动点一次"确认"，要改的话照旧先"取消确认"）
+        for (Employee e : employees) {
+            if (FIXED_SALARY_ROLES.contains(e.getRole()) && !payslipByEmployeeId.containsKey(e.getId())) {
+                payslipByEmployeeId.put(e.getId(), autoConfirmFixedSalaryIfMissing(e, yearMonth, null));
+            }
+        }
 
         List<PayslipRowResponse> result = new ArrayList<>();
         for (Employee e : employees) {
@@ -97,7 +108,7 @@ public class PayslipService {
         return result;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public PayslipRowResponse managementRow(String yearMonth, String currency) {
         Employee mgmt = employeeCache.findManagementEmployee();
         if (mgmt == null) throw new RuntimeException("系统里还没有配置角色为\"管理层\"的员工");
@@ -109,8 +120,15 @@ public class PayslipService {
 
     @Transactional
     public void setExtraBonus(Long employeeId, String yearMonth, BigDecimal amount, String currency) {
-        Payslip p = getOrCreateForWrite(employeeId, yearMonth);
-        requireUnconfirmed(p);
+        Employee emp = employeeRepo.findByIdAndIsDeletedFalse(employeeId)
+                .orElseThrow(() -> new RuntimeException("员工不存在"));
+        Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(employeeId, yearMonth).orElse(null);
+        boolean isNew = p == null;
+        if (isNew) {
+            p = Payslip.builder().employeeId(employeeId).yearMonth(yearMonth).confirmed(false).build();
+        } else {
+            requireUnconfirmed(p);
+        }
         if (amount == null) {
             p.setExtraBonusAmount(null);
             p.setExtraBonusCurrency(null);
@@ -120,6 +138,11 @@ public class PayslipService {
             }
             p.setExtraBonusAmount(amount);
             p.setExtraBonusCurrency(currency);
+        }
+        // 财务/IT后勤：这是当月第一次涉及这条工资单记录（比如管理层还没看过这个月就直接先设了
+        // 奖金），默认直接确认，不需要另外再点一次"确认"
+        if (isNew && FIXED_SALARY_ROLES.contains(emp.getRole())) {
+            applyConfirmedSnapshot(emp, yearMonth, p, null);
         }
         payslipRepo.save(p);
     }
@@ -144,13 +167,7 @@ public class PayslipService {
             if (blocked != null) throw new RuntimeException(blocked);
         }
         Payslip p = getOrCreateForWrite(employeeId, yearMonth);
-        PayslipDetailResponse live = computeLive(emp, yearMonth, p);
-        p.setEmployeeRole(emp.getRole());
-        p.setDetailJson(writeSnapshot(live));
-        p.setExchangeRateSnapshot(dashboardStatsService.rateForRange(yearMonth));
-        p.setConfirmed(true);
-        p.setConfirmedAt(new Date());
-        p.setConfirmedByEmployeeId(employeeRoleUtil.getCurrentEmployeeId());
+        applyConfirmedSnapshot(emp, yearMonth, p, employeeRoleUtil.getCurrentEmployeeId());
         payslipRepo.save(p);
     }
 
@@ -555,6 +572,8 @@ public class PayslipService {
 
     /**
      * 管理层确认前置校验：当月所有在职、非管理层的员工都必须已确认，否则返回拦截文案。
+     * 财务/IT后勤当月还没有工资单记录的，先在这里自动确认一下再判断——不然如果这个检查
+     * 在"工资单列表"那次自动确认之前先跑到（两个请求并发时可能发生），会误判成"还没确认"。
      * 当月工资单确认状态只查一次（不按员工循环查），只在"管理层这一行"触发，请求量本身
      * 就是 O(1)，不受员工数量影响。
      */
@@ -566,12 +585,14 @@ public class PayslipService {
                 .collect(Collectors.toList());
         if (activeOthers.isEmpty()) return null;
 
-        Set<Long> confirmedIds = payslipRepo.findByYearMonthAndIsDeletedFalse(yearMonth).stream()
-                .filter(p -> Boolean.TRUE.equals(p.getConfirmed()))
-                .map(Payslip::getEmployeeId)
-                .collect(Collectors.toSet());
+        Map<Long, Payslip> payslipByEmployeeId = payslipRepo.findByYearMonthAndIsDeletedFalse(yearMonth).stream()
+                .collect(Collectors.toMap(Payslip::getEmployeeId, p -> p, (a, b) -> a));
         for (Employee e : activeOthers) {
-            if (!confirmedIds.contains(e.getId())) {
+            Payslip p = payslipByEmployeeId.get(e.getId());
+            if (p == null) {
+                p = autoConfirmFixedSalaryIfMissing(e, yearMonth, null);
+            }
+            if (p == null || !Boolean.TRUE.equals(p.getConfirmed())) {
                 return "请先确认其他员工的工资单后再确认管理层工资单";
             }
         }
@@ -590,6 +611,31 @@ public class PayslipService {
         return payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(employeeId, yearMonth)
                 .orElseGet(() -> payslipRepo.save(Payslip.builder()
                         .employeeId(employeeId).yearMonth(yearMonth).confirmed(false).build()));
+    }
+
+    /**
+     * 财务/IT后勤：当月还没有工资单记录时（existing 为 null）默认直接确认——这两个角色是
+     * 固定月薪，奖金设置不常发生，不需要每月手动点一次"确认"；要改的话跟其他角色一样，
+     * 先"取消确认"再编辑。confirmedByEmployeeId 传 null 表示是系统自动确认，不是某个具体
+     * 管理层账号手动点的。非固定月薪角色、或 existing 已存在（不管确认与否，都不覆盖已有
+     * 记录/已有的人为操作状态）时原样返回 existing。
+     */
+    private Payslip autoConfirmFixedSalaryIfMissing(Employee emp, String yearMonth, Payslip existing) {
+        if (existing != null || !FIXED_SALARY_ROLES.contains(emp.getRole())) return existing;
+        Payslip p = Payslip.builder().employeeId(emp.getId()).yearMonth(yearMonth).confirmed(false).build();
+        applyConfirmedSnapshot(emp, yearMonth, p, null);
+        return payslipRepo.save(p);
+    }
+
+    /** 计算当前实时数据、写入确认快照并把 confirmed 置 true，不负责 save（调用方决定何时落库） */
+    private void applyConfirmedSnapshot(Employee emp, String yearMonth, Payslip p, Long confirmedByEmployeeId) {
+        PayslipDetailResponse live = computeLive(emp, yearMonth, p);
+        p.setEmployeeRole(emp.getRole());
+        p.setDetailJson(writeSnapshot(live));
+        p.setExchangeRateSnapshot(dashboardStatsService.rateForRange(yearMonth));
+        p.setConfirmed(true);
+        p.setConfirmedAt(new Date());
+        p.setConfirmedByEmployeeId(confirmedByEmployeeId);
     }
 
     private String writeSnapshot(PayslipDetailResponse detail) {

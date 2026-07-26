@@ -206,13 +206,14 @@ public class CollaborationTrackingService {
 
     /**
      * "复制"批量新建专用：一次性提交多条视频项目，整批在一个事务里逐条走 doSave()。
-     * 只允许新建（每条 req.id 必须为空），任何一条校验失败（含"关联红人需求"超出剩余名额、
-     * 查重命中等）都会抛异常，整批回滚——因为是同一个事务，前面几条已经 INSERT 的记录，
-     * 后面几条如果引用了同一个需求条目，查询已用名额时能看到前面刚插入的记录，天然实现了
-     * "这一批加起来超量也会被拦下"，不需要额外写一遍单独的批量额度校验逻辑。
+     * 只允许新建（每条 req.id 必须为空）。落库前先用 validateBatchLinkage() 按需求条目分组
+     * 预检这一批一共想新建几条、够不够名额，报错文案能精确说明"本次试图新建N条XX类型的
+     * 记录，超出了...限制"；之后逐条走 doSave() 时如果还有其他校验失败（查重命中等）
+     * 同样整批回滚。
      */
     @Transactional
     public List<CollaborationTracking> createBatch(List<CollaborationTrackingRequest> reqs) {
+        requirementService.validateBatchLinkage(reqs);
         List<CollaborationTracking> results = new ArrayList<>();
         for (CollaborationTrackingRequest req : reqs) {
             if (req.getId() != null) {

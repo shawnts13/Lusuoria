@@ -230,6 +230,17 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     List<Object[]> countCompletedByRequirementNos(@Param("requirementNos") List<String> requirementNos);
 
     /**
+     * 需求列表页"新建合作跟踪"按钮判断用：按 internalRequirementNo 分组统计"已建立跟踪记录数"
+     * ——不看 progress 状态，只要关联了就算（含折损），口径跟 findByInternalRequirementNoAndIsDeletedFalse
+     * 一致。达到 totalItemCount 时说明每个条目的名额都已经有跟踪记录占上了，不该再允许新建，
+     * 即使"需求完成进度"（只看已发布/已结算/折损这几个终态）还没到100%。
+     */
+    @Query("SELECT c.internalRequirementNo, COUNT(c) FROM CollaborationTracking c " +
+           "WHERE c.isDeleted = false AND c.internalRequirementNo IN :requirementNos " +
+           "GROUP BY c.internalRequirementNo")
+    List<Object[]> countEstablishedByRequirementNos(@Param("requirementNos") List<String> requirementNos);
+
+    /**
      * "关联红人需求"选择器第二步 / 需求完成进度点击详情：某个需求下所有已关联的红人合作跟踪记录
      * （不看 progress 状态，只要关联了就算，含折损）。
      */

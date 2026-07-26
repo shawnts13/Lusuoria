@@ -66,11 +66,15 @@ public class InfluencerRequirementController {
         Page<InfluencerRequirement> result = requirementRepo.findByFilters(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable);
 
-        // "需求完成进度"分子批量查出来再赋值，避免逐条查库
+        // "需求完成进度"分子、"已建立跟踪记录数"（"新建合作跟踪"按钮判断用）批量查出来再赋值，避免逐条查库
         List<String> nos = result.getContent().stream()
                 .map(InfluencerRequirement::getInternalRequirementNo).collect(Collectors.toList());
         Map<String, Integer> completedByNo = requirementService.completedCountByNos(nos);
-        result.forEach(r -> r.setCompletedCount(completedByNo.getOrDefault(r.getInternalRequirementNo(), 0)));
+        Map<String, Integer> establishedByNo = requirementService.establishedCountByNos(nos);
+        result.forEach(r -> {
+            r.setCompletedCount(completedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
+            r.setEstablishedCount(establishedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
+        });
 
         return ApiResponse.success(result);
     }

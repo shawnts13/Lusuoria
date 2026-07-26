@@ -3,6 +3,7 @@ package com.lusuoria.settlement.service.impl;
 import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.config.InfluencerTeamCache;
+import com.lusuoria.settlement.dto.request.CollaborationTrackingRequest;
 import com.lusuoria.settlement.dto.request.InfluencerRequirementItemRequest;
 import com.lusuoria.settlement.dto.request.InfluencerRequirementRequest;
 import com.lusuoria.settlement.dto.response.InfluencerRequirementItemResponse;
@@ -324,10 +325,12 @@ public class InfluencerRequirementService {
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable.getSort());
         List<String> nos = all.stream().map(InfluencerRequirement::getInternalRequirementNo).collect(Collectors.toList());
         Map<String, Integer> completedByNo = completedCountByNos(nos);
+        Map<String, Integer> establishedByNo = establishedCountByNos(nos);
         List<InfluencerRequirement> incomplete = new ArrayList<>();
         for (InfluencerRequirement r : all) {
             int completed = completedByNo.getOrDefault(r.getInternalRequirementNo(), 0);
             r.setCompletedCount(completed);
+            r.setEstablishedCount(establishedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
             int total = r.getTotalItemCount() != null ? r.getTotalItemCount() : 0;
             boolean isComplete = total > 0 && completed >= total;
             if (!isComplete) incomplete.add(r);
@@ -345,6 +348,18 @@ public class InfluencerRequirementService {
         if (nonNull.isEmpty()) return new HashMap<>();
         Map<String, Integer> result = new HashMap<>();
         for (Object[] row : trackingRepo.countCompletedByRequirementNos(nonNull)) {
+            result.put((String) row[0], ((Long) row[1]).intValue());
+        }
+        return result;
+    }
+
+    /** 需求列表页"新建合作跟踪"按钮用：按 internalRequirementNo 批量算"已建立跟踪记录数"，避免逐条查库 */
+    @Transactional(readOnly = true)
+    public Map<String, Integer> establishedCountByNos(List<String> nos) {
+        List<String> nonNull = nos.stream().filter(java.util.Objects::nonNull).collect(Collectors.toList());
+        if (nonNull.isEmpty()) return new HashMap<>();
+        Map<String, Integer> result = new HashMap<>();
+        for (Object[] row : trackingRepo.countEstablishedByRequirementNos(nonNull)) {
             result.put((String) row[0], ((Long) row[1]).intValue());
         }
         return result;
@@ -641,6 +656,60 @@ public class InfluencerRequirementService {
         if (usedCount >= matched.getVideoCount()) {
             throw new RuntimeException("「" + videoType.getLabel() + "-" + canonicalPlatform.replace("\n", "、")
                     + "」这个需求条目已经没有剩余名额（" + matched.getVideoCount() + "条已全部安排）");
+        }
+    }
+
+    /**
+     * "新建跟踪"批量新建专用的提前校验：按 (内部需求编号 + 匹配到的具体条目) 分组统计这一批
+     * 一共想新建多少条，跟条目剩余名额比较，提前给出精确报错——不这么做的话，只能等到
+     * doSave() 逐条走到序号靠后的某一条时才会命中 validateTrackingLinkage() 里的名额校验，
+     * 报错文案只知道"这一条超了"，不知道"这一批一共想建几条、超了多少"，不够精确。
+     * 没有关联内部需求编号的请求跳过，交给 doSave() 里既有的其他校验处理。
+     */
+    @Transactional(readOnly = true)
+    public void validateBatchLinkage(List<CollaborationTrackingRequest> reqs) {
+        Map<String, List<CollaborationTrackingRequest>> byRequirementNo = reqs.stream()
+                .filter(r -> r.getInternalRequirementNo() != null && !r.getInternalRequirementNo().trim().isEmpty())
+                .collect(Collectors.groupingBy(CollaborationTrackingRequest::getInternalRequirementNo));
+
+        for (Map.Entry<String, List<CollaborationTrackingRequest>> entry : byRequirementNo.entrySet()) {
+            String requirementNo = entry.getKey();
+            InfluencerRequirement requirement = requirementRepo
+                    .findByInternalRequirementNoAndIsDeletedFalse(requirementNo)
+                    .orElseThrow(() -> new RuntimeException("内部需求编号 [" + requirementNo + "] 不存在"));
+            List<InfluencerRequirementItem> items = itemRepo.findByRequirementIdOrderByIdAsc(requirement.getId());
+            List<CollaborationTracking> linked = trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(requirementNo);
+
+            // 按匹配到的具体条目分组，统计这一批试图新建几条
+            Map<InfluencerRequirementItem, Integer> attemptCountByItem = new HashMap<>();
+            for (CollaborationTrackingRequest req : entry.getValue()) {
+                String canonicalPlatform = canonicalTrackingPlatform(req.getPlatform());
+                InfluencerRequirementItem matched = items.stream()
+                        .filter(i -> i.getVideoType() == req.getVideoType()
+                                && java.util.Objects.equals(i.getPlatform(), canonicalPlatform)
+                                && amountsEqual(i.getInfluencerUnitCostPrice(), req.getInfluencerCost())
+                                && amountsEqual(i.getClientUnitPrice(), req.getClientPrice()))
+                        .findFirst().orElse(null);
+                // 找不到匹配条目时不在这里报错，交给 doSave() 里的 validateTrackingLinkage() 精确报错
+                if (matched != null) attemptCountByItem.merge(matched, 1, Integer::sum);
+            }
+
+            for (Map.Entry<InfluencerRequirementItem, Integer> itemEntry : attemptCountByItem.entrySet()) {
+                InfluencerRequirementItem item = itemEntry.getKey();
+                int attemptCount = itemEntry.getValue();
+                long usedCount = linked.stream()
+                        .filter(t -> t.getVideoType() == item.getVideoType()
+                                && java.util.Objects.equals(canonicalTrackingPlatform(t.getPlatform()), item.getPlatform())
+                                && amountsEqual(t.getInfluencerCost(), item.getInfluencerUnitCostPrice())
+                                && amountsEqual(t.getClientPrice(), item.getClientUnitPrice()))
+                        .count();
+                long remaining = item.getVideoCount() - usedCount;
+                if (attemptCount > remaining) {
+                    throw new RuntimeException("本次试图新建" + attemptCount + "条「" + item.getVideoType().getLabel()
+                            + "-" + item.getPlatform().replace("\n", "、") + "」类型的记录，超出了该需求条目"
+                            + remaining + "条的名额限制（该条目共" + item.getVideoCount() + "条，已安排" + usedCount + "条）");
+                }
+            }
         }
     }
 }
