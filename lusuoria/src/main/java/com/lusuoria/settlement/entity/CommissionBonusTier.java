@@ -11,7 +11,7 @@ import java.math.BigDecimal;
  * 按"项目负责人某个时间范围（如当月）的提成总额"判档，命中区间后按 bonusRate 额外奖励
  * （bonus = 提成总额（美金） × bonusRate）。金额单位跟随 {@link Employee#getBonusTierCurrency()}
  * （该员工选定的币种），判档前会把提成总额换算成这个币种再比较，见
- * DashboardStatsService 里的 computeBonus()。
+ * CommissionBonusService 里的 computeBonus()。
  *
  * maxAmount 为空表示不封顶（该档位覆盖 minAmount 及以上所有金额）。
  */

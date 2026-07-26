@@ -7,11 +7,9 @@ import com.lusuoria.settlement.dto.response.DashboardSummaryResponse;
 import com.lusuoria.settlement.dto.response.ExchangeRateInfo;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
-import com.lusuoria.settlement.entity.CommissionBonusTier;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
-import com.lusuoria.settlement.repository.CommissionBonusTierRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -53,7 +51,7 @@ public class DashboardStatsService {
     @Autowired private EmployeeCache employeeCache;
     @Autowired private ExchangeRateService exchangeRateService;
     @Autowired private com.lusuoria.settlement.util.ProfitCalculator profitCalculator;
-    @Autowired private CommissionBonusTierRepository bonusTierRepo;
+    @Autowired private CommissionBonusService commissionBonusService;
 
     // ============ 顶部汇总 ============
 
@@ -346,7 +344,7 @@ public class DashboardStatsService {
             if (manager != null && "管理层".equals(manager.getRole())) continue;
 
             BigDecimal commissionUsd = e.getValue();
-            BigDecimal bonusUsd = computeBonus(manager, commissionUsd, rate);
+            BigDecimal bonusUsd = commissionBonusService.computeBonus(manager, commissionUsd, rate);
             String label = managerId.equals(NO_MANAGER_KEY) ? "未指定负责人"
                     : (manager != null ? manager.getName() : "未知负责人");
             rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
@@ -365,30 +363,6 @@ public class DashboardStatsService {
                 .exchangeRateInfo(exchangeRateService.getRateForMonth(endMonth))
                 .rows(rows)
                 .build();
-    }
-
-    /**
-     * 按项目负责人配置的 bonus 阶梯，用这个负责人在当前下钻时间范围内的提成总额（美金）判档，
-     * 命中区间后 bonus = 提成总额（美金） × 该档位 bonusRate。没配置阶梯（bonusTierCurrency
-     * 为空，或没有任何档位）的负责人返回 0。
-     */
-    private BigDecimal computeBonus(Employee manager, BigDecimal commissionTotalUsd, BigDecimal monthRate) {
-        if (manager == null || manager.getBonusTierCurrency() == null) return BigDecimal.ZERO;
-        List<CommissionBonusTier> tiers = bonusTierRepo
-                .findByEmployeeIdAndIsDeletedFalseOrderByMinAmountAsc(manager.getId());
-        if (tiers.isEmpty()) return BigDecimal.ZERO;
-
-        BigDecimal amountInChosenCurrency = "RMB".equals(manager.getBonusTierCurrency()) && monthRate != null
-                ? commissionTotalUsd.multiply(monthRate) : commissionTotalUsd;
-        for (CommissionBonusTier tier : tiers) {
-            boolean aboveMin = amountInChosenCurrency.compareTo(tier.getMinAmount()) >= 0;
-            boolean withinMax = tier.getMaxAmount() == null
-                    || amountInChosenCurrency.compareTo(tier.getMaxAmount()) <= 0;
-            if (aboveMin && withinMax) {
-                return commissionTotalUsd.multiply(tier.getBonusRate()).setScale(SCALE, RoundingMode.HALF_UP);
-            }
-        }
-        return BigDecimal.ZERO;
     }
 
     // ============ 通用：按品牌方/团队/账号/类型/项目负责人 拆分金额 ============
@@ -453,8 +427,13 @@ public class DashboardStatsService {
 
     // ============ 工具方法 ============
 
-    /** 计算一条红人合作跟踪记录的各项金额，逻辑与 ProfitCalculator 保持一致 */
-    private Computed compute(CollaborationTracking o) {
+    /**
+     * 计算一条红人合作跟踪记录的各项金额，逻辑与 ProfitCalculator 保持一致。
+     * 包级可见（非 private）：PayslipService 计算项目负责人提成/管理层公司利润时复用同一份公式，
+     * 不能只用 Employee.defaultCommissionRate 简单相乘——提成要按这条记录自己的 commissionRate
+     * 和 exchangeRate 算，跟这里完全一致。
+     */
+    Computed compute(CollaborationTracking o) {
         BigDecimal clientPrice  = safe(o.getClientPrice());
         BigDecimal otherCostRmb = safe(o.getOtherExternalCost());
         BigDecimal execCostRmb  = safe(o.getInternalExecutionCost());
@@ -493,7 +472,7 @@ public class DashboardStatsService {
         return c;
     }
 
-    private static class Computed {
+    static class Computed {
         BigDecimal clientPrice;
         BigDecimal influencerCost;
         BigDecimal otherExternalCost;
@@ -504,7 +483,7 @@ public class DashboardStatsService {
         BigDecimal companyProfit;
     }
 
-    private String brandNameOf(Long brandId) {
+    String brandNameOf(Long brandId) {
         if (brandId == null) return "未指定品牌";
         Brand b = brandCache.findById(brandId);
         return b != null ? b.getName() : "未知品牌";
@@ -523,7 +502,7 @@ public class DashboardStatsService {
     }
 
     /** 用于"品牌方 - 团队"这类拼接展示：没有团队时留空，拼出来是"品牌方 - "，团队部分直接占空 */
-    private String teamNameOf(InfluencerTeam team) {
+    String teamNameOf(InfluencerTeam team) {
         if (team == null || team.getName() == null || team.getName().trim().isEmpty()) return "";
         return team.getName();
     }
@@ -535,11 +514,11 @@ public class DashboardStatsService {
     }
 
     /** 下钻接口统一用范围终止月份对应的汇率（即查看的最新月份的"上月最后工作日"汇率） */
-    private BigDecimal rateForRange(String endMonth) {
+    BigDecimal rateForRange(String endMonth) {
         return exchangeRateService.getRateForMonth(endMonth).getUsdToCny();
     }
 
-    private BigDecimal convert(BigDecimal usdAmount, BigDecimal rate, boolean toRmb) {
+    BigDecimal convert(BigDecimal usdAmount, BigDecimal rate, boolean toRmb) {
         if (usdAmount == null) usdAmount = BigDecimal.ZERO;
         if (!toRmb || rate == null) return usdAmount.setScale(SCALE, RoundingMode.HALF_UP);
         return usdAmount.multiply(rate).setScale(SCALE, RoundingMode.HALF_UP);
@@ -549,7 +528,7 @@ public class DashboardStatsService {
      * 其他外部成本、内部执行成本合计这两个字段本身就是人民币原值（不是美元），
      * 换算方向跟 convert() 正好相反：要人民币就直接原样返回，要美元才需要除以汇率。
      */
-    private BigDecimal convertFromRmb(BigDecimal rmbAmount, BigDecimal rate, boolean toRmb) {
+    BigDecimal convertFromRmb(BigDecimal rmbAmount, BigDecimal rate, boolean toRmb) {
         if (rmbAmount == null) rmbAmount = BigDecimal.ZERO;
         if (toRmb || rate == null || rate.compareTo(BigDecimal.ZERO) <= 0) {
             return rmbAmount.setScale(SCALE, RoundingMode.HALF_UP);
@@ -557,7 +536,7 @@ public class DashboardStatsService {
         return rmbAmount.divide(rate, SCALE, RoundingMode.HALF_UP);
     }
 
-    private BigDecimal safe(BigDecimal v) {
+    BigDecimal safe(BigDecimal v) {
         return v == null ? BigDecimal.ZERO : v;
     }
 }
