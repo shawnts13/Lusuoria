@@ -256,7 +256,7 @@ public class PayslipService {
         BigDecimal totalGrossProfit = BigDecimal.ZERO;
         BigDecimal totalDistributable = BigDecimal.ZERO;
         BigDecimal totalCommission = BigDecimal.ZERO;
-        BigDecimal totalExecCostRmb = BigDecimal.ZERO;
+        BigDecimal totalExecCostUsd = BigDecimal.ZERO;
         BigDecimal totalCompanyProfitUsd = BigDecimal.ZERO;
 
         for (CollaborationTracking o : orders) {
@@ -264,12 +264,15 @@ public class PayslipService {
             totalGrossProfit = totalGrossProfit.add(c.grossProfit);
             totalDistributable = totalDistributable.add(c.distributableProfit);
             totalCommission = totalCommission.add(c.commissionAmount);
-            // "内部执行人力成本"只算管理层自己名下（项目负责人=管理层本人）的执行人员工资：
-            // 其他项目负责人名下的执行人员，是那位项目负责人自己发工资（不冲减公司利润，见
-            // ProfitCalculator.isManagementOrder），不该算进管理层自己的这项支出里
-            if (mgmt.getId().equals(o.getProjectManagerId())) {
-                totalExecCostRmb = totalExecCostRmb.add(c.internalExecutionCost);
-            }
+            // "内部执行人力成本"（显示用）= grossProfit − distributableProfit：这正是 compute()
+            // 内部算 distributable 时实际扣掉的那笔执行成本（美金，已经按这条记录自己的汇率换算、
+            // 已经只在 isManagementOrder 即项目负责人=管理层本人时非零，其余记录这里自然是0）。
+            // 不要拿人民币原始值另外求和、最后用当月统一汇率再转换一次——那样是两条独立的换算/
+            // 四舍五入路径，各记录汇率不完全一致、或者"先转换再入账"和"先入账再转换"的舍入顺序
+            // 不同，加总后可能跟"可分配利润"里实际扣掉的数字对不上几分钱，导致管理层这里展示的
+            // 公式手动算出来的公司利润跟系统给的结果有小数点差异。这样写保证跟真正的利润计算链
+            // 完全是同一套数字，用户拿页面上任意几个数字手算公式一定能对上。
+            totalExecCostUsd = totalExecCostUsd.add(c.grossProfit.subtract(c.distributableProfit));
             totalCompanyProfitUsd = totalCompanyProfitUsd.add(c.companyProfit);
 
             String brandName = dashboardStatsService.brandNameOf(o.getBrandId());
@@ -293,7 +296,7 @@ public class PayslipService {
             }
         }
         BigDecimal otherStaffCostUsd = dashboardStatsService.convertFromRmb(otherStaffCostRmb, rate, false);
-        BigDecimal execCostUsd = dashboardStatsService.convertFromRmb(totalExecCostRmb, rate, false);
+        BigDecimal execCostUsd = totalExecCostUsd.setScale(SCALE, RoundingMode.HALF_UP);
         BigDecimal companyProfitBeforePayouts = totalCompanyProfitUsd.subtract(otherStaffCostUsd);
 
         // 当月所有"已确认"的其他员工：阶梯Bonus + 奖金，都要从公司利润里再扣一层
