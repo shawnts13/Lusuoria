@@ -2,7 +2,6 @@ package com.lusuoria.settlement.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lusuoria.settlement.config.EmployeeCache;
-import com.lusuoria.settlement.dto.response.DashboardSummaryResponse;
 import com.lusuoria.settlement.dto.response.ExchangeRateInfo;
 import com.lusuoria.settlement.dto.response.PayslipDetailResponse;
 import com.lusuoria.settlement.dto.response.PayslipDimensionRow;
@@ -34,9 +33,15 @@ import java.util.stream.Collectors;
  *     exchangeRate 可能有例外，必须逐条算）。
  *   - 执行人员：薪酬 = 名下记录 internalExecutionCost 原始值求和（人民币），不看这条记录是不是
  *     "管理层负责"——那个只影响"是否冲减公司利润"，不影响执行人员自己该拿多少钱。
- *   - 管理层：复用 DashboardStatsService.getSummary() 的项目毛利/可分配利润/负责人提成/
- *     内部执行人力成本/内部其他员工成本/公司利润，再扣掉当月所有"已确认"的其他员工的
- *     阶梯Bonus+奖金（这两项在 getSummary 里原本没有被扣减）。
+ *   - 管理层：项目毛利/可分配利润/负责人提成/内部执行人力成本/内部其他员工成本/公司利润，
+ *     公式跟 DashboardStatsService.getSummary() 完全一致（同样复用 compute()），
+ *     再扣掉当月所有"已确认"的其他员工的阶梯Bonus+奖金（这两项在 getSummary 里没有被扣减）。
+ *
+ * 性能：管理层视角的"工资单列表"要一次性展示全体员工，如果每个员工各自查一遍整月的合作跟踪
+ * 记录（原来的写法），员工一多就是明显的 N+1，整页会很慢。这里改成跟 DashboardStatsService
+ * 一样的套路——整月记录只查一次，在内存里按项目负责人/执行人员分组一次算完所有人
+ * （见 {@link #batchComputeCommissionRoles}），管理层确认前置校验用到的"其他员工是否都已确认"
+ * 也改成一次查完当月所有工资单行，不再按员工循环查。
  */
 @Service
 public class PayslipService {
@@ -56,24 +61,19 @@ public class PayslipService {
 
     // ================= 对外主入口 =================
 
-    /** 明细弹窗 + 列表行都基于这一个方法：已确认走快照，未确认实时算，最后统一按 currency 换算 */
+    /** 明细弹窗 + "我的工资单"：单个员工，允许各自查一次（不是列表场景，没有 N+1 问题） */
     @Transactional(readOnly = true)
     public PayslipDetailResponse detail(Long employeeId, String yearMonth, String currency) {
         Employee emp = employeeRepo.findByIdAndIsDeletedFalse(employeeId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
         Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(employeeId, yearMonth).orElse(null);
-        boolean toRmb = "RMB".equalsIgnoreCase(currency);
-
-        if (p != null && Boolean.TRUE.equals(p.getConfirmed())) {
-            PayslipDetailResponse snapshot = readSnapshot(p);
-            return toDisplayResponse(snapshot, p, p.getExchangeRateSnapshot(), toRmb, true, yearMonth);
-        }
-
-        PayslipDetailResponse live = computeLive(emp, yearMonth, p);
-        BigDecimal rate = dashboardStatsService.rateForRange(yearMonth);
-        return toDisplayResponse(live, p, rate, toRmb, false, yearMonth);
+        return resolveDisplay(emp, yearMonth, currency, null, p);
     }
 
+    /**
+     * 管理层视角的员工列表（不含管理层自己，见 {@link #managementRow}）。
+     * 整月合作跟踪记录、整月工资单确认状态各只查一次，员工数量再多也不会变成 N 次查询。
+     */
     @Transactional(readOnly = true)
     public List<PayslipRowResponse> listForMonth(String yearMonth, String roleFilter, String currency) {
         List<Employee> employees = employeeRepo.findByIsDeletedFalseOrderByNameAsc().stream()
@@ -81,9 +81,18 @@ public class PayslipService {
                 .filter(e -> !"管理层".equals(e.getRole()))
                 .filter(e -> roleFilter == null || roleFilter.trim().isEmpty() || matchesRoleFilter(e.getRole(), roleFilter))
                 .collect(Collectors.toList());
+
+        List<Employee> commissionRoleEmployees = employees.stream()
+                .filter(e -> "项目负责人".equals(e.getRole()) || "执行人员".equals(e.getRole()))
+                .collect(Collectors.toList());
+        Map<Long, PayslipDetailResponse> liveMap = batchComputeCommissionRoles(commissionRoleEmployees, yearMonth);
+
+        Map<Long, Payslip> payslipByEmployeeId = payslipRepo.findByYearMonthAndIsDeletedFalse(yearMonth).stream()
+                .collect(Collectors.toMap(Payslip::getEmployeeId, p -> p, (a, b) -> a));
+
         List<PayslipRowResponse> result = new ArrayList<>();
         for (Employee e : employees) {
-            result.add(toRowResponse(e, yearMonth, currency));
+            result.add(toRowResponse(e, yearMonth, currency, liveMap.get(e.getId()), payslipByEmployeeId.get(e.getId())));
         }
         return result;
     }
@@ -92,7 +101,8 @@ public class PayslipService {
     public PayslipRowResponse managementRow(String yearMonth, String currency) {
         Employee mgmt = employeeCache.findManagementEmployee();
         if (mgmt == null) throw new RuntimeException("系统里还没有配置角色为\"管理层\"的员工");
-        return toRowResponse(mgmt, yearMonth, currency);
+        Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(mgmt.getId(), yearMonth).orElse(null);
+        return toRowResponse(mgmt, yearMonth, currency, null, p);
     }
 
     // ================= 手动维护字段 =================
@@ -152,7 +162,7 @@ public class PayslipService {
         payslipRepo.save(p);
     }
 
-    // ================= 按角色计算（原始计价币种，不做汇率换算） =================
+    // ================= 按角色计算：单个员工（明细弹窗/我的工资单/确认时用） =================
 
     private PayslipDetailResponse computeLive(Employee emp, String yearMonth, Payslip draft) {
         String role = emp.getRole();
@@ -168,22 +178,205 @@ public class PayslipService {
         List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
         Map<String, PayslipDimensionRow> grouped = new LinkedHashMap<>();
         BigDecimal totalCommission = BigDecimal.ZERO;
-
         for (CollaborationTracking o : orders) {
             if (!emp.getId().equals(o.getProjectManagerId())) continue;
             DashboardStatsService.Computed c = dashboardStatsService.compute(o);
             totalCommission = totalCommission.add(c.commissionAmount);
+            accumulatePmRow(grouped, o, c.clientPrice);
+        }
+        return buildProjectManagerDetail(emp, new ArrayList<>(grouped.values()), totalCommission, yearMonth);
+    }
+
+    private PayslipDetailResponse computeExecutor(Employee emp, String yearMonth) {
+        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
+        Map<String, PayslipDimensionRow> grouped = new LinkedHashMap<>();
+        BigDecimal totalPayRmb = BigDecimal.ZERO;
+        for (CollaborationTracking o : orders) {
+            if (!emp.getId().equals(o.getExecutorId())) continue;
+            BigDecimal payRmb = dashboardStatsService.safe(o.getInternalExecutionCost());
+            totalPayRmb = totalPayRmb.add(payRmb);
+            accumulateExecutorRow(grouped, o, payRmb);
+        }
+        return buildExecutorDetail(new ArrayList<>(grouped.values()), totalPayRmb);
+    }
+
+    private PayslipDetailResponse computeFixedSalary(Employee emp) {
+        return PayslipDetailResponse.builder()
+                .type("FIXED_SALARY")
+                .rows(new ArrayList<>())
+                .baseAmount(dashboardStatsService.safe(emp.getFixedMonthlySalary()))
+                .build();
+    }
+
+    /** 法务本月工资完全靠管理层手动录入，草稿态就存在 Payslip.legalSalaryRmb 上，还没录入时显示 0 */
+    private PayslipDetailResponse computeLegal(Payslip draft) {
+        BigDecimal salary = draft != null ? draft.getLegalSalaryRmb() : null;
+        return PayslipDetailResponse.builder()
+                .type("LEGAL")
+                .rows(new ArrayList<>())
+                .baseAmount(salary != null ? salary : BigDecimal.ZERO)
+                .build();
+    }
+
+    private PayslipDetailResponse computeManagement(Employee mgmt, String yearMonth) {
+        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
+        Map<String, PayslipDimensionRow> grouped = new LinkedHashMap<>();
+        BigDecimal totalGrossProfit = BigDecimal.ZERO;
+        BigDecimal totalDistributable = BigDecimal.ZERO;
+        BigDecimal totalCommission = BigDecimal.ZERO;
+        BigDecimal totalExecCostRmb = BigDecimal.ZERO;
+        BigDecimal totalCompanyProfitUsd = BigDecimal.ZERO;
+
+        for (CollaborationTracking o : orders) {
+            DashboardStatsService.Computed c = dashboardStatsService.compute(o);
+            totalGrossProfit = totalGrossProfit.add(c.grossProfit);
+            totalDistributable = totalDistributable.add(c.distributableProfit);
+            totalCommission = totalCommission.add(c.commissionAmount);
+            totalExecCostRmb = totalExecCostRmb.add(c.internalExecutionCost);
+            totalCompanyProfitUsd = totalCompanyProfitUsd.add(c.companyProfit);
 
             String brandName = dashboardStatsService.brandNameOf(o.getBrandId());
             String teamName = dashboardStatsService.teamNameOf(o.getTeam());
             PayslipDimensionRow row = grouped.computeIfAbsent(brandName + "|" + teamName, k ->
                     PayslipDimensionRow.builder().brandName(brandName).teamName(teamName)
-                            .videoCount(0L).amount(BigDecimal.ZERO).isSummaryRow(false).build());
+                            .videoCount(0L).amount(BigDecimal.ZERO).amount2(BigDecimal.ZERO).isSummaryRow(false).build());
             row.setVideoCount(row.getVideoCount() + 1);
             row.setAmount(row.getAmount().add(c.clientPrice));
+            row.setAmount2(row.getAmount2().add(c.influencerCost));
+        }
+        List<PayslipDimensionRow> rows = new ArrayList<>(grouped.values());
+        rows.sort((a, b) -> b.getVideoCount().compareTo(a.getVideoCount()));
+        rows.add(buildSummaryRow(rows));
+
+        BigDecimal rate = dashboardStatsService.rateForRange(yearMonth);
+        // 内部其他员工成本：财务/IT后勤固定月薪合计（人民币），换算成美金扣减
+        BigDecimal otherStaffCostRmb = BigDecimal.ZERO;
+        for (Employee e : employeeRepo.findByIsDeletedFalseOrderByNameAsc()) {
+            if (FIXED_SALARY_ROLES.contains(e.getRole())) {
+                otherStaffCostRmb = otherStaffCostRmb.add(dashboardStatsService.safe(e.getFixedMonthlySalary()));
+            }
+        }
+        BigDecimal otherStaffCostUsd = dashboardStatsService.convertFromRmb(otherStaffCostRmb, rate, false);
+        BigDecimal execCostUsd = dashboardStatsService.convertFromRmb(totalExecCostRmb, rate, false);
+        BigDecimal companyProfitBeforePayouts = totalCompanyProfitUsd.subtract(otherStaffCostUsd);
+
+        // 当月所有"已确认"的其他员工：阶梯Bonus + 奖金，都要从公司利润里再扣一层
+        // （上面这套公式本身只扣了内部执行成本/负责人提成/内部其他员工成本，没扣这两项）
+        List<Payslip> othersConfirmed = payslipRepo
+                .findByYearMonthAndConfirmedTrueAndIsDeletedFalseAndEmployeeIdNot(yearMonth, mgmt.getId());
+        BigDecimal tierBonusTotalUsd = BigDecimal.ZERO;
+        BigDecimal extraBonusTotalUsd = BigDecimal.ZERO;
+        for (Payslip other : othersConfirmed) {
+            PayslipDetailResponse snap = readSnapshot(other);
+            if (snap.getTierBonusAmount() != null) tierBonusTotalUsd = tierBonusTotalUsd.add(snap.getTierBonusAmount());
+            if (other.getExtraBonusAmount() != null) {
+                boolean isRmb = "RMB".equals(other.getExtraBonusCurrency());
+                BigDecimal usd = isRmb
+                        ? (rate != null && rate.compareTo(BigDecimal.ZERO) > 0
+                                ? other.getExtraBonusAmount().divide(rate, SCALE, RoundingMode.HALF_UP)
+                                : BigDecimal.ZERO)
+                        : other.getExtraBonusAmount();
+                extraBonusTotalUsd = extraBonusTotalUsd.add(usd);
+            }
         }
 
-        List<PayslipDimensionRow> rows = new ArrayList<>(grouped.values());
+        BigDecimal managerCommissionTotal = totalCommission.add(tierBonusTotalUsd);
+        BigDecimal companyProfit = companyProfitBeforePayouts.subtract(tierBonusTotalUsd).subtract(extraBonusTotalUsd);
+
+        return PayslipDetailResponse.builder()
+                .type("MANAGEMENT")
+                .rows(rows)
+                .grossProfit(totalGrossProfit.setScale(SCALE, RoundingMode.HALF_UP))
+                .distributableProfit(totalDistributable.setScale(SCALE, RoundingMode.HALF_UP))
+                .managerCommissionTotal(managerCommissionTotal.setScale(SCALE, RoundingMode.HALF_UP))
+                .executorPayTotal(execCostUsd)
+                .otherStaffCost(otherStaffCostUsd)
+                .companyProfit(companyProfit.setScale(SCALE, RoundingMode.HALF_UP))
+                .build();
+    }
+
+    // ================= 按角色计算：批量（工资单列表页用，整月记录只查一次） =================
+
+    /**
+     * 项目负责人/执行人员批量实时预览：整月合作跟踪记录只查一次，在内存里按人分组，
+     * 避免工资单列表页挨个员工各查一次整月数据（原来的写法在员工多的时候明显变慢）。
+     */
+    private Map<Long, PayslipDetailResponse> batchComputeCommissionRoles(List<Employee> employees, String yearMonth) {
+        Map<Long, Employee> pmById = new HashMap<>();
+        Map<Long, Employee> execById = new HashMap<>();
+        for (Employee e : employees) {
+            if ("项目负责人".equals(e.getRole())) pmById.put(e.getId(), e);
+            else if ("执行人员".equals(e.getRole())) execById.put(e.getId(), e);
+        }
+        Map<Long, PayslipDetailResponse> result = new HashMap<>();
+        if (pmById.isEmpty() && execById.isEmpty()) return result;
+
+        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
+
+        Map<Long, Map<String, PayslipDimensionRow>> pmGrouped = new HashMap<>();
+        Map<Long, BigDecimal> pmCommission = new HashMap<>();
+        Map<Long, Map<String, PayslipDimensionRow>> execGrouped = new HashMap<>();
+        Map<Long, BigDecimal> execPay = new HashMap<>();
+
+        for (CollaborationTracking o : orders) {
+            Long mgrId = o.getProjectManagerId();
+            if (mgrId != null && pmById.containsKey(mgrId)) {
+                DashboardStatsService.Computed c = dashboardStatsService.compute(o);
+                pmCommission.merge(mgrId, c.commissionAmount, BigDecimal::add);
+                accumulatePmRow(pmGrouped.computeIfAbsent(mgrId, k -> new LinkedHashMap<>()), o, c.clientPrice);
+            }
+            Long execId = o.getExecutorId();
+            if (execId != null && execById.containsKey(execId)) {
+                BigDecimal payRmb = dashboardStatsService.safe(o.getInternalExecutionCost());
+                execPay.merge(execId, payRmb, BigDecimal::add);
+                accumulateExecutorRow(execGrouped.computeIfAbsent(execId, k -> new LinkedHashMap<>()), o, payRmb);
+            }
+        }
+
+        for (Employee e : pmById.values()) {
+            List<PayslipDimensionRow> rows = new ArrayList<>(
+                    pmGrouped.getOrDefault(e.getId(), Collections.emptyMap()).values());
+            result.put(e.getId(), buildProjectManagerDetail(
+                    e, rows, pmCommission.getOrDefault(e.getId(), BigDecimal.ZERO), yearMonth));
+        }
+        for (Employee e : execById.values()) {
+            List<PayslipDimensionRow> rows = new ArrayList<>(
+                    execGrouped.getOrDefault(e.getId(), Collections.emptyMap()).values());
+            result.put(e.getId(), buildExecutorDetail(rows, execPay.getOrDefault(e.getId(), BigDecimal.ZERO)));
+        }
+        return result;
+    }
+
+    // ================= 维度行累加 / 组装（单个员工、批量两条路径共用） =================
+
+    private void accumulatePmRow(Map<String, PayslipDimensionRow> grouped, CollaborationTracking o, BigDecimal clientPrice) {
+        String brandName = dashboardStatsService.brandNameOf(o.getBrandId());
+        String teamName = dashboardStatsService.teamNameOf(o.getTeam());
+        PayslipDimensionRow row = grouped.computeIfAbsent(brandName + "|" + teamName, k ->
+                PayslipDimensionRow.builder().brandName(brandName).teamName(teamName)
+                        .videoCount(0L).amount(BigDecimal.ZERO).isSummaryRow(false).build());
+        row.setVideoCount(row.getVideoCount() + 1);
+        row.setAmount(row.getAmount().add(clientPrice));
+    }
+
+    private void accumulateExecutorRow(Map<String, PayslipDimensionRow> grouped, CollaborationTracking o, BigDecimal payRmb) {
+        String brandName = dashboardStatsService.brandNameOf(o.getBrandId());
+        String teamName = dashboardStatsService.teamNameOf(o.getTeam());
+        VideoType vt = o.getVideoType();
+        String videoTypeKey = vt != null ? vt.name() : null;
+        String key = videoTypeKey + "|" + brandName + "|" + teamName;
+        PayslipDimensionRow row = grouped.computeIfAbsent(key, k ->
+                PayslipDimensionRow.builder().brandName(brandName).teamName(teamName)
+                        .videoType(videoTypeKey)
+                        .videoTypeLabel(vt != null ? vt.getLabel() : "未填写视频类型")
+                        .videoCount(0L).amount(BigDecimal.ZERO).isSummaryRow(false).build());
+        row.setVideoCount(row.getVideoCount() + 1);
+        row.setAmount(row.getAmount().add(payRmb));
+    }
+
+    private PayslipDetailResponse buildProjectManagerDetail(Employee emp, List<PayslipDimensionRow> rowsNoSummary,
+                                                             BigDecimal totalCommission, String yearMonth) {
+        List<PayslipDimensionRow> rows = new ArrayList<>(rowsNoSummary);
         rows.sort((a, b) -> b.getVideoCount().compareTo(a.getVideoCount()));
         rows.add(buildSummaryRow(rows));
 
@@ -200,33 +393,8 @@ public class PayslipService {
                 .build();
     }
 
-    private PayslipDetailResponse computeExecutor(Employee emp, String yearMonth) {
-        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
-        Map<String, PayslipDimensionRow> grouped = new LinkedHashMap<>();
-        BigDecimal totalPayRmb = BigDecimal.ZERO;
-
-        for (CollaborationTracking o : orders) {
-            if (!emp.getId().equals(o.getExecutorId())) continue;
-            // 执行人员该拿多少钱只看这条记录自己填的内部执行成本，不看项目负责人是不是"管理层"
-            // （那个只影响这笔钱是否冲减公司利润，见 ProfitCalculator.isManagementOrder）
-            BigDecimal payRmb = dashboardStatsService.safe(o.getInternalExecutionCost());
-            totalPayRmb = totalPayRmb.add(payRmb);
-
-            String brandName = dashboardStatsService.brandNameOf(o.getBrandId());
-            String teamName = dashboardStatsService.teamNameOf(o.getTeam());
-            VideoType vt = o.getVideoType();
-            String videoTypeKey = vt != null ? vt.name() : null;
-            String key = videoTypeKey + "|" + brandName + "|" + teamName;
-            PayslipDimensionRow row = grouped.computeIfAbsent(key, k ->
-                    PayslipDimensionRow.builder().brandName(brandName).teamName(teamName)
-                            .videoType(videoTypeKey)
-                            .videoTypeLabel(vt != null ? vt.getLabel() : "未填写视频类型")
-                            .videoCount(0L).amount(BigDecimal.ZERO).isSummaryRow(false).build());
-            row.setVideoCount(row.getVideoCount() + 1);
-            row.setAmount(row.getAmount().add(payRmb));
-        }
-
-        List<PayslipDimensionRow> rows = new ArrayList<>(grouped.values());
+    private PayslipDetailResponse buildExecutorDetail(List<PayslipDimensionRow> rowsNoSummary, BigDecimal totalPayRmb) {
+        List<PayslipDimensionRow> rows = new ArrayList<>(rowsNoSummary);
         // 先按视频类型分组（枚举声明顺序），组内按视频数降序——体现旧素材重发的梯度价规则
         rows.sort((a, b) -> {
             int ta = videoTypeOrdinal(a.getVideoType());
@@ -251,80 +419,6 @@ public class PayslipService {
         }
     }
 
-    private PayslipDetailResponse computeFixedSalary(Employee emp) {
-        return PayslipDetailResponse.builder()
-                .type("FIXED_SALARY")
-                .rows(new ArrayList<>())
-                .baseAmount(dashboardStatsService.safe(emp.getFixedMonthlySalary()))
-                .build();
-    }
-
-    /** 法务本月工资完全靠管理层手动录入，草稿态就存在 Payslip.legalSalaryRmb 上，还没录入时显示 0 */
-    private PayslipDetailResponse computeLegal(Payslip draft) {
-        BigDecimal salary = draft != null ? draft.getLegalSalaryRmb() : null;
-        return PayslipDetailResponse.builder()
-                .type("LEGAL")
-                .rows(new ArrayList<>())
-                .baseAmount(salary != null ? salary : BigDecimal.ZERO)
-                .build();
-    }
-
-    private PayslipDetailResponse computeManagement(Employee mgmt, String yearMonth) {
-        DashboardSummaryResponse summary = dashboardStatsService.getSummary(yearMonth, "USD");
-
-        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
-        Map<String, PayslipDimensionRow> grouped = new LinkedHashMap<>();
-        for (CollaborationTracking o : orders) {
-            String brandName = dashboardStatsService.brandNameOf(o.getBrandId());
-            String teamName = dashboardStatsService.teamNameOf(o.getTeam());
-            PayslipDimensionRow row = grouped.computeIfAbsent(brandName + "|" + teamName, k ->
-                    PayslipDimensionRow.builder().brandName(brandName).teamName(teamName)
-                            .videoCount(0L).amount(BigDecimal.ZERO).amount2(BigDecimal.ZERO).isSummaryRow(false).build());
-            row.setVideoCount(row.getVideoCount() + 1);
-            row.setAmount(row.getAmount().add(dashboardStatsService.safe(o.getClientPrice())));
-            row.setAmount2(row.getAmount2().add(dashboardStatsService.safe(o.getInfluencerCost())));
-        }
-        List<PayslipDimensionRow> rows = new ArrayList<>(grouped.values());
-        rows.sort((a, b) -> b.getVideoCount().compareTo(a.getVideoCount()));
-        rows.add(buildSummaryRow(rows));
-
-        // 当月所有"已确认"的其他员工：阶梯Bonus + 奖金，都要从公司利润里扣掉
-        // （getSummary() 本身只扣了内部执行成本/负责人提成/内部其他员工成本，没扣这两项）
-        List<Payslip> othersConfirmed = payslipRepo
-                .findByYearMonthAndConfirmedTrueAndIsDeletedFalseAndEmployeeIdNot(yearMonth, mgmt.getId());
-        BigDecimal rate = dashboardStatsService.rateForRange(yearMonth);
-        BigDecimal tierBonusTotalUsd = BigDecimal.ZERO;
-        BigDecimal extraBonusTotalUsd = BigDecimal.ZERO;
-        for (Payslip other : othersConfirmed) {
-            PayslipDetailResponse snap = readSnapshot(other);
-            if (snap.getTierBonusAmount() != null) tierBonusTotalUsd = tierBonusTotalUsd.add(snap.getTierBonusAmount());
-            if (other.getExtraBonusAmount() != null) {
-                boolean isRmb = "RMB".equals(other.getExtraBonusCurrency());
-                BigDecimal usd = isRmb
-                        ? (rate != null && rate.compareTo(BigDecimal.ZERO) > 0
-                                ? other.getExtraBonusAmount().divide(rate, SCALE, RoundingMode.HALF_UP)
-                                : BigDecimal.ZERO)
-                        : other.getExtraBonusAmount();
-                extraBonusTotalUsd = extraBonusTotalUsd.add(usd);
-            }
-        }
-
-        BigDecimal managerCommissionTotal = dashboardStatsService.safe(summary.getTotalCommissionAmount()).add(tierBonusTotalUsd);
-        BigDecimal companyProfit = dashboardStatsService.safe(summary.getTotalCompanyProfit())
-                .subtract(tierBonusTotalUsd).subtract(extraBonusTotalUsd);
-
-        return PayslipDetailResponse.builder()
-                .type("MANAGEMENT")
-                .rows(rows)
-                .grossProfit(summary.getTotalGrossProfit())
-                .distributableProfit(summary.getTotalDistributableProfit())
-                .managerCommissionTotal(managerCommissionTotal.setScale(SCALE, RoundingMode.HALF_UP))
-                .executorPayTotal(summary.getTotalInternalExecutionCost())
-                .otherStaffCost(summary.getTotalOtherStaffCost())
-                .companyProfit(companyProfit.setScale(SCALE, RoundingMode.HALF_UP))
-                .build();
-    }
-
     private PayslipDimensionRow buildSummaryRow(List<PayslipDimensionRow> rows) {
         long count = 0;
         BigDecimal amount = BigDecimal.ZERO;
@@ -343,6 +437,18 @@ public class PayslipService {
     }
 
     // ================= 展示层：换算成请求币种，现算总工资 =================
+
+    /** 已确认走快照，未确认实时算（优先用调用方批量算好的 precomputedLive，没有才现查现算） */
+    private PayslipDetailResponse resolveDisplay(Employee emp, String yearMonth, String currency,
+                                                  PayslipDetailResponse precomputedLive, Payslip p) {
+        boolean toRmb = "RMB".equalsIgnoreCase(currency);
+        if (p != null && Boolean.TRUE.equals(p.getConfirmed())) {
+            return toDisplayResponse(readSnapshot(p), p, p.getExchangeRateSnapshot(), toRmb, true, yearMonth);
+        }
+        PayslipDetailResponse live = precomputedLive != null ? precomputedLive : computeLive(emp, yearMonth, p);
+        BigDecimal rate = dashboardStatsService.rateForRange(yearMonth);
+        return toDisplayResponse(live, p, rate, toRmb, false, yearMonth);
+    }
 
     private PayslipDetailResponse toDisplayResponse(PayslipDetailResponse src, Payslip draft, BigDecimal rate,
                                                      boolean toRmb, boolean confirmed, String yearMonth) {
@@ -421,15 +527,15 @@ public class PayslipService {
         return filter.equals(role);
     }
 
-    private PayslipRowResponse toRowResponse(Employee emp, String yearMonth, String currency) {
-        PayslipDetailResponse d = detail(emp.getId(), yearMonth, currency);
+    private PayslipRowResponse toRowResponse(Employee emp, String yearMonth, String currency,
+                                              PayslipDetailResponse precomputedLive, Payslip payslip) {
+        PayslipDetailResponse d = resolveDisplay(emp, yearMonth, currency, precomputedLive, payslip);
         Long videoCount = null;
         if (("项目负责人".equals(emp.getRole()) || "执行人员".equals(emp.getRole()))
                 && d.getRows() != null && !d.getRows().isEmpty()) {
             videoCount = d.getRows().get(d.getRows().size() - 1).getVideoCount();
         }
-        Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(emp.getId(), yearMonth).orElse(null);
-        Boolean legalSalarySet = "法务".equals(emp.getRole()) ? (p != null && p.getLegalSalaryRmb() != null) : null;
+        Boolean legalSalarySet = "法务".equals(emp.getRole()) ? (payslip != null && payslip.getLegalSalaryRmb() != null) : null;
         String blockedReason = "管理层".equals(emp.getRole()) ? managementBlockReason(yearMonth, emp.getId()) : null;
 
         return PayslipRowResponse.builder()
@@ -447,16 +553,25 @@ public class PayslipService {
                 .build();
     }
 
-    /** 管理层确认前置校验：当月所有在职、非管理层的员工都必须已确认，否则返回拦截文案 */
+    /**
+     * 管理层确认前置校验：当月所有在职、非管理层的员工都必须已确认，否则返回拦截文案。
+     * 当月工资单确认状态只查一次（不按员工循环查），只在"管理层这一行"触发，请求量本身
+     * 就是 O(1)，不受员工数量影响。
+     */
     private String managementBlockReason(String yearMonth, Long managementEmployeeId) {
         List<Employee> activeOthers = employeeRepo.findByIsDeletedFalseOrderByNameAsc().stream()
                 .filter(e -> e.getResignDate() == null)
                 .filter(e -> !e.getId().equals(managementEmployeeId))
                 .filter(e -> !"管理层".equals(e.getRole()))
                 .collect(Collectors.toList());
+        if (activeOthers.isEmpty()) return null;
+
+        Set<Long> confirmedIds = payslipRepo.findByYearMonthAndIsDeletedFalse(yearMonth).stream()
+                .filter(p -> Boolean.TRUE.equals(p.getConfirmed()))
+                .map(Payslip::getEmployeeId)
+                .collect(Collectors.toSet());
         for (Employee e : activeOthers) {
-            Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(e.getId(), yearMonth).orElse(null);
-            if (p == null || !Boolean.TRUE.equals(p.getConfirmed())) {
+            if (!confirmedIds.contains(e.getId())) {
                 return "请先确认其他员工的工资单后再确认管理层工资单";
             }
         }
