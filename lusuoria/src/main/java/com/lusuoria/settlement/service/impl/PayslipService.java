@@ -249,7 +249,12 @@ public class PayslipService {
             totalGrossProfit = totalGrossProfit.add(c.grossProfit);
             totalDistributable = totalDistributable.add(c.distributableProfit);
             totalCommission = totalCommission.add(c.commissionAmount);
-            totalExecCostRmb = totalExecCostRmb.add(c.internalExecutionCost);
+            // "内部执行人力成本"只算管理层自己名下（项目负责人=管理层本人）的执行人员工资：
+            // 其他项目负责人名下的执行人员，是那位项目负责人自己发工资（不冲减公司利润，见
+            // ProfitCalculator.isManagementOrder），不该算进管理层自己的这项支出里
+            if (mgmt.getId().equals(o.getProjectManagerId())) {
+                totalExecCostRmb = totalExecCostRmb.add(c.internalExecutionCost);
+            }
             totalCompanyProfitUsd = totalCompanyProfitUsd.add(c.companyProfit);
 
             String brandName = dashboardStatsService.brandNameOf(o.getBrandId());
