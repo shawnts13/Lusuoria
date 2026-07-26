@@ -76,7 +76,6 @@ public class ExecutorPayRateController {
                 .orElseGet(() -> ExecutorPayRate.builder()
                         .managerId(effectiveManagerId)
                         .executorId(req.getExecutorId())
-                        .isDeleted(false)
                         .build());
         rate.setRateRealShotNew(req.getRateRealShotNew());
         rate.setRateAiNewMaterial(req.getRateAiNewMaterial());

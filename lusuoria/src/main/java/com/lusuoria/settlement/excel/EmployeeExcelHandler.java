@@ -41,12 +41,6 @@ public class EmployeeExcelHandler {
         cols.add("离职时间");
         cols.add("默认提成比例");
         cols.add("固定月薪（人民币）");
-        cols.add("实拍新视频（元/条）");
-        cols.add("AI新素材（元/条）");
-        cols.add("旧素材重发1-50条（元/条）");
-        cols.add("旧素材重发51-100条（元/条）");
-        cols.add("旧素材重发101条+（元/条）");
-        cols.add("旧素材重发101条+当月封顶（元）");
         cols.add("备注");
 
         Row headerRow = sheet.createRow(0);
@@ -73,12 +67,6 @@ public class EmployeeExcelHandler {
             setCellStr(row, c++, e.getDefaultCommissionRate() != null
                     ? e.getDefaultCommissionRate().multiply(BigDecimal.valueOf(100)).stripTrailingZeros().toPlainString() + "%" : "", nor);
             setCellMoney(row, c++, e.getFixedMonthlySalary(), money);
-            setCellMoney(row, c++, e.getRateRealShotNew(), money);
-            setCellMoney(row, c++, e.getRateAiNewMaterial(), money);
-            setCellMoney(row, c++, e.getRateOldMaterialTier1(), money);
-            setCellMoney(row, c++, e.getRateOldMaterialTier2(), money);
-            setCellMoney(row, c++, e.getRateOldMaterialTier3(), money);
-            setCellMoney(row, c++, e.getOldMaterialMonthlyCap(), money);
             setCellStr(row, c++, e.getNotes(), nor);
         }
 

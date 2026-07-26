@@ -140,7 +140,6 @@ public class EmployeeController {
                         .minAmount(item.getMinAmount())
                         .maxAmount(item.getMaxAmount())
                         .bonusRate(item.getBonusRate())
-                        .isDeleted(false)
                         .build());
             }
         }
