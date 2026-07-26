@@ -7,6 +7,7 @@ import com.lusuoria.settlement.dto.response.PayslipDetailResponse;
 import com.lusuoria.settlement.dto.response.PayslipDimensionRow;
 import com.lusuoria.settlement.dto.response.PayslipRowResponse;
 import com.lusuoria.settlement.entity.CollaborationTracking;
+import com.lusuoria.settlement.entity.CommissionBonusTier;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Payslip;
 import com.lusuoria.settlement.enums.VideoType;
@@ -212,7 +213,10 @@ public class PayslipService {
             totalCommission = totalCommission.add(c.commissionAmount);
             accumulatePmRow(grouped, o, c.clientPrice);
         }
-        return buildProjectManagerDetail(emp, new ArrayList<>(grouped.values()), totalCommission, rate);
+        List<CommissionBonusTier> tiers = commissionBonusService
+                .findTiersByEmployeeIds(Collections.singletonList(emp.getId()))
+                .getOrDefault(emp.getId(), Collections.emptyList());
+        return buildProjectManagerDetail(emp, new ArrayList<>(grouped.values()), totalCommission, rate, tiers);
     }
 
     private PayslipDetailResponse computeExecutor(Employee emp, String yearMonth) {
@@ -366,11 +370,15 @@ public class PayslipService {
             }
         }
 
+        // 所有项目负责人的阶梯Bonus配置一次性查完，不再每人各自查一次（那样是另一处 N+1）
+        Map<Long, List<CommissionBonusTier>> tiersByPmId =
+                commissionBonusService.findTiersByEmployeeIds(new ArrayList<>(pmById.keySet()));
         for (Employee e : pmById.values()) {
             List<PayslipDimensionRow> rows = new ArrayList<>(
                     pmGrouped.getOrDefault(e.getId(), Collections.emptyMap()).values());
+            List<CommissionBonusTier> tiers = tiersByPmId.getOrDefault(e.getId(), Collections.emptyList());
             result.put(e.getId(), buildProjectManagerDetail(
-                    e, rows, pmCommission.getOrDefault(e.getId(), BigDecimal.ZERO), rate));
+                    e, rows, pmCommission.getOrDefault(e.getId(), BigDecimal.ZERO), rate, tiers));
         }
         for (Employee e : execById.values()) {
             List<PayslipDimensionRow> rows = new ArrayList<>(
@@ -408,13 +416,15 @@ public class PayslipService {
     }
 
     private PayslipDetailResponse buildProjectManagerDetail(Employee emp, List<PayslipDimensionRow> rowsNoSummary,
-                                                             BigDecimal totalCommission, BigDecimal rate) {
+                                                             BigDecimal totalCommission, BigDecimal rate,
+                                                             List<CommissionBonusTier> tiers) {
         List<PayslipDimensionRow> rows = new ArrayList<>(rowsNoSummary);
         rows.sort((a, b) -> b.getVideoCount().compareTo(a.getVideoCount()));
         rows.add(buildSummaryRow(rows));
 
-        BigDecimal tierBonus = commissionBonusService.hasBonusTierConfigured(emp)
-                ? commissionBonusService.computeBonus(emp, totalCommission, rate)
+        // tiers 为空=没配置阶梯=不展示该行（null）；配置了但没达标，computeBonusFromTiers 返回0，正常展示
+        BigDecimal tierBonus = (emp.getBonusTierCurrency() != null && !tiers.isEmpty())
+                ? commissionBonusService.computeBonusFromTiers(emp, tiers, totalCommission, rate)
                 : null;
 
         return PayslipDetailResponse.builder()

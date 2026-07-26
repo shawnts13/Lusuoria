@@ -158,14 +158,20 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     // ===== 以下方法 2026-07 从 ProjectOrderRepository 迁移过来（"项目订单"模块已废弃），
     // 月份口径统一改成按"发布时间"（原来 ProjectOrder 还有个"项目建立月份"，已废弃不再使用）=====
 
-    /** 数据看板用：按"发布时间"所在月份查询 */
-    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"influencer", "brand", "projectManager"})
+    /**
+     * 数据看板/工资单用：按"发布时间"所在月份查询。entity graph 里的 team 是 2026-07 补上的——
+     * 工资单模块（PayslipService）按品牌方/团队分组是每次都会走的主路径（不像看板的"按团队"
+     * 下钻只是偶尔点开的一个维度），漏了 team 的话每条记录访问 o.getTeam() 都会各自触发一次
+     * 懒加载查询，记录一多就是隐蔽的 N+1（这一种是 JPA 层面的，跟按员工循环查库那种不一样，
+     * 但同样会明显拖慢整页）。
+     */
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"influencer", "brand", "projectManager", "team"})
     @Query("SELECT c FROM CollaborationTracking c WHERE c.isDeleted = false " +
            "AND FUNCTION('to_char', c.publishDate, 'YYYYMM') = :month")
     List<CollaborationTracking> findByPublishMonth(@Param("month") String month);
 
     /** 数据看板用：按"发布时间"所在月份范围（闭区间）查询 */
-    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"influencer", "brand", "projectManager"})
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"influencer", "brand", "projectManager", "team"})
     @Query("SELECT c FROM CollaborationTracking c WHERE c.isDeleted = false " +
            "AND FUNCTION('to_char', c.publishDate, 'YYYYMM') BETWEEN :startMonth AND :endMonth")
     List<CollaborationTracking> findByPublishMonthBetween(
