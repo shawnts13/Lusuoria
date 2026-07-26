@@ -277,6 +277,11 @@ public class DashboardStatsService {
                 default: // manager
                     key = managerNameOf(o.getProjectManagerId());
             }
+            // 项目负责人不是"管理层"时，这部分执行成本不影响公司利润（见 ProfitCalculator.
+            // isManagementOrder），维度标签上加个后缀提醒查看的人不要误以为这些钱扣了公司利润
+            if (!profitCalculator.isManagementOrder(o)) {
+                key = key + "（不影响公司利润）";
+            }
             grouped.merge(key, execCostRmb, BigDecimal::add);
             // 笔数只统计实际填了内部执行成本的记录，跟金额是不是0保持同一个口径
             if (execCostRmb.compareTo(BigDecimal.ZERO) > 0) counted.merge(key, 1L, Long::sum);
