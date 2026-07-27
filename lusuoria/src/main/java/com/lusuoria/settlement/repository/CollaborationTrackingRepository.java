@@ -102,6 +102,10 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      *
      * onlyIncomplete：前端"查看未完成的记录"按钮用，硬筛选出视频项目进度不是"客户已结算"
      * 也不是"折损"的记录（这两个是终态，不需要再跟进）。为 false/null 时完全不影响原有筛选结果。
+     *
+     * influencerId（2026-07 新增）：红人管理模块"合作中项目/已完结项目"下钻的"查看全部"
+     * 精确跳转用——accountName 是模糊匹配（LIKE），账号名互为子串的两个红人会串号，
+     * influencerId 是精确匹配，不受文本子串影响。两者可以同时传（一般只会传一个）。
      */
     @Query("SELECT c FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false " +
@@ -109,6 +113,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:teamId IS NULL OR c.teamId = :teamId) " +
            "AND (:countryMarket IS NULL OR c.countryMarket = :countryMarket) " +
            "AND (:accountName IS NULL OR c.influencer.accountName LIKE %:accountName%) " +
+           "AND (:influencerId IS NULL OR c.influencerId = :influencerId) " +
            "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
            "AND (:progress IS NULL OR c.progress = :progress) " +
            "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress = :influencerPaymentProgress) " +
@@ -132,6 +137,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("teamId") Long teamId,
             @Param("countryMarket") String countryMarket,
             @Param("accountName") String accountName,
+            @Param("influencerId") Long influencerId,
             @Param("platform") String platform,
             @Param("progress") CollaborationProgress progress,
             @Param("influencerPaymentProgress") InfluencerPaymentProgress influencerPaymentProgress,
@@ -155,12 +161,54 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      */
     List<CollaborationTracking> findByIsDeletedFalse();
 
-    /** 红人合作次数统计用：按红人 id 分组统计未删除的跟踪记录数量 */
+    /**
+     * 红人管理"合作中项目"（2026-07 由"合作项目"改名+改口径）统计用：按红人 id 分组统计
+     * 视频项目进度不是"客户已结算"也不是"折损"（这两个是终态）的跟踪记录数量。
+     */
     @Query("SELECT c.influencerId, COUNT(c) FROM CollaborationTracking c " +
-           "WHERE c.isDeleted = false " +
-           "AND c.influencerId IN :influencerIds " +
+           "WHERE c.isDeleted = false AND c.influencerId IN :influencerIds " +
+           "AND (c.progress IS NULL OR c.progress NOT IN (" +
+           "     com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+           "     com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)) " +
            "GROUP BY c.influencerId")
-    List<Object[]> countByInfluencerIds(@Param("influencerIds") List<Long> influencerIds);
+    List<Object[]> countActiveByInfluencerIds(@Param("influencerIds") List<Long> influencerIds);
+
+    /**
+     * 红人管理"已完结项目"（2026-07 由"合作案例"改名+改口径）统计用：按红人 id 分组统计
+     * 视频项目进度="客户已结算"的跟踪记录数量（不含"折损"）。
+     */
+    @Query("SELECT c.influencerId, COUNT(c) FROM CollaborationTracking c " +
+           "WHERE c.isDeleted = false AND c.influencerId IN :influencerIds " +
+           "AND c.progress = com.lusuoria.settlement.enums.CollaborationProgress.SETTLED " +
+           "GROUP BY c.influencerId")
+    List<Object[]> countCompletedByInfluencerIds(@Param("influencerIds") List<Long> influencerIds);
+
+    /**
+     * 红人管理"合作中项目/已完结项目"下钻弹窗用：某个红人 + 类别（completed=true 只看"客户
+     * 已结算"，completed=false 看"不是客户已结算也不是折损"的进行中记录）分页查询。
+     * EntityGraph 预先带上展示需要的关联，避免弹窗表格逐行触发懒加载 N+1。
+     */
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"brand", "team", "influencer", "projectManager", "executor"})
+    @Query("SELECT c FROM CollaborationTracking c WHERE c.isDeleted = false AND c.influencerId = :influencerId AND (" +
+           "  (:completed = true AND c.progress = com.lusuoria.settlement.enums.CollaborationProgress.SETTLED) " +
+           "  OR (:completed = false AND (c.progress IS NULL OR c.progress NOT IN (" +
+           "        com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+           "        com.lusuoria.settlement.enums.CollaborationProgress.DELAYED))))")
+    Page<CollaborationTracking> findByInfluencerAndCompletionStatus(
+            @Param("influencerId") Long influencerId, @Param("completed") boolean completed, Pageable pageable);
+
+    /**
+     * 同上筛选条件，取"红人视频制作与发布成本"+"客户合作价格"合计（供弹窗汇总行用，
+     * 汇总要覆盖全部命中记录，不能只按当前这一页现算）。
+     */
+    @Query("SELECT COUNT(c), COALESCE(SUM(c.influencerCost), 0), COALESCE(SUM(c.clientPrice), 0) " +
+           "FROM CollaborationTracking c WHERE c.isDeleted = false AND c.influencerId = :influencerId AND (" +
+           "  (:completed = true AND c.progress = com.lusuoria.settlement.enums.CollaborationProgress.SETTLED) " +
+           "  OR (:completed = false AND (c.progress IS NULL OR c.progress NOT IN (" +
+           "        com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+           "        com.lusuoria.settlement.enums.CollaborationProgress.DELAYED))))")
+    Object[] sumByInfluencerAndCompletionStatus(
+            @Param("influencerId") Long influencerId, @Param("completed") boolean completed);
 
     // ===== 以下方法 2026-07 从 ProjectOrderRepository 迁移过来（"项目订单"模块已废弃），
     // 月份口径统一改成按"发布时间"（原来 ProjectOrder 还有个"项目建立月份"，已废弃不再使用）=====

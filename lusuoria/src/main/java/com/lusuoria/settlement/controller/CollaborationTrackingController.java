@@ -70,6 +70,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) Long teamId,
             @RequestParam(required = false) String countryMarket,
             @RequestParam(required = false) String accountName,
+            @RequestParam(required = false) Long influencerId,
             @RequestParam(required = false) String platform,
             @RequestParam(required = false) CollaborationProgress progress,
             @RequestParam(required = false) InfluencerPaymentProgress influencerPaymentProgress,
@@ -114,7 +115,7 @@ public class CollaborationTrackingController {
         PageRequest pageable = PageRequest.of(page, size, sort);
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         Page<CollaborationTracking> result = trackingRepo.findByFilters(
-                brandId, teamId, countryMarket, accountName, platform,
+                brandId, teamId, countryMarket, accountName, influencerId, platform,
                 progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
                 clientOrderId, clientPaymentBatch, projectManagerId,
                 priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, pageable);
@@ -189,6 +190,46 @@ public class CollaborationTrackingController {
         ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
         if (!ctx.isFull()) t = applyFieldVisibility(t, ctx);
         return ApiResponse.success(t);
+    }
+
+    /**
+     * 红人管理"合作中项目/已完结项目"下钻弹窗用（2026-07 新增）：某个红人 + 类别
+     * （ACTIVE=进行中，COMPLETED=已完结）的合作跟踪记录分页 + 汇总（汇总覆盖全部命中记录，
+     * 不只是当前这一页）。字段脱敏复用跟列表页/详情完全一样的 applyFieldVisibility。
+     */
+    @GetMapping("/by-influencer")
+    public ApiResponse<InfluencerCollaborationPageResponse> listByInfluencer(
+            @RequestParam Long influencerId,
+            @RequestParam String category,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        size = Math.max(1, Math.min(size, 200));
+        boolean completed = "COMPLETED".equalsIgnoreCase(category);
+        PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "id"));
+        Page<CollaborationTracking> result = trackingRepo.findByInfluencerAndCompletionStatus(influencerId, completed, pageable);
+
+        ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
+        boolean canSeeBaseline = ctx.tier != ProjectFieldVisibility.Tier.GUEST;
+        if (!ctx.isFull()) {
+            result = result.map(t -> applyFieldVisibility(t, ctx));
+        }
+
+        Object[] sums = trackingRepo.sumByInfluencerAndCompletionStatus(influencerId, completed);
+        InfluencerCollaborationPageResponse resp = new InfluencerCollaborationPageResponse();
+        resp.setPage(result);
+        resp.setTotalCount((Long) sums[0]);
+        // GUEST 看不到"红人视频制作与发布成本"/"客户合作价格"这两个明细字段，汇总数字也不该露出来
+        resp.setTotalInfluencerCost(canSeeBaseline ? (java.math.BigDecimal) sums[1] : null);
+        resp.setTotalClientPrice(canSeeBaseline ? (java.math.BigDecimal) sums[2] : null);
+        return ApiResponse.success(resp);
+    }
+
+    @lombok.Data
+    public static class InfluencerCollaborationPageResponse {
+        private Page<CollaborationTracking> page;
+        private Long totalCount;
+        private java.math.BigDecimal totalInfluencerCost;
+        private java.math.BigDecimal totalClientPrice;
     }
 
     @PostMapping
@@ -341,7 +382,7 @@ public class CollaborationTrackingController {
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         // 导出是整份文件全量拿走，不需要"优先展示"/"只看我负责的"/"只看未完成的"这几个参数，传 null/false
         List<CollaborationTracking> list = trackingRepo.findByFilters(
-                brandId, teamId, countryMarket, accountName, platform,
+                brandId, teamId, countryMarket, accountName, null, platform,
                 progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
                 clientOrderId, clientPaymentBatch, projectManagerId, null, false, false, false, all).getContent();
         // canViewFull：汇率/其他外部成本/内部执行成本/毛利/提成/公司利润这些财务字段，

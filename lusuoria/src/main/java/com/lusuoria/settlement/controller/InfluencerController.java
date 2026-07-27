@@ -54,6 +54,15 @@ public class InfluencerController {
     @Autowired private DomainSyncService domainSyncService;
     @Autowired private ImportBatchRepository importBatchRepo;
 
+    /**
+     * 2026-07 新增默认排序规则：不管用户选的排序字段是什么，"合作中项目"有值的红人排最前，
+     * 其次是"已完结项目"有值的，其余按用户选择的排序垫底——这个优先级没法用数据库分页直接
+     * 表达（分页游标反映不了"是否有合作中/已完结项目"这种额外计算出来的属性，也不确定
+     * "在 ORDER BY 里塞相关子查询"在这套 Hibernate/Postgres 组合下是否被稳定支持），
+     * 所以按当前筛选条件把命中的红人整批取出来（复用导出功能同款的
+     * PageRequest.of(0, Integer.MAX_VALUE, sort) 写法），在内存里按这两级优先级重排后
+     * 再手动切出当前页——数据规模是"一个红人库"，不是海量数据表，这个代价可以接受。
+     */
     @GetMapping
     public ApiResponse<Page<Influencer>> list(
             @RequestParam(required = false) ProjectType influencerType,
@@ -73,15 +82,42 @@ public class InfluencerController {
         Sort sort = sortDir.equalsIgnoreCase("desc")
                 ? Sort.by(Sort.Direction.DESC, sortBy)
                 : Sort.by(Sort.Direction.ASC,  sortBy);
-        PageRequest pageable = PageRequest.of(page, size, sort);
-        Page<Influencer> result = influencerRepo.findByFilters(
+        PageRequest fetchAllPageable = PageRequest.of(0, Integer.MAX_VALUE, sort);
+        List<Influencer> allMatching = influencerRepo.findByFilters(
                 influencerType, platform, countryMarket, domain, brandId, teamId,
-                followerMin, followerMax, keyword, pageable);
-        attachBrandTeamPairs(result.getContent());
+                followerMin, followerMax, keyword, fetchAllPageable).getContent();
+        List<Influencer> sorted = reorderByProjectPriority(allMatching);
+
+        int total = sorted.size();
+        int fromIndex = Math.min(page * size, total);
+        int toIndex = Math.min(fromIndex + size, total);
+        List<Influencer> pageContent = sorted.subList(fromIndex, toIndex);
+        attachBrandTeamPairs(pageContent);
+        Page<Influencer> result = new org.springframework.data.domain.PageImpl<Influencer>(
+                pageContent, PageRequest.of(page, size, sort), total);
         if (!RoleUtil.canViewBaselineFinancials()) {
             return ApiResponse.success(result.map(this::maskSensitive));
         }
         return ApiResponse.success(result);
+    }
+
+    /** "合作中项目"有值的排最前，其次"已完结项目"有值的，其余保持原有相对顺序（稳定排序） */
+    private List<Influencer> reorderByProjectPriority(List<Influencer> list) {
+        if (list.isEmpty()) return list;
+        List<Long> ids = list.stream().map(Influencer::getId).collect(Collectors.toList());
+        Set<Long> activeIds = new HashSet<Long>();
+        trackingRepo.countActiveByInfluencerIds(ids).forEach(row -> activeIds.add((Long) row[0]));
+        Set<Long> completedIds = new HashSet<Long>();
+        trackingRepo.countCompletedByInfluencerIds(ids).forEach(row -> completedIds.add((Long) row[0]));
+        return list.stream()
+                .sorted(Comparator.comparingInt(inf -> projectPriority(inf.getId(), activeIds, completedIds)))
+                .collect(Collectors.toList());
+    }
+
+    private int projectPriority(Long influencerId, Set<Long> activeIds, Set<Long> completedIds) {
+        if (activeIds.contains(influencerId)) return 0;
+        if (completedIds.contains(influencerId)) return 1;
+        return 2;
     }
 
     @GetMapping("/simple")
@@ -137,17 +173,26 @@ public class InfluencerController {
     }
 
     /**
-     * 红人合作次数：原来统计的是"已生成项目订单"的数量，2026-07 随"项目订单"模块废弃
-     * 改成直接统计红人合作跟踪记录数（口径更直观：有多少条合作记录就是合作了多少次，
-     * 不再要求必须填了"客户方的项目订单"才算数）。
+     * "合作中项目"（视频项目进度不是"客户已结算"也不是"折损"）+ "已完结项目"（进度="客户已结算"）
+     * 各自的数量。2026-07 由原来单一的"合作项目"（原来统计的是"已生成项目订单"的数量，
+     * "项目订单"模块废弃后改成直接统计合作跟踪记录数）拆成这两个口径。
      */
     @PostMapping("/project-counts")
-    public ApiResponse<Map<Long, Long>> projectCounts(@RequestBody List<Long> influencerIds) {
-        Map<Long, Long> result = new java.util.LinkedHashMap<Long, Long>();
-        for (Long id : influencerIds) result.put(id, 0L);
-        trackingRepo.countByInfluencerIds(influencerIds)
-                .forEach(row -> result.put((Long) row[0], (Long) row[1]));
+    public ApiResponse<Map<Long, ProjectCountResponse>> projectCounts(@RequestBody List<Long> influencerIds) {
+        Map<Long, ProjectCountResponse> result = new java.util.LinkedHashMap<Long, ProjectCountResponse>();
+        for (Long id : influencerIds) result.put(id, new ProjectCountResponse(0L, 0L));
+        trackingRepo.countActiveByInfluencerIds(influencerIds)
+                .forEach(row -> result.get((Long) row[0]).setActiveCount((Long) row[1]));
+        trackingRepo.countCompletedByInfluencerIds(influencerIds)
+                .forEach(row -> result.get((Long) row[0]).setCompletedCount((Long) row[1]));
         return ApiResponse.success(result);
+    }
+
+    @lombok.Data
+    @lombok.AllArgsConstructor
+    public static class ProjectCountResponse {
+        private Long activeCount;
+        private Long completedCount;
     }
 
     @PostMapping
