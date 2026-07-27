@@ -186,13 +186,49 @@ public class PayslipService {
     }
 
     /**
-     * 2026-07-28 起：执行人员的最终确认（管理层在主表格点"确认"）不再要求"这个月涉及的所有
-     * 项目负责人都先确认过自己那份执行人员薪酬"——Shawn 明确指出这跟"项目负责人确认/管理层
-     * 确认互相独立"的原则冲突，管理层应该能随时点确认这个执行人员的工资单，确认时按当下
-     * 实时数据（含还没被对应项目负责人确认、仍在实时变动的那部分）冻结快照。
-     * 之前这里有一个 executorFinalConfirmBlockReason 前置校验，要求所有相关项目负责人
-     * （含以项目负责人身份行事的管理层）都 confirmExecutorWages 之后才放行——已按上述沟通移除。
+     * 执行人员当月涉及的项目负责人（含以项目负责人身份行事的管理层）各自对这个执行人员的
+     * 确认情况（2026-07-28 明确澄清）：每个项目负责人（含管理层）各自确认自己那部分提成/奖金
+     * 这件事本身完全独立、互不阻塞——管理层随时可以在"管理层手下执行人员工资"确认自己负责的
+     * 那部分，不受其他项目负责人是否确认影响。但"这个执行人员的工资单是不是这个月的最终版"
+     * 是另一件事：只有当【所有】涉及的项目负责人都各自确认过后，才是最终版；只要还有人没确认，
+     * 哪怕管理层自己已经确认了，也仍然是非最终版——所以最终确认这个动作本身要等所有人确认完。
+     * allConfirmed=false 时 anyConfirmed 标注是不是至少有一个（但不是全部）已确认，
+     * 供前端展示"待其他项目负责人确认"这个中间状态用。
      */
+    private ExecutorPmConfirmStatus resolveExecutorPmConfirmStatus(Long executorId, String yearMonth) {
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
+        Set<Long> pmIds = new LinkedHashSet<>();
+        for (CollaborationTracking o : orders) {
+            if (executorId.equals(o.getExecutorId()) && o.getProjectManagerId() != null) {
+                pmIds.add(o.getProjectManagerId());
+            }
+        }
+        if (pmIds.isEmpty()) return new ExecutorPmConfirmStatus(true, false, null);
+        Map<Long, Map<Long, ExecutorWageConfirmation>> confirmations = fetchWageConfirmations(yearMonth);
+        List<String> unconfirmedNames = new ArrayList<>();
+        int confirmedCount = 0;
+        for (Long pmId : pmIds) {
+            ExecutorWageConfirmation c = confirmations.getOrDefault(pmId, Collections.emptyMap()).get(executorId);
+            if (c != null && Boolean.TRUE.equals(c.getConfirmed())) {
+                confirmedCount++;
+            } else {
+                unconfirmedNames.add(employeeNameOf(pmId));
+            }
+        }
+        boolean allConfirmed = unconfirmedNames.isEmpty();
+        boolean anyConfirmed = confirmedCount > 0;
+        String blockedReason = allConfirmed ? null
+                : "以下项目负责人还没确认这个执行人员的工资，无法进行最终确认：" + String.join("、", unconfirmedNames);
+        return new ExecutorPmConfirmStatus(allConfirmed, anyConfirmed, blockedReason);
+    }
+
+    @lombok.Value
+    private static class ExecutorPmConfirmStatus {
+        boolean allConfirmed;
+        boolean anyConfirmed;
+        String blockedReason;
+    }
+
     @Transactional
     public void confirm(Long employeeId, String yearMonth) {
         Employee emp = employeeRepo.findByIdAndIsDeletedFalse(employeeId)
@@ -201,6 +237,10 @@ public class PayslipService {
         if ("管理层".equals(emp.getRole())) {
             String blocked = managementBlockReason(yearMonth, employeeId, rate);
             if (blocked != null) throw new RuntimeException(blocked);
+        }
+        if ("执行人员".equals(emp.getRole())) {
+            ExecutorPmConfirmStatus status = resolveExecutorPmConfirmStatus(employeeId, yearMonth);
+            if (!status.isAllConfirmed()) throw new RuntimeException(status.getBlockedReason());
         }
         Payslip p = getOrCreateForWrite(employeeId, yearMonth);
         applyConfirmedSnapshot(emp, yearMonth, p, employeeRoleUtil.getCurrentEmployeeId(), rate);
@@ -1031,9 +1071,17 @@ public class PayslipService {
             videoCount = d.getRows().get(d.getRows().size() - 1).getVideoCount();
         }
         Boolean legalSalarySet = "法务".equals(emp.getRole()) ? (payslip != null && payslip.getLegalSalaryRmb() != null) : null;
-        String blockedReason = "管理层".equals(emp.getRole())
-                ? managementBlockReason(yearMonth, emp.getId(), liveRateInfo.getUsdToCny())
-                : null;
+        String blockedReason;
+        Boolean awaitingOtherManagers = null;
+        if ("管理层".equals(emp.getRole())) {
+            blockedReason = managementBlockReason(yearMonth, emp.getId(), liveRateInfo.getUsdToCny());
+        } else if ("执行人员".equals(emp.getRole()) && !Boolean.TRUE.equals(d.getConfirmed())) {
+            ExecutorPmConfirmStatus status = resolveExecutorPmConfirmStatus(emp.getId(), yearMonth);
+            blockedReason = status.getBlockedReason();
+            awaitingOtherManagers = status.isAnyConfirmed() && !status.isAllConfirmed();
+        } else {
+            blockedReason = null;
+        }
 
         return PayslipRowResponse.builder()
                 .employeeId(emp.getId()).employeeName(emp.getName()).employeeRole(emp.getRole())
@@ -1056,6 +1104,7 @@ public class PayslipService {
                 .executorWageConfirmed(d.getExecutorWageConfirmed())
                 .hasExecutorWageWork("项目负责人".equals(emp.getRole())
                         && d.getExecutorWageRows() != null && !d.getExecutorWageRows().isEmpty())
+                .awaitingOtherManagers(awaitingOtherManagers)
                 .build();
     }
 

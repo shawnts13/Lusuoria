@@ -56,6 +56,14 @@ public class PayslipRowResponse {
     private BigDecimal otherStaffCost;
     private BigDecimal extraBonusPayoutTotal;
 
-    /** 仅管理层自己那一行可能非空："请先确认其他员工的工资单后再确认管理层工资单" */
+    /** 仅管理层自己那一行可能非空："请先确认其他员工的工资单后再确认管理层工资单"；
+     * 执行人员那一行非空时是"哪些项目负责人还没确认"的具体名单文案 */
     private String blockedReason;
+
+    /**
+     * 仅执行人员角色、且当前还没最终确认时有意义（2026-07-28 新增）：这个执行人员当月涉及的
+     * 多个项目负责人（含以项目负责人身份行事的管理层）里，是不是已经有部分（但不是全部）
+     * 确认过了——用于前端在"预计"和"已确认"之间展示一个中间状态"待其他项目负责人确认"。
+     */
+    private Boolean awaitingOtherManagers;
 }
