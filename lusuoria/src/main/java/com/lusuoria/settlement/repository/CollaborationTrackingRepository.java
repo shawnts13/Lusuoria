@@ -97,8 +97,11 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      * onlyMyResponsibility：前端"查看由我负责的记录"按钮用，把"软优先排序"变成硬筛选——
      * 项目负责人/执行人员只看自己是负责人/执行人员的记录，财务只看需要处理的两个阶段。
      * 为 false/null 时完全不影响原有筛选结果（向后兼容，老的调用方不用管这个参数）。
-     * 命中筛选后，项目负责人/执行人员视角额外按"是否还没到已发布（未结算）/折损这两个不需要
+     * 命中筛选后，项目负责人/执行人员视角额外按"是否还没到客户已结算/折损这两个不需要
      * 他们再跟进的终态"做二级排序，还需要跟进的排前面（这条二级 CASE 同样由 Controller 拼进 Sort）。
+     *
+     * onlyIncomplete：前端"查看未完成的记录"按钮用，硬筛选出视频项目进度不是"客户已结算"
+     * 也不是"折损"的记录（这两个是终态，不需要再跟进）。为 false/null 时完全不影响原有筛选结果。
      */
     @Query("SELECT c FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false " +
@@ -120,7 +123,10 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "     OR (:priorityEmployeeId IS NOT NULL AND (c.projectManagerId = :priorityEmployeeId OR c.executorId = :priorityEmployeeId)) " +
            "     OR (:prioritizeFinance = true AND c.progress IN (" +
            "           com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
-           "           com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST)))")
+           "           com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST))) " +
+           "AND (:onlyIncomplete = false OR c.progress IS NULL OR c.progress NOT IN (" +
+           "     com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+           "     com.lusuoria.settlement.enums.CollaborationProgress.DELAYED))")
     Page<CollaborationTracking> findByFilters(
             @Param("brandId") Long brandId,
             @Param("teamId") Long teamId,
@@ -139,6 +145,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("priorityEmployeeId") Long priorityEmployeeId,
             @Param("prioritizeFinance") Boolean prioritizeFinance,
             @Param("onlyMyResponsibility") Boolean onlyMyResponsibility,
+            @Param("onlyIncomplete") Boolean onlyIncomplete,
             Pageable pageable);
 
     /**

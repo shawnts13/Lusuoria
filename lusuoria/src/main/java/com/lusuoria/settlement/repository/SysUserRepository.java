@@ -4,10 +4,14 @@ import com.lusuoria.settlement.entity.SysUser;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 
 @Repository
 public interface SysUserRepository extends JpaRepository<SysUser, Long> {
+
+    /** 账号管理列表页默认排序：按用户名字母顺序 */
+    List<SysUser> findByIsDeletedFalseOrderByUsernameAsc();
 
     Optional<SysUser> findByUsernameAndIsDeletedFalse(String username);
 

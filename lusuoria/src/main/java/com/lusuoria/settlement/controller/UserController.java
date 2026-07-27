@@ -32,9 +32,7 @@ public class UserController {
     @GetMapping
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<List<UserResponse>> list() {
-        List<SysUser> users = userRepo.findAll().stream()
-                .filter(u -> !Boolean.TRUE.equals(u.getIsDeleted()))
-                .collect(Collectors.toList());
+        List<SysUser> users = userRepo.findByIsDeletedFalseOrderByUsernameAsc();
         return ApiResponse.success(users.stream().map(this::toResponse).collect(Collectors.toList()));
     }
 
