@@ -380,6 +380,31 @@ public class CollaborationTrackingService {
             }
         }
 
+        // 2026-07 新增：新建单条记录时（不含 Excel 批量导入，那边在 CollaborationTrackingExcelHandler
+        // 里逐行做自己的校验），"视频发布时间"/"视频项目进度"/"视频发布链接"三者必须保持一致，
+        // 不允许出现"进度已经是已发布/已结算但没填发布时间或发布链接"、也不允许"填了发布时间但
+        // 进度还停留在早期阶段"这种自相矛盾的组合——跟"状态流转"（updateStatus()）对已有记录
+        // 强制的规则口径一致，堵住"新建时直接选一个后期进度、绕开状态流转校验"这个口子。
+        boolean isSingleCreate = existingOrNull == null && !isBulkImport;
+        if (isSingleCreate) {
+            CollaborationProgress newProgress = tracking.getProgress();
+            boolean qualifies = newProgress != null && newProgress.allowsPaymentProgress();
+            boolean hasPublishDate = tracking.getPublishDate() != null;
+            if (qualifies || hasPublishDate) {
+                if (newPublishLink == null) {
+                    throw new RuntimeException("视频项目进度为\"已发布（未结算）\"及以后阶段、或者已填写视频发布"
+                            + "时间时，必须先填写视频发布链接");
+                }
+                if (!qualifies) {
+                    throw new RuntimeException("已经填写了视频发布时间，视频项目进度必须是\"已发布（未结算）\"/"
+                            + "\"已加入客户未结算列表\"/\"客户已结算\"其中之一");
+                }
+                if (!hasPublishDate) {
+                    tracking.setPublishDate(new Date());
+                }
+            }
+        }
+
         // 红人结款进度：跟"进度"字段一样的编辑权限规则——只有新建，或明确允许时（Excel 导入更新分支）
         // 才能改；且只有上面刚设置好的"进度"达到前置条件（已发布(未结算)/已加入客户未结算列表/
         // 客户已结算）时，才允许设置这个字段的值，否则直接拒绝（Excel 导入报错文案见 handler，
