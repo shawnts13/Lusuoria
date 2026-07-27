@@ -1,8 +1,10 @@
 package com.lusuoria.settlement.controller;
 
+import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.dto.response.PayslipDetailResponse;
 import com.lusuoria.settlement.dto.response.PayslipRowResponse;
+import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.service.impl.PayslipService;
 import com.lusuoria.settlement.util.EmployeeRoleUtil;
 import com.lusuoria.settlement.util.RoleUtil;
@@ -24,6 +26,7 @@ public class PayslipController {
 
     @Autowired private PayslipService payslipService;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
+    @Autowired private EmployeeCache employeeCache;
 
     private boolean isManagement() {
         return RoleUtil.isAdmin() || "管理层".equals(employeeRoleUtil.getCurrentEmployeeRole());
@@ -31,6 +34,27 @@ public class PayslipController {
 
     private void requireManagement() {
         if (!isManagement()) throw new RuntimeException("无权限管理工资单");
+    }
+
+    /**
+     * "确认执行人员工资"的权限收窄，跟 ExecutorPayRateController#resolveManagerId 同一套写法：
+     * STAFF 账号必须是"项目负责人"或"管理层"角色，强制用登录账号自己关联的员工 id，不接受
+     * 传参覆盖；ADMIN 可以显式指定 managerId。
+     */
+    private Long resolveManagerId(Long requestedManagerId) {
+        if (RoleUtil.isAdmin()) {
+            if (requestedManagerId != null) return requestedManagerId;
+            Employee management = employeeCache.findManagementEmployee();
+            if (management == null) throw new RuntimeException("系统里还没有配置角色为\"管理层\"的员工");
+            return management.getId();
+        }
+        String empRole = employeeRoleUtil.getCurrentEmployeeRole();
+        if (!"项目负责人".equals(empRole) && !"管理层".equals(empRole)) {
+            throw new RuntimeException("无权限确认执行人员工资");
+        }
+        Long ownEmployeeId = employeeRoleUtil.getCurrentEmployeeId();
+        if (ownEmployeeId == null) throw new RuntimeException("当前账号未关联员工记录");
+        return ownEmployeeId;
     }
 
     /** 管理层视角的员工列表（不含管理层自己，见 /management） */
@@ -104,6 +128,30 @@ public class PayslipController {
         requireManagement();
         payslipService.unconfirm(employeeId, req.getYearMonth());
         return ApiResponse.success();
+    }
+
+    /** 项目负责人自己确认名下执行人员的工资（跟管理层确认这个项目负责人自己的工资单完全独立） */
+    @PostMapping("/executor-wages/confirm")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    public ApiResponse<Void> confirmExecutorWages(@RequestBody ExecutorWagesRequest req) {
+        Long managerId = resolveManagerId(req.getManagerId());
+        payslipService.confirmExecutorWages(managerId, req.getYearMonth());
+        return ApiResponse.success();
+    }
+
+    @PostMapping("/executor-wages/unconfirm")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    public ApiResponse<Void> unconfirmExecutorWages(@RequestBody ExecutorWagesRequest req) {
+        Long managerId = resolveManagerId(req.getManagerId());
+        payslipService.unconfirmExecutorWages(managerId, req.getYearMonth());
+        return ApiResponse.success();
+    }
+
+    @Data
+    public static class ExecutorWagesRequest {
+        /** ADMIN 可显式指定；STAFF 传了也会被后端忽略，强制用自己的员工 id */
+        private Long managerId;
+        private String yearMonth;
     }
 
     @Data

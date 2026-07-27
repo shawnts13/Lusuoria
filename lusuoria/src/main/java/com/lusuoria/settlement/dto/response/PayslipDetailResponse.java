@@ -44,8 +44,23 @@ public class PayslipDetailResponse {
     private BigDecimal extraBonusAmountNative;
     private String extraBonusCurrencyNative;
 
-    /** 总工资（管理层这一行含义是扣减当月各项发放后的"公司利润"） */
+    /**
+     * 总工资（管理层这一行含义是扣减当月各项发放后的"公司利润"；项目负责人这一行是
+     * "管理层所发工资"——提成+阶梯Bonus+奖金，还没扣执行人员那部分，即下面的 finalNetWage）
+     */
     private BigDecimal totalAmount;
+
+    // ===== 项目负责人专属：应发给自己名下执行人员的工资（三层薪酬关系里"项目负责人→执行
+    // 人员"这一层，由项目负责人自己确认，见 ExecutorWageConfirmation） =====
+
+    /** 按执行人员分组的薪酬明细（含每个执行人员的小计行+整体汇总行），人民币，未换算 */
+    private List<PayslipDimensionRow> executorWageRows;
+    /** 人民币原值，未换算（走 toDisplayResponse 统一换算） */
+    private BigDecimal executorWageTotal;
+    /** 这个项目负责人是否已经确认了执行人员工资（这一层的确认状态，独立于 confirmed 字段） */
+    private Boolean executorWageConfirmed;
+    /** = 总工资("管理层所发工资") − executorWageTotal，两边都换算成请求币种后现算，不单独存快照 */
+    private BigDecimal finalNetWage;
 
     // ===== 管理层专属汇总数字，均为美金 =====
     private BigDecimal grossProfit;

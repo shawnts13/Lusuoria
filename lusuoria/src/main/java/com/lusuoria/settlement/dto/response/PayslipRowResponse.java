@@ -36,6 +36,9 @@ public class PayslipRowResponse {
     /** 法务专属：本月工资是否已录入，前端据此显示"输入本月工资"还是"编辑工资"按钮 */
     private Boolean legalSalarySet;
 
+    /** 仅项目负责人角色有意义：是否已经确认了名下执行人员的工资，管理层不用点进明细就能看到 */
+    private Boolean executorWageConfirmed;
+
     // ===== 管理层专属：公司利润计算公式展示用（其余角色为 null），均已按请求币种换算好 =====
     private BigDecimal grossProfit;
     private BigDecimal distributableProfit;
