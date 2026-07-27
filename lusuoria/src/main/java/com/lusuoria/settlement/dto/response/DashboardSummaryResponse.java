@@ -19,8 +19,15 @@ import java.math.BigDecimal;
 @AllArgsConstructor
 public class DashboardSummaryResponse {
 
-    /** 视频项目数量（来自红人合作跟踪表） */
+    /** 视频项目数量（来自红人合作跟踪表，含"折损"记录——这是真实存在过的项目总数） */
     private Long videoProjectCount;
+
+    /**
+     * 其中视频项目进度="折损"的笔数（2026-07 新增，供前端标注"XX笔（其中X笔为折损）"）。
+     * 折损记录不参与下面任何金额统计（客户合作价格/红人成本/项目毛利/公司利润等），
+     * 只在这个计数维度里保留可见性。
+     */
+    private Long damagedVideoProjectCount;
 
     /** 客户合作价格合计 */
     private BigDecimal totalClientPrice;

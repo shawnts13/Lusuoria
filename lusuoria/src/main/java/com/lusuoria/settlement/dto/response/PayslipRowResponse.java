@@ -39,6 +39,13 @@ public class PayslipRowResponse {
     /** 仅项目负责人角色有意义：是否已经确认了名下执行人员的工资，管理层不用点进明细就能看到 */
     private Boolean executorWageConfirmed;
 
+    /**
+     * 仅项目负责人角色有意义（2026-07 新增）：这个项目负责人当月名下是否真的有涉及执行人员的
+     * 记录。项目负责人当月负责的视频如果压根没有一条设置了执行人员，管理层列表页就不应该再
+     * 展示"执行人员工资预计/已确认"这个标签——那种情况下这个标签只会造成误解。
+     */
+    private Boolean hasExecutorWageWork;
+
     // ===== 管理层专属：公司利润计算公式展示用（其余角色为 null），均已按请求币种换算好 =====
     private BigDecimal grossProfit;
     private BigDecimal distributableProfit;

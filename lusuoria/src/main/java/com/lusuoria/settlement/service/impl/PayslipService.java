@@ -11,6 +11,7 @@ import com.lusuoria.settlement.entity.CommissionBonusTier;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.ExecutorWageConfirmation;
 import com.lusuoria.settlement.entity.Payslip;
+import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.EmployeeRepository;
@@ -189,7 +190,7 @@ public class PayslipService {
      * 之后，管理层才能做这个最终确认。没有任何相关项目负责人（当月没有记录，只有奖金）时直接放行。
      */
     private String executorFinalConfirmBlockReason(Long executorId, String yearMonth) {
-        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         Set<Long> pmIds = new LinkedHashSet<>();
         for (CollaborationTracking o : orders) {
             if (executorId.equals(o.getExecutorId()) && o.getProjectManagerId() != null) {
@@ -246,7 +247,7 @@ public class PayslipService {
     public void confirmExecutorWages(Long managerId, String yearMonth) {
         employeeRepo.findByIdAndIsDeletedFalse(managerId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
-        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         Map<Long, List<CollaborationTracking>> execOrdersUnderPm = groupByManagerThenExecutor(orders)
                 .getOrDefault(managerId, Collections.emptyMap());
         ExecutorWageDetail live = buildLiveExecutorWageDetail(execOrdersUnderPm);
@@ -292,7 +293,7 @@ public class PayslipService {
     }
 
     private PayslipDetailResponse computeProjectManager(Employee emp, String yearMonth, BigDecimal rate) {
-        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         Map<Long, Map<Long, List<CollaborationTracking>>> byPmThenExec = groupByManagerThenExecutor(orders);
         Map<Long, ExecutorWageConfirmation> confirmationByManagerId = fetchWageConfirmations(yearMonth);
         Map<String, PayslipDimensionRow> grouped = new LinkedHashMap<>();
@@ -311,7 +312,7 @@ public class PayslipService {
     }
 
     private PayslipDetailResponse computeExecutor(Employee emp, String yearMonth) {
-        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         Map<Long, Map<Long, List<CollaborationTracking>>> byPmThenExec = groupByManagerThenExecutor(orders);
         Map<Long, ExecutorWageConfirmation> confirmationByManagerId = fetchWageConfirmations(yearMonth);
         return buildExecutorCrossManagerDetail(emp.getId(), byPmThenExec, confirmationByManagerId);
@@ -336,7 +337,7 @@ public class PayslipService {
     }
 
     private PayslipDetailResponse computeManagement(Employee mgmt, String yearMonth, BigDecimal rate) {
-        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         Map<String, PayslipDimensionRow> grouped = new LinkedHashMap<>();
         BigDecimal totalGrossProfit = BigDecimal.ZERO;
         BigDecimal totalDistributable = BigDecimal.ZERO;
@@ -436,7 +437,7 @@ public class PayslipService {
         Map<Long, PayslipDetailResponse> result = new HashMap<>();
         if (pmById.isEmpty() && execById.isEmpty()) return result;
 
-        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         // 按"项目负责人→执行人员"两层分组一次建好，项目负责人视角（自己名下执行人员薪酬明细）
         // 和执行人员视角（自己在每个项目负责人名下挣了多少）共用同一份分组结果，不重复扫描订单。
         Map<Long, Map<Long, List<CollaborationTracking>>> byPmThenExec = groupByManagerThenExecutor(orders);
@@ -470,6 +471,19 @@ public class PayslipService {
             result.put(e.getId(), buildExecutorCrossManagerDetail(e.getId(), byPmThenExec, confirmationByManagerId));
         }
         return result;
+    }
+
+    /**
+     * 工资单口径统一排除"折损"（DELAYED）的记录（2026-07 新增，跟数据看板保持一致）：
+     * 折损代表这笔视频项目因异常原因终止，不该计入任何人的提成/执行人员薪酬/公司利润。
+     * findByPublishMonth 本身是通用查询（进度提醒/汇率维护等模块也在用"当月未删除记录"这个
+     * 语义，仓储层不能加这个过滤），所以在这里统一过滤，每个直接调用 findByPublishMonth 的地方
+     * 取数后都要立即调用，不要漏了某一个角色的计算路径。
+     */
+    private List<CollaborationTracking> excludeDamaged(List<CollaborationTracking> orders) {
+        return orders.stream()
+                .filter(o -> o.getProgress() != CollaborationProgress.DELAYED)
+                .collect(Collectors.toList());
     }
 
     /** 整月合作跟踪记录按"项目负责人 → 执行人员 → 该组的记录"两层分组，两个视角共用 */
@@ -914,6 +928,8 @@ public class PayslipService {
                 .otherStaffCost(d.getOtherStaffCost())
                 .extraBonusPayoutTotal(d.getExtraBonusPayoutTotal())
                 .executorWageConfirmed(d.getExecutorWageConfirmed())
+                .hasExecutorWageWork("项目负责人".equals(emp.getRole())
+                        && d.getExecutorWageRows() != null && !d.getExecutorWageRows().isEmpty())
                 .build();
     }
 

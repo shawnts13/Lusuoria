@@ -64,9 +64,15 @@ public class DashboardStatsService {
         ExchangeRateInfo rateInfo = exchangeRateService.getRateForMonth(yearMonth);
         BigDecimal rate = rateInfo.getUsdToCny();
 
-        // "视频项目数量"及本月汇总数据，统一按"发布时间"取；"折损"的记录不计入看板任何数据
-        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
-        long videoCount = orders.size();
+        // "视频项目数量"及本月汇总数据，统一按"发布时间"取。"折损"的记录不计入任何金额统计
+        // （项目毛利/公司利润/执行成本/提成等），但"视频项目数量"这个计数本身仍然按总数展示，
+        // 只是额外标注其中有几笔是折损（前端据此显示"XX笔（其中X笔为折损）"），不能让折损记录
+        // 从视频数量这个计数里彻底消失——用户需要看到这批记录真实存在过。
+        List<CollaborationTracking> allOrders = trackingRepo.findByPublishMonth(yearMonth);
+        long videoCount = allOrders.size();
+        long damagedVideoCount = allOrders.stream()
+                .filter(o -> o.getProgress() == CollaborationProgress.DELAYED).count();
+        List<CollaborationTracking> orders = excludeDamaged(allOrders);
 
         BigDecimal totalClientPrice = BigDecimal.ZERO;
         BigDecimal totalInfluencerCost = BigDecimal.ZERO;
@@ -99,6 +105,7 @@ public class DashboardStatsService {
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
         return DashboardSummaryResponse.builder()
                 .videoProjectCount(videoCount)
+                .damagedVideoProjectCount(damagedVideoCount)
                 .totalClientPrice(convert(totalClientPrice, rate, toRmb))
                 .totalInfluencerCost(convert(totalInfluencerCost, rate, toRmb))
                 .totalOtherExternalCost(convertFromRmb(totalOtherCost, rate, toRmb))
@@ -175,7 +182,9 @@ public class DashboardStatsService {
     // ============ 下钻：视频项目数量（按品牌方 + 红人类型） ============
 
     public DashboardDrilldownResponse drilldownVideoCount(String startMonth, String endMonth, String dimension) {
-        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
+        List<CollaborationTracking> allOrders = trackingRepo.findByPublishMonthBetween(startMonth, endMonth);
+        List<CollaborationTracking> orders = excludeDamaged(allOrders);
+        long damagedCount = allOrders.size() - orders.size();
 
         Map<String, Long> grouped = new LinkedHashMap<>();
         String dimensionType;
@@ -218,6 +227,16 @@ public class DashboardStatsService {
                     .build());
         }
         rows.sort((a, b) -> Long.compare(b.getVideoCount(), a.getVideoCount()));
+
+        // "折损"的记录不参与上面任何维度分组（不该算进某个品牌方/团队/负责人头上），
+        // 但仍然要让用户看到这批记录的存在——另起一行放在最后，不参与排序竞争
+        if (damagedCount > 0) {
+            rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
+                    .dimensionLabel("折损（不计入其他统计）")
+                    .dimensionType(dimensionType)
+                    .videoCount(damagedCount)
+                    .build());
+        }
 
         return DashboardDrilldownResponse.builder()
                 .currency(null)
