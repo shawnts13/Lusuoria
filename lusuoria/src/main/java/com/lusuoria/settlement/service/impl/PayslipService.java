@@ -146,9 +146,9 @@ public class PayslipService {
         boolean isNew = p == null;
         if (isNew) {
             p = Payslip.builder().employeeId(employeeId).yearMonth(yearMonth).confirmed(false).build();
-        } else if (!"执行人员".equals(emp.getRole())) {
-            // 执行人员不再有整体确认状态（2026-07 起是按项目负责人分组的混合状态），奖金随时可编辑，
-            // 不需要先"取消确认"
+        } else {
+            // 执行人员现在也有整体确认状态了（2026-07 新增管理层最终确认），奖金冻结规则
+            // 统一跟其他角色一致：确认后要改奖金必须先取消确认
             requireUnconfirmed(p);
         }
         if (amount == null) {
@@ -181,16 +181,45 @@ public class PayslipService {
         payslipRepo.save(p);
     }
 
+    /**
+     * 执行人员最终确认前置校验（2026-07 新增）：三层薪酬关系（管理层→项目负责人→执行人员）
+     * 里最后一层——执行人员当月涉及奖金（管理层手动设置），所以哪怕这个执行人员当月完全不
+     * 涉及"管理层"这个特殊项目负责人，也需要管理层做一次最终确认；如果当月同时涉及管理层和
+     * 其他项目负责人，必须等所有相关项目负责人（含以项目负责人身份行事的管理层）都confirmExecutorWages
+     * 之后，管理层才能做这个最终确认。没有任何相关项目负责人（当月没有记录，只有奖金）时直接放行。
+     */
+    private String executorFinalConfirmBlockReason(Long executorId, String yearMonth) {
+        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
+        Set<Long> pmIds = new LinkedHashSet<>();
+        for (CollaborationTracking o : orders) {
+            if (executorId.equals(o.getExecutorId()) && o.getProjectManagerId() != null) {
+                pmIds.add(o.getProjectManagerId());
+            }
+        }
+        if (pmIds.isEmpty()) return null;
+        Map<Long, ExecutorWageConfirmation> confirmations = fetchWageConfirmations(yearMonth);
+        List<String> unconfirmedNames = new ArrayList<>();
+        for (Long pmId : pmIds) {
+            ExecutorWageConfirmation c = confirmations.get(pmId);
+            if (c == null || !Boolean.TRUE.equals(c.getConfirmed())) {
+                unconfirmedNames.add(employeeNameOf(pmId));
+            }
+        }
+        if (unconfirmedNames.isEmpty()) return null;
+        return "以下项目负责人还没确认名下执行人员工资，无法进行最终确认：" + String.join("、", unconfirmedNames);
+    }
+
     @Transactional
     public void confirm(Long employeeId, String yearMonth) {
         Employee emp = employeeRepo.findByIdAndIsDeletedFalse(employeeId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
-        if ("执行人员".equals(emp.getRole())) {
-            throw new RuntimeException("执行人员的工资由各自的项目负责人分别确认，请到该项目负责人的工资单里确认执行人员工资");
-        }
         BigDecimal rate = exchangeRateService.getRateForMonth(yearMonth).getUsdToCny();
         if ("管理层".equals(emp.getRole())) {
             String blocked = managementBlockReason(yearMonth, employeeId, rate);
+            if (blocked != null) throw new RuntimeException(blocked);
+        }
+        if ("执行人员".equals(emp.getRole())) {
+            String blocked = executorFinalConfirmBlockReason(employeeId, yearMonth);
             if (blocked != null) throw new RuntimeException(blocked);
         }
         Payslip p = getOrCreateForWrite(employeeId, yearMonth);
@@ -202,9 +231,6 @@ public class PayslipService {
     public void unconfirm(Long employeeId, String yearMonth) {
         Employee emp = employeeRepo.findByIdAndIsDeletedFalse(employeeId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
-        if ("执行人员".equals(emp.getRole())) {
-            throw new RuntimeException("执行人员没有整体确认状态，无需取消确认");
-        }
         Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(employeeId, yearMonth)
                 .orElseThrow(() -> new RuntimeException("该月工资单还没有确认过，无需取消确认"));
         p.setConfirmed(false);
@@ -735,11 +761,11 @@ public class PayslipService {
                                                   PayslipDetailResponse precomputedLive, Payslip p,
                                                   ExchangeRateInfo liveRateInfo) {
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
-        // 执行人员不走整体 Payslip.confirmed 快照——2026-07 起执行人员是"混合状态"（按项目负责人
-        // 各自独立判断，见 computeExecutor/buildExecutorCrossManagerDetail），哪怕历史上曾经有过
-        // 一条整体确认的 Payslip 记录（改造前的旧数据），也不应该再用那份过时的扁平快照展示。
-        boolean isExecutor = "执行人员".equals(emp.getRole());
-        if (!isExecutor && p != null && Boolean.TRUE.equals(p.getConfirmed())) {
+        // 执行人员（2026-07 新增）走跟其他角色一样的整体 Payslip.confirmed 快照——management
+        // 最终确认前，各项目负责人分组各自独立判断"预计/已确认"（见 computeExecutor/
+        // buildExecutorCrossManagerDetail，那部分逻辑不受这里影响）；最终确认之后，整份
+        // （所有分组+奖金）冻结成一份快照，展示逻辑统一。
+        if (p != null && Boolean.TRUE.equals(p.getConfirmed())) {
             BigDecimal snapshotRate = p.getExchangeRateSnapshot();
             ExchangeRateInfo snapshotRateInfo = ExchangeRateInfo.builder()
                     .yearMonth(yearMonth).usdToCny(snapshotRate).isMissing(snapshotRate == null).build();
@@ -860,8 +886,14 @@ public class PayslipService {
             videoCount = d.getRows().get(d.getRows().size() - 1).getVideoCount();
         }
         Boolean legalSalarySet = "法务".equals(emp.getRole()) ? (payslip != null && payslip.getLegalSalaryRmb() != null) : null;
-        String blockedReason = "管理层".equals(emp.getRole())
-                ? managementBlockReason(yearMonth, emp.getId(), liveRateInfo.getUsdToCny()) : null;
+        String blockedReason;
+        if ("管理层".equals(emp.getRole())) {
+            blockedReason = managementBlockReason(yearMonth, emp.getId(), liveRateInfo.getUsdToCny());
+        } else if ("执行人员".equals(emp.getRole()) && !Boolean.TRUE.equals(d.getConfirmed())) {
+            blockedReason = executorFinalConfirmBlockReason(emp.getId(), yearMonth);
+        } else {
+            blockedReason = null;
+        }
 
         return PayslipRowResponse.builder()
                 .employeeId(emp.getId()).employeeName(emp.getName()).employeeRole(emp.getRole())
