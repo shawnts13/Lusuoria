@@ -63,6 +63,28 @@ public interface InfluencerRequirementRepository extends JpaRepository<Influence
             @Param("internalRequirementNo") String internalRequirementNo,
             Sort sort);
 
+    /**
+     * 与 findByFiltersNoPaging 完全相同的筛选条件，但只查"判断是否未完成"需要的3个轻量字段
+     * （id、internalRequirementNo、totalItemCount），不加载完整实体（notes 等大字段、
+     * influencer 关联）。2026-07-28 起 pageIncomplete 改成先用这个轻量投影在内存里筛出
+     * 未完成的 id 并分页，最后只对"当前页"这一小撮 id 才去查完整实体——避免每次翻页/筛选
+     * 都把命中的需求全部实体查一遍。
+     */
+    @Query("SELECT r.id, r.internalRequirementNo, r.totalItemCount FROM InfluencerRequirement r " +
+           "WHERE r.isDeleted = false " +
+           "AND (:brandId IS NULL OR r.brandId = :brandId) " +
+           "AND (:teamId IS NULL OR r.teamId = :teamId) " +
+           "AND (:accountName IS NULL OR r.influencer.accountName LIKE %:accountName%) " +
+           "AND (:requirementMonth IS NULL OR r.requirementMonth = :requirementMonth) " +
+           "AND (:internalRequirementNo IS NULL OR r.internalRequirementNo LIKE %:internalRequirementNo%)")
+    List<Object[]> findLiteProjectionByFilters(
+            @Param("brandId") Long brandId,
+            @Param("teamId") Long teamId,
+            @Param("accountName") String accountName,
+            @Param("requirementMonth") String requirementMonth,
+            @Param("internalRequirementNo") String internalRequirementNo,
+            Sort sort);
+
     /** "关联红人需求"选择器第一步：某个红人名下的所有未删除需求（前端再按"需求完成进度"过滤掉已满的） */
     List<InfluencerRequirement> findByInfluencerIdAndIsDeletedFalse(Long influencerId);
 

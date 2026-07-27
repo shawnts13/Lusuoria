@@ -315,30 +315,48 @@ public class InfluencerRequirementService {
      * 只保留"需求完成进度"没到100%的（含 totalItemCount 为空/0 的情况——一条需求还没有任何
      * 条目，进度显示是0%，也算"未完成"，跟 listIncompleteByInfluencer 那条"completed<total"
      * 的口径略有不同，那个方法是给"关联红人需求"选择器用的，不在这里复用）。
-     * completedCount 分子没法下推到 SQL WHERE，只能整批查出来后在内存里筛+手动分页。
+     * completedCount 分子没法下推到 SQL WHERE，只能先查出来后在内存里筛+手动分页——
+     * 2026-07-28 起改成先只查轻量投影（id/internalRequirementNo/totalItemCount）筛出
+     * 未完成的 id 并分页，完整实体只对"当前页"这一小撮 id 才去查，避免每次翻页/筛选都把
+     * 命中的需求全部实体（含 influencer 关联、备注等大字段）都查一遍。
      */
     @Transactional(readOnly = true)
     public org.springframework.data.domain.Page<InfluencerRequirement> pageIncomplete(
             Long brandId, Long teamId, String accountName, String requirementMonth,
             String internalRequirementNo, org.springframework.data.domain.Pageable pageable) {
-        List<InfluencerRequirement> all = requirementRepo.findByFiltersNoPaging(
+        List<Object[]> liteRows = requirementRepo.findLiteProjectionByFilters(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable.getSort());
-        List<String> nos = all.stream().map(InfluencerRequirement::getInternalRequirementNo).collect(Collectors.toList());
+        List<String> nos = liteRows.stream().map(row -> (String) row[1]).collect(Collectors.toList());
         Map<String, Integer> completedByNo = completedCountByNos(nos);
         Map<String, Integer> establishedByNo = establishedCountByNos(nos);
-        List<InfluencerRequirement> incomplete = new ArrayList<>();
-        for (InfluencerRequirement r : all) {
-            int completed = completedByNo.getOrDefault(r.getInternalRequirementNo(), 0);
-            r.setCompletedCount(completed);
-            r.setEstablishedCount(establishedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
-            int total = r.getTotalItemCount() != null ? r.getTotalItemCount() : 0;
+
+        List<Long> incompleteIds = new ArrayList<>();
+        for (Object[] row : liteRows) {
+            Long id = ((Number) row[0]).longValue();
+            String no = (String) row[1];
+            Integer totalItemCount = (Integer) row[2];
+            int completed = completedByNo.getOrDefault(no, 0);
+            int total = totalItemCount != null ? totalItemCount : 0;
             boolean isComplete = total > 0 && completed >= total;
-            if (!isComplete) incomplete.add(r);
+            if (!isComplete) incompleteIds.add(id);
         }
-        int start = Math.min((int) pageable.getOffset(), incomplete.size());
-        int end = Math.min(start + pageable.getPageSize(), incomplete.size());
-        return new org.springframework.data.domain.PageImpl<>(
-                incomplete.subList(start, end), pageable, incomplete.size());
+
+        int total = incompleteIds.size();
+        int start = Math.min((int) pageable.getOffset(), total);
+        int end = Math.min(start + pageable.getPageSize(), total);
+        List<Long> pageIds = incompleteIds.subList(start, end);
+
+        Map<Long, InfluencerRequirement> byId = requirementRepo.findAllById(pageIds).stream()
+                .collect(Collectors.toMap(InfluencerRequirement::getId, r -> r));
+        List<InfluencerRequirement> pageContent = new ArrayList<>();
+        for (Long id : pageIds) {
+            InfluencerRequirement r = byId.get(id);
+            if (r == null) continue;
+            r.setCompletedCount(completedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
+            r.setEstablishedCount(establishedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
+            pageContent.add(r);
+        }
+        return new org.springframework.data.domain.PageImpl<>(pageContent, pageable, total);
     }
 
     /** 需求列表页用：按 internalRequirementNo 批量算"需求完成进度"分子，避免逐条查库 */
