@@ -53,26 +53,49 @@ public class InfluencerTeamCache {
         return idMap.get(id);
     }
 
+    public List<InfluencerTeam> findByBrandId(Long brandId) {
+        if (brandId == null) return java.util.Collections.emptyList();
+        List<InfluencerTeam> result = new java.util.ArrayList<>();
+        for (InfluencerTeam t : nameMap.values()) {
+            if (brandId.equals(t.getBrandId())) result.add(t);
+        }
+        result.sort(java.util.Comparator.comparing(InfluencerTeam::getName));
+        return result;
+    }
+
     /**
-     * 按名称获取或创建团队（保存红人时自动注册新团队名）
+     * 按名称获取或创建团队（Excel 导入红人时，"品牌方/团队"这一列自动注册新团队名）。
+     * 2026-07 起团队归属唯一品牌方：如果同名团队已经存在但归属的是另一个品牌方，说明团队名称
+     * 冲突（不允许跨品牌方复用同一个团队名），抛出异常由 Excel 导入的行级错误处理捕获。
      */
-    public synchronized InfluencerTeam getOrCreate(String name) {
+    public synchronized InfluencerTeam getOrCreate(String name, Long brandId) {
         if (name == null || name.trim().isEmpty()) return null;
         String trimmed = name.trim();
         InfluencerTeam existing = findByName(trimmed);
-        if (existing != null) return existing;
+        if (existing != null) {
+            if (brandId != null && !brandId.equals(existing.getBrandId())) {
+                throw new RuntimeException("团队 [" + trimmed + "] 已属于其他品牌方，请使用其他团队名称，"
+                        + "或在“品牌方/红人团队管理”中调整该团队的归属品牌方");
+            }
+            return existing;
+        }
 
         // 缓存里没有，但数据库可能有软删除的同名记录，复活而非新插入，避免唯一约束冲突
         InfluencerTeam team = teamRepo.findByName(trimmed).orElse(null);
         if (team != null) {
             if (Boolean.TRUE.equals(team.getIsDeleted())) {
                 team.setIsDeleted(false);
+                team.setBrandId(brandId);
                 team = teamRepo.save(team);
+            } else if (brandId != null && !brandId.equals(team.getBrandId())) {
+                throw new RuntimeException("团队 [" + trimmed + "] 已属于其他品牌方，请使用其他团队名称，"
+                        + "或在“品牌方/红人团队管理”中调整该团队的归属品牌方");
             }
         } else {
             team = new InfluencerTeam();
             team.setName(trimmed);
             team.setIsDeleted(false);
+            team.setBrandId(brandId);
             team = teamRepo.save(team);
         }
         refresh();

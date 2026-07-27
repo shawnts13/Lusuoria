@@ -596,8 +596,9 @@ public class InfluencerRequirementService {
                 .orElseThrow(() -> new RuntimeException("需求记录不存在：" + requirementId));
 
         Brand brand = requirement.getBrandId() != null ? brandCache.findById(requirement.getBrandId()) : null;
-        if (brand != null && !brand.isPerRequirementContract()) {
-            throw new RuntimeException("该品牌方是一年签一次合同，请在红人管理处上传");
+        InfluencerTeam team = requirement.getTeamId() != null ? teamCache.findById(requirement.getTeamId()) : null;
+        if (!InfluencerTeam.isPerRequirementContract(brand, team)) {
+            throw new RuntimeException("该品牌方/团队是一年签一次合同，请在红人管理处上传");
         }
 
         requirement.setContractLink(contractLink);

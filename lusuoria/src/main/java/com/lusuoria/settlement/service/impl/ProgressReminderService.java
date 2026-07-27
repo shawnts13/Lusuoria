@@ -204,7 +204,12 @@ public class ProgressReminderService {
         boolean isContract = ack.getCategory() == ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE;
         if (isContract ? r.getContractLink() != null : r.getInvoiceLink() != null) return true;
         Brand brand = r.getBrandId() != null ? brandCache.findById(r.getBrandId()) : null;
-        if (brand != null && (isContract ? !brand.isPerRequirementContract() : !brand.requiresInvoiceUpload())) return true;
+        if (isContract) {
+            InfluencerTeam team = r.getTeamId() != null ? teamCache.findById(r.getTeamId()) : null;
+            if (!InfluencerTeam.isPerRequirementContract(brand, team)) return true;
+        } else if (brand != null && !brand.requiresInvoiceUpload()) {
+            return true;
+        }
         return r.getCompletedAt().after(ack.getSnapshotChangedAt());
     }
 
@@ -611,10 +616,12 @@ public class ProgressReminderService {
     }
 
     /**
-     * Part F（2026-07 新增）：需求完成进度100%后长时间未上传合同——只针对品牌方"每次需求签一次
-     * 合同"的场景（Brand.isPerRequirementContract()）；"一年签一次合同"的品牌方暂时不做这类
-     * 提醒（那种场景改由红人在"红人管理"维护年度合同，不是每个需求单独催）。阈值14工作日，
-     * 分组/归类逻辑完全跟 Part E（Invoice逾期）一致，按需求关联的合作跟踪记录的项目负责人归类。
+     * Part F（2026-07 新增，2026-07 改成团队优先/品牌方兜底）：需求完成进度100%后长时间未上传
+     * 合同——只针对"每次需求签一次合同"的场景（{@link InfluencerTeam#isPerRequirementContract}：
+     * 先看需求关联的团队有没有覆盖设置，没有就退回品牌方级别配置）；"一年签一次合同"的场景暂时
+     * 不做这类提醒（那种场景改由红人在"红人管理"维护年度合同，不是每个需求单独催，见
+     * runContractExpiringSoon）。阈值14工作日，分组/归类逻辑完全跟 Part E（Invoice逾期）一致，
+     * 按需求关联的合作跟踪记录的项目负责人归类。
      */
     private void runRequirementContractOverdue(LocalDate today, Date batchDate) {
         List<InfluencerRequirement> candidates =
@@ -628,7 +635,8 @@ public class ProgressReminderService {
 
         for (InfluencerRequirement r : candidates) {
             Brand brand = r.getBrandId() != null ? brandCache.findById(r.getBrandId()) : null;
-            if (brand != null && !brand.isPerRequirementContract()) continue; // 一年签一次合同的品牌方暂不提醒
+            InfluencerTeam team = r.getTeamId() != null ? teamCache.findById(r.getTeamId()) : null;
+            if (!InfluencerTeam.isPerRequirementContract(brand, team)) continue; // 一年签一次合同不在这提醒
             int workdays = WorkdayUtil.countWeekdaysInclusive(toLocalDate(r.getCompletedAt()), today);
             int overdueDays = workdays - 14;
             OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays);

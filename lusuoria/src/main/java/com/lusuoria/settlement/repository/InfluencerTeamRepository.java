@@ -12,6 +12,8 @@ public interface InfluencerTeamRepository extends JpaRepository<InfluencerTeam, 
 
     List<InfluencerTeam> findByIsDeletedFalseOrderByNameAsc();
 
+    List<InfluencerTeam> findByBrandIdAndIsDeletedFalseOrderByNameAsc(Long brandId);
+
     Optional<InfluencerTeam> findByNameAndIsDeletedFalse(String name);
 
     /** 按名称查询，不论是否软删除（用于复活软删除的团队） */
