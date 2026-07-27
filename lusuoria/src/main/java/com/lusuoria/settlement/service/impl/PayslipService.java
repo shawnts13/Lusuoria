@@ -186,58 +186,62 @@ public class PayslipService {
     }
 
     /**
-     * 执行人员工资单状态标签的最终口径（2026-07-28 明确澄清，同日三次修正后定稿）：
+     * 执行人员工资单状态标签 + 主表格"确认"按钮的最终口径（2026-07-28 明确澄清，同日四次
+     * 修正后定稿——上一版"管理层随时可确认、按钮永不禁用"是错的，这次改回来）：
      *
-     * 管理层对每一个执行人员，都"涉及确认"这件事——不管这个执行人员这个月有没有归在管理层
-     * 名下的合作跟踪记录，管理层要确认的是"管理层作为项目负责人（如果有的话）发给这个执行
-     * 人员的薪酬 + 奖金"，这两项合起来就是主表格这一行"确认"按钮点下去时冻结的内容
-     * （{@link #applyConfirmedSnapshot}）。所以"管理层自己是否确认"就是 {@code Payslip.confirmed}
-     * 本身，不是另外一个单独的判断——管理层永远"涉及确认"，这个"确认"动作本身完全独立于
-     * 其他项目负责人是否确认，不受他们的进度影响，随时可以点（因此这一行的"确认"按钮不再有
-     * 任何禁用条件）。
+     * 管理层对每一个执行人员都"涉及确认"这件事——不管这个执行人员这个月有没有归在管理层
+     * 名下的合作跟踪记录，管理层最终都要确认（哪怕只是奖金）。但**如果管理层这个月确实是这个
+     * 执行人员的相关项目负责人之一（欠这个执行人员一份薪酬）**，就必须先在"管理层手下执行
+     * 人员工资"把这份薪酬确认过，主表格这一行的"确认"按钮才能点——这个前置顺序不能跳过。
+     * 只有当管理层这个月压根不是这个执行人员的相关项目负责人（没有薪酬要发，只有奖金）时，
+     * 按钮才不受任何限制、随时可点。
      *
-     * "其他项目负责人"指这个月这个执行人员名下、项目负责人不是管理层的那些合作跟踪记录所属的
-     * 项目负责人，他们各自通过"手下执行人员工资"独立确认自己那部分，互不依赖。
-     *
-     * 状态标签：
-     * - "预计"（橙色）：管理层自己还没点"确认"（不管其他项目负责人确没确认）。
-     * - "待其他项目负责人确认"（黄色）：管理层自己已经点了"确认"，但还有至少一个其他项目
-     *   负责人没确认。
-     * - "已确认"（绿色）：管理层自己确认了，且所有其他项目负责人也都确认了。
+     * 状态标签是另一件事，跟按钮能不能点分开算：
+     * - "预计"（橙色）：管理层自己还没确认（如果管理层是相关项目负责人，指还没在"管理层
+     *   手下执行人员工资"确认；如果不是，则是"这个月涉及的项目负责人还没都确认"）。
+     * - "待其他项目负责人确认"（黄色）：管理层自己那部分已经确认了，但还有其他项目负责人
+     *   没确认。
+     * - "已确认"（绿色）：管理层自己那部分确认了，且所有其他项目负责人也都确认了。
      */
-    private ExecutorPmConfirmStatus resolveExecutorPmConfirmStatus(Long executorId, String yearMonth, boolean selfConfirmed) {
+    private ExecutorPmConfirmStatus resolveExecutorPmConfirmStatus(Long executorId, String yearMonth) {
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
+        Set<Long> pmIds = new LinkedHashSet<>();
+        for (CollaborationTracking o : orders) {
+            if (executorId.equals(o.getExecutorId()) && o.getProjectManagerId() != null) {
+                pmIds.add(o.getProjectManagerId());
+            }
+        }
+        if (pmIds.isEmpty()) return new ExecutorPmConfirmStatus(true, false, null);
         Set<Long> managementIds = employeeRepo.findByRoleAndIsDeletedFalse("管理层").stream()
                 .map(Employee::getId).collect(Collectors.toSet());
-        Set<Long> otherPmIds = new LinkedHashSet<>();
-        for (CollaborationTracking o : orders) {
-            if (executorId.equals(o.getExecutorId()) && o.getProjectManagerId() != null
-                    && !managementIds.contains(o.getProjectManagerId())) {
-                otherPmIds.add(o.getProjectManagerId());
+        Map<Long, Map<Long, ExecutorWageConfirmation>> confirmations = fetchWageConfirmations(yearMonth);
+        boolean allConfirmed = true;
+        boolean managementIsParty = false;
+        boolean selfConfirmed = true;
+        for (Long pmId : pmIds) {
+            ExecutorWageConfirmation c = confirmations.getOrDefault(pmId, Collections.emptyMap()).get(executorId);
+            boolean confirmed = c != null && Boolean.TRUE.equals(c.getConfirmed());
+            if (!confirmed) allConfirmed = false;
+            if (managementIds.contains(pmId)) {
+                managementIsParty = true;
+                if (!confirmed) selfConfirmed = false;
             }
         }
-        boolean allOthersConfirmed = true;
-        if (!otherPmIds.isEmpty()) {
-            Map<Long, Map<Long, ExecutorWageConfirmation>> confirmations = fetchWageConfirmations(yearMonth);
-            for (Long pmId : otherPmIds) {
-                ExecutorWageConfirmation c = confirmations.getOrDefault(pmId, Collections.emptyMap()).get(executorId);
-                if (c == null || !Boolean.TRUE.equals(c.getConfirmed())) {
-                    allOthersConfirmed = false;
-                    break;
-                }
-            }
-        }
-        boolean allConfirmed = selfConfirmed && allOthersConfirmed;
-        boolean awaitingOtherManagers = selfConfirmed && !allOthersConfirmed;
-        return new ExecutorPmConfirmStatus(allConfirmed, awaitingOtherManagers);
+        if (!managementIsParty) selfConfirmed = false; // 没有"自己那份"，不算"自己已确认"
+        String blockedReason = (managementIsParty && !selfConfirmed)
+                ? "管理层还没有在\"管理层手下执行人员工资\"确认这个执行人员的薪酬，无法进行最终确认"
+                : null;
+        return new ExecutorPmConfirmStatus(allConfirmed, selfConfirmed, blockedReason);
     }
 
     @lombok.Value
     private static class ExecutorPmConfirmStatus {
-        /** 管理层自己确认了 且 所有其他项目负责人也都确认了——驱动"已确认"（绿色） */
+        /** 是否这个月涉及的所有项目负责人都确认过了——驱动状态标签，跟 blockedReason 无关 */
         boolean allConfirmed;
-        /** 管理层自己已确认，但还有其他项目负责人没确认——驱动"待其他项目负责人确认"（黄色） */
-        boolean awaitingOtherManagers;
+        /** 管理层自己那部分（若管理层是相关项目负责人之一）是否已确认——驱动状态标签的中间态 */
+        boolean selfConfirmed;
+        /** 非空时表示主表格"确认"按钮应被禁用（仅当管理层自己有未确认的那部分时才非空） */
+        String blockedReason;
     }
 
     @Transactional
@@ -249,8 +253,10 @@ public class PayslipService {
             String blocked = managementBlockReason(yearMonth, employeeId, rate);
             if (blocked != null) throw new RuntimeException(blocked);
         }
-        // 执行人员这一行没有任何前置校验：管理层随时可以确认（详见 resolveExecutorPmConfirmStatus
-        // 顶部的说明）——这个动作本身独立于其他项目负责人是否确认。
+        if ("执行人员".equals(emp.getRole())) {
+            ExecutorPmConfirmStatus status = resolveExecutorPmConfirmStatus(employeeId, yearMonth);
+            if (status.getBlockedReason() != null) throw new RuntimeException(status.getBlockedReason());
+        }
         Payslip p = getOrCreateForWrite(employeeId, yearMonth);
         applyConfirmedSnapshot(emp, yearMonth, p, employeeRoleUtil.getCurrentEmployeeId(), rate);
         payslipRepo.save(p);
@@ -1086,12 +1092,13 @@ public class PayslipService {
         if ("管理层".equals(emp.getRole())) {
             blockedReason = managementBlockReason(yearMonth, emp.getId(), liveRateInfo.getUsdToCny());
         } else if ("执行人员".equals(emp.getRole())) {
-            // 执行人员这一行没有 blockedReason（管理层随时可以确认）；状态标签单独反映
-            // "管理层自己是否已经点过确认" + "其他项目负责人是否都确认了"
-            ExecutorPmConfirmStatus status = resolveExecutorPmConfirmStatus(
-                    emp.getId(), yearMonth, Boolean.TRUE.equals(d.getConfirmed()));
-            blockedReason = null;
-            awaitingOtherManagers = status.isAwaitingOtherManagers();
+            // 状态标签（是否所有涉及的项目负责人都确认了）跟"确认"按钮能不能点（管理层自己
+            // 那部分薪酬有没有先在"管理层手下执行人员工资"确认过）是两件独立的事，所以这里
+            // 必须始终计算——哪怕这一行 Payslip.confirmed 已经是 true，状态标签依然要如实
+            // 反映"是否所有项目负责人都确认了"
+            ExecutorPmConfirmStatus status = resolveExecutorPmConfirmStatus(emp.getId(), yearMonth);
+            blockedReason = status.getBlockedReason();
+            awaitingOtherManagers = status.isSelfConfirmed() && !status.isAllConfirmed();
             executorAllPmConfirmed = status.isAllConfirmed();
         } else {
             blockedReason = null;
