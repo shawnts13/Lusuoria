@@ -723,26 +723,25 @@ public class CollaborationTrackingService {
             throw new RuntimeException(InfluencerPaymentProgress.SYSTEM_MANAGED_ERROR);
         }
 
-        // 视频发布时间自动填写：视频项目进度这次是从"不满足前置条件"变为"满足前置条件"
-        // （首次进入已发布(未结算)/已加入客户未结算列表/客户已结算这三个阶段），且当前还没有
-        // 视频发布时间时，系统自动填上当天日期（年月日，JVM 默认时区已固定为北京时间）。
-        // 只在当前为空时才填，避免已经有值（管理员手动填过，或者之前已经自动填过）的记录
-        // 在这三个阶段之间来回流转时被反复覆盖成"今天"，抹掉真实的发布日期。
-        boolean enteringPublishedZone = newProgress != null && newProgress.allowsPaymentProgress()
-                && (oldProgress == null || !oldProgress.allowsPaymentProgress());
-
-        // 2026-07 新增：视频发布链接为空时，不允许通过"状态流转"手动进入已发布相关的三个阶段——
-        // 唯一合法路径是去编辑表单里设置视频发布链接，链接非空会自动带动进度流转到"已发布
-        // （未结算）"（见 doSave() 的 autoTransitionedToPublished 分支），同时触发"设置内部
-        // 执行成本"弹窗跟视频链接+状态一次性合并保存。如果这里放行了没有链接的手动流转，
-        // 会绕开那个合并保存流程，破坏"取消=整个操作一次性取消"的原子性。
-        if (enteringPublishedZone && (t.getPublishLink() == null || t.getPublishLink().trim().isEmpty())) {
-            throw new RuntimeException("该记录尚未填写视频发布链接，请先在编辑表单中设置视频发布链接"
-                    + "（链接会自动带动进度流转到\"已发布（未结算）\"），无法在没有视频发布链接的情况下"
-                    + "手动流转到该状态");
-        }
-        if (enteringPublishedZone && t.getPublishDate() == null) {
-            t.setPublishDate(new Date());
+        // 2026-07 起：目标进度是"已发布（未结算）"/"已加入客户未结算列表"/"客户已结算"这三个
+        // 阶段之一时，必须已经有视频发布时间和视频发布链接——不再像以前那样只在"首次进入"这个
+        // 时间点校验、且缺发布时间就静默帮填"今天"。现在只要这次操作真的把进度改成了这三个阶段
+        // 之一（不管是不是首次进入，哪怕是在这三个阶段之间来回流转），缺发布时间或者发布链接
+        // 任意一个就直接拒绝，提示操作人先通过"编辑"功能把这两个字段填好再回来流转——这两个
+        // 字段代表"视频事实上已经发布"，不能是空的，也不该是系统随手垫的"今天"。
+        // 只在进度真的发生变化时才校验——原样提交回去（进度没变，比如历史遗留的问题记录被
+        // 打开又原样保存）不受这条限制影响，不然这类历史数据会连状态流转弹窗都打不开/保存不了，
+        // 需要单独走别的渠道修复，不该被这里的校验卡死。
+        boolean progressActuallyChangedForPublishCheck = !java.util.Objects.equals(oldProgress, newProgress);
+        if (progressActuallyChangedForPublishCheck && newProgress != null && newProgress.allowsPaymentProgress()) {
+            boolean missingLink = t.getPublishLink() == null || t.getPublishLink().trim().isEmpty();
+            boolean missingDate = t.getPublishDate() == null;
+            if (missingLink || missingDate) {
+                String missingFields = missingLink && missingDate ? "视频发布时间和视频发布链接"
+                        : missingLink ? "视频发布链接" : "视频发布时间";
+                throw new RuntimeException("该记录还没有填写" + missingFields + "，无法流转到\""
+                        + newProgress.getLabel() + "\"，请先通过\"编辑\"功能填写后再进行状态流转");
+            }
         }
 
         // 进度真正变化时才刷新"进度最近更新时间"（供进度滞留提醒批次用），原样提交回去
@@ -1056,6 +1055,17 @@ public class CollaborationTrackingService {
     }
 
     /**
+     * 这个 (项目负责人/管理层, 执行人员, 视频类型) 组合是否已经配置过费率梯度——跟
+     * ExecutorPayRateController.check() 走的是同一张表/同一个查询条件，这里额外暴露给
+     * Excel 批量导入用（导入不经过那个 REST 接口，需要在服务层直接复用同一条判断规则）。
+     */
+    public boolean hasExecutorPayRateConfigured(Long managerId, Long executorId, VideoType videoType) {
+        return !executorPayRateTierRepo
+                .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(managerId, executorId, videoType)
+                .isEmpty();
+    }
+
+    /**
      * 批量重新计算所有未删除记录的毛利/可分配利润/提成/公司利润这些自动计算字段。
      *
      * 用途：项目毛利这些字段是"保存时计算好存进数据库"的，不是每次读取都现算——正常情况下
@@ -1098,14 +1108,19 @@ public class CollaborationTrackingService {
             trackingRepo.save(t);
         }
 
-        StringBuilder msg = new StringBuilder("已重新计算 " + all.size() + " 条记录");
+        StringBuilder msg = new StringBuilder("已重新计算 " + all.size() + " 条记录的利润");
         if (fixedExchangeRateCount > 0) {
-            msg.append("，其中 ").append(fixedExchangeRateCount).append(" 条记录按发布时间所在月份自动补上了缺失/异常的汇率");
+            msg.append("，其中 ").append(fixedExchangeRateCount)
+               .append(" 条记录的汇率异常（视频已发布，但汇率是0或缺失）已按发布时间所在月份在"
+                       + "\"汇率维护\"里配置的汇率自动修复");
         }
         if (stillMissingExchangeRateCount > 0) {
-            msg.append("，另有 ").append(stillMissingExchangeRateCount)
-               .append(" 条记录汇率仍然缺失或异常（发布时间还没填写，或者对应月份还没在\"汇率维护\"配置汇率），"
-                       + "需要先补上发布时间/配置汇率后再重新计算一次");
+            msg.append("；另有 ").append(stillMissingExchangeRateCount)
+               .append(" 条记录汇率仍然是0或缺失，原因是：还没有填写视频发布时间，或者发布时间所在月份还没有在"
+                       + "\"汇率维护\"配置汇率——请先补上发布时间/配置好对应月份的汇率，再点一次\"重新计算利润\"修复");
+        }
+        if (fixedExchangeRateCount == 0 && stillMissingExchangeRateCount == 0) {
+            msg.append("，没有发现汇率异常（0或缺失）的记录");
         }
         return msg.toString();
     }

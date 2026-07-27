@@ -561,6 +561,22 @@ public class CollaborationTrackingExcelHandler {
                             + "\"客户已结算\"时才能填写\"视频发布时间\"，请核对");
                     continue;
                 }
+                // 2026-07 新增：反过来，视频项目进度是这三个阶段之一时，也必须同时填了视频发布时间
+                // 和视频发布链接——不像单条新建/状态流转那样能自动帮补"今天"的日期，Excel批量导入
+                // 的数据经常是事后补录的历史数据，"自动填今天"大概率是错的，这里直接拒绝这一行，
+                // 要求先核对真实的发布时间/链接再重新导入（跟单条新建、状态流转是同一条业务规则）
+                if (req.getProgress() != null && req.getProgress().allowsPaymentProgress()) {
+                    if (publishDate == null) {
+                        errors.add("第" + (i + 1) + "行：视频项目进度为\"" + req.getProgress().getLabel()
+                                + "\"时必须填写\"视频发布时间\"，请核对");
+                        continue;
+                    }
+                    if (publishLink == null) {
+                        errors.add("第" + (i + 1) + "行：视频项目进度为\"" + req.getProgress().getLabel()
+                                + "\"时必须填写\"视频发布链接\"，请核对");
+                        continue;
+                    }
+                }
                 // 红人结款进度：默认空，只有上面解析出来的视频项目进度达到前置条件才允许设置值，
                 // 不满足条件时直接报错（不像其他字段那样静默跳过），跟单条保存/状态流转共用同一句错误文案
                 String paymentProgressRaw = getStr(row, colMap, "红人结款进度");
@@ -620,6 +636,19 @@ public class CollaborationTrackingExcelHandler {
                         continue;
                     }
                     req.setExecutorId(executor.getId());
+                }
+
+                // 2026-07 新增：项目负责人+内部执行人员+项目视频类型三者都填了的话，这个组合必须
+                // 已经在"员工管理"/"执行人员管理"配置过费率梯度——跟"红人合作跟踪"编辑表单提交前
+                // 的同一条校验保持一致，避免通过Excel批量导入绕开那边的拦截，留下一堆没有费率
+                // 依据的执行人员薪酬记录
+                if (req.getProjectManagerId() != null && req.getExecutorId() != null && req.getVideoType() != null
+                        && !trackingService.hasExecutorPayRateConfigured(
+                                req.getProjectManagerId(), req.getExecutorId(), req.getVideoType())) {
+                    errors.add("第" + (i + 1) + "行：内部执行人员 [" + executorRaw + "] 在项目负责人 [" + managerRaw
+                            + "] 名下还没有配置\"" + req.getVideoType().getLabel() + "\"这个视频类型的薪资费率梯度，"
+                            + "请先在\"员工管理\"/\"执行人员管理\"配置后再导入，跳过此行");
+                    continue;
                 }
 
                 // 敏感字段：2026-07 起这两个字段是严格数字，不再允许"价格待定"这类文本备注，
