@@ -408,6 +408,28 @@ public class PayslipService {
         BigDecimal managerCommissionTotal = totalCommission.add(tierBonusTotalUsd);
         BigDecimal companyProfit = companyProfitBeforePayouts.subtract(tierBonusTotalUsd).subtract(extraBonusTotalUsd);
 
+        // ===== 管理层作为"特殊的项目负责人"，也要能确认自己名下（projectManagerId=管理层本人）
+        // 执行人员的工资——用跟普通项目负责人完全一样的一套确认机制（ExecutorWageConfirmation，
+        // managerId=管理层自己的员工id），只是入口挪到"工资单"主页面管理层自己那张卡片下面
+        // 单独一块，2026-07 新增。跟这个方法上面算"内部执行人力成本"用的是同一批 orders，
+        // 但这里要按"项目负责人→执行人员"分组才能拆出明细行给前端展示。 =====
+        Map<Long, Map<Long, List<CollaborationTracking>>> byPmThenExec = groupByManagerThenExecutor(orders);
+        Map<Long, ExecutorWageConfirmation> confirmationByManagerId = fetchWageConfirmations(yearMonth);
+        ExecutorWageConfirmation ownConfirmation = confirmationByManagerId.get(mgmt.getId());
+        boolean ownExecutorWageConfirmed = ownConfirmation != null && Boolean.TRUE.equals(ownConfirmation.getConfirmed());
+        List<PayslipDimensionRow> ownExecutorWageRows;
+        BigDecimal ownExecutorWageTotal;
+        if (ownExecutorWageConfirmed) {
+            ownExecutorWageRows = readExecutorWageSnapshotRows(ownConfirmation);
+            ownExecutorWageTotal = sumSnapshotTotal(ownExecutorWageRows);
+        } else {
+            Map<Long, List<CollaborationTracking>> execOrdersUnderMgmt =
+                    byPmThenExec.getOrDefault(mgmt.getId(), Collections.emptyMap());
+            ExecutorWageDetail live = buildLiveExecutorWageDetail(execOrdersUnderMgmt);
+            ownExecutorWageRows = live.rows;
+            ownExecutorWageTotal = live.total;
+        }
+
         return PayslipDetailResponse.builder()
                 .type("MANAGEMENT")
                 .rows(rows)
@@ -418,6 +440,9 @@ public class PayslipService {
                 .otherStaffCost(otherStaffCostUsd)
                 .extraBonusPayoutTotal(extraBonusTotalUsd.setScale(SCALE, RoundingMode.HALF_UP))
                 .companyProfit(companyProfit.setScale(SCALE, RoundingMode.HALF_UP))
+                .executorWageRows(ownExecutorWageRows)
+                .executorWageTotal(ownExecutorWageTotal.setScale(SCALE, RoundingMode.HALF_UP))
+                .executorWageConfirmed(ownExecutorWageConfirmed)
                 .build();
     }
 
