@@ -198,16 +198,18 @@ public class PayslipService {
             }
         }
         if (pmIds.isEmpty()) return null;
-        Map<Long, ExecutorWageConfirmation> confirmations = fetchWageConfirmations(yearMonth);
+        // 2026-07 起确认粒度是"按执行人员单独确认"，所以这里要看的是每个相关项目负责人
+        // 是不是已经确认了"这个执行人员"这一份，不是笼统看这个项目负责人当月是否确认过什么
+        Map<Long, Map<Long, ExecutorWageConfirmation>> confirmations = fetchWageConfirmations(yearMonth);
         List<String> unconfirmedNames = new ArrayList<>();
         for (Long pmId : pmIds) {
-            ExecutorWageConfirmation c = confirmations.get(pmId);
+            ExecutorWageConfirmation c = confirmations.getOrDefault(pmId, Collections.emptyMap()).get(executorId);
             if (c == null || !Boolean.TRUE.equals(c.getConfirmed())) {
                 unconfirmedNames.add(employeeNameOf(pmId));
             }
         }
         if (unconfirmedNames.isEmpty()) return null;
-        return "以下项目负责人还没确认名下执行人员工资，无法进行最终确认：" + String.join("、", unconfirmedNames);
+        return "以下项目负责人还没确认这个执行人员的工资，无法进行最终确认：" + String.join("、", unconfirmedNames);
     }
 
     @Transactional
@@ -239,24 +241,35 @@ public class PayslipService {
     }
 
     /**
-     * 项目负责人自己确认"应发给名下执行人员的工资"——这一层的确认状态（{@link ExecutorWageConfirmation}）
-     * 跟管理层对这个项目负责人自己那份工资单（{@link Payslip}）的确认/取消确认完全独立，互不阻塞、
-     * 互不影响。get-or-create 一行记录，写入当前实时数据的快照后置 confirmed=true。
+     * 项目负责人自己确认"应发给名下某一个执行人员的工资"——这一层的确认状态
+     * （{@link ExecutorWageConfirmation}）跟管理层对这个项目负责人自己那份工资单
+     * （{@link Payslip}）的确认/取消确认完全独立，互不阻塞、互不影响。2026-07 起改成按
+     * 执行人员单独确认（不再是这个项目负责人当月名下所有执行人员一次性打包确认），
+     * get-or-create 一行 (managerId, executorId, yearMonth) 记录，写入当前实时数据的
+     * 快照后置 confirmed=true。
      */
     @Transactional
-    public void confirmExecutorWages(Long managerId, String yearMonth) {
+    public void confirmExecutorWages(Long managerId, Long executorId, String yearMonth) {
         employeeRepo.findByIdAndIsDeletedFalse(managerId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
+        employeeRepo.findByIdAndIsDeletedFalse(executorId)
+                .orElseThrow(() -> new RuntimeException("执行人员不存在"));
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
-        Map<Long, List<CollaborationTracking>> execOrdersUnderPm = groupByManagerThenExecutor(orders)
-                .getOrDefault(managerId, Collections.emptyMap());
-        ExecutorWageDetail live = buildLiveExecutorWageDetail(execOrdersUnderPm);
+        List<CollaborationTracking> ordersForPair = groupByManagerThenExecutor(orders)
+                .getOrDefault(managerId, Collections.emptyMap())
+                .getOrDefault(executorId, Collections.emptyList());
+        List<PayslipDimensionRow> rows = buildDimensionRowsForOrders(ordersForPair);
+        rows.sort(this::compareExecutorRows);
+        for (PayslipDimensionRow r : rows) {
+            r.setExecutorId(executorId);
+            r.setExecutorName(employeeNameOf(executorId));
+        }
 
         ExecutorWageConfirmation confirmation = wageConfirmationRepo
-                .findByManagerIdAndYearMonthAndIsDeletedFalse(managerId, yearMonth)
+                .findByManagerIdAndExecutorIdAndYearMonthAndIsDeletedFalse(managerId, executorId, yearMonth)
                 .orElseGet(() -> ExecutorWageConfirmation.builder()
-                        .managerId(managerId).yearMonth(yearMonth).confirmed(false).build());
-        confirmation.setDetailJson(writeExecutorWageSnapshot(live.rows));
+                        .managerId(managerId).executorId(executorId).yearMonth(yearMonth).confirmed(false).build());
+        confirmation.setDetailJson(writeExecutorWageSnapshot(rows));
         confirmation.setConfirmed(true);
         confirmation.setConfirmedAt(new Date());
         wageConfirmationRepo.save(confirmation);
@@ -264,10 +277,10 @@ public class PayslipService {
 
     /** 取消确认只翻 confirmed 标志，detailJson 保留不清空——下次重新确认会覆盖，跟 Payslip 同一套约定 */
     @Transactional
-    public void unconfirmExecutorWages(Long managerId, String yearMonth) {
+    public void unconfirmExecutorWages(Long managerId, Long executorId, String yearMonth) {
         ExecutorWageConfirmation confirmation = wageConfirmationRepo
-                .findByManagerIdAndYearMonthAndIsDeletedFalse(managerId, yearMonth)
-                .orElseThrow(() -> new RuntimeException("该月执行人员工资还没有确认过，无需取消确认"));
+                .findByManagerIdAndExecutorIdAndYearMonthAndIsDeletedFalse(managerId, executorId, yearMonth)
+                .orElseThrow(() -> new RuntimeException("该月这个执行人员的工资还没有确认过，无需取消确认"));
         confirmation.setConfirmed(false);
         wageConfirmationRepo.save(confirmation);
     }
@@ -295,7 +308,7 @@ public class PayslipService {
     private PayslipDetailResponse computeProjectManager(Employee emp, String yearMonth, BigDecimal rate) {
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         Map<Long, Map<Long, List<CollaborationTracking>>> byPmThenExec = groupByManagerThenExecutor(orders);
-        Map<Long, ExecutorWageConfirmation> confirmationByManagerId = fetchWageConfirmations(yearMonth);
+        Map<Long, Map<Long, ExecutorWageConfirmation>> confirmationByManagerId = fetchWageConfirmations(yearMonth);
         Map<String, PayslipDimensionRow> grouped = new LinkedHashMap<>();
         BigDecimal totalCommission = BigDecimal.ZERO;
         for (CollaborationTracking o : orders) {
@@ -314,7 +327,7 @@ public class PayslipService {
     private PayslipDetailResponse computeExecutor(Employee emp, String yearMonth) {
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         Map<Long, Map<Long, List<CollaborationTracking>>> byPmThenExec = groupByManagerThenExecutor(orders);
-        Map<Long, ExecutorWageConfirmation> confirmationByManagerId = fetchWageConfirmations(yearMonth);
+        Map<Long, Map<Long, ExecutorWageConfirmation>> confirmationByManagerId = fetchWageConfirmations(yearMonth);
         return buildExecutorCrossManagerDetail(emp.getId(), byPmThenExec, confirmationByManagerId);
     }
 
@@ -408,27 +421,24 @@ public class PayslipService {
         BigDecimal managerCommissionTotal = totalCommission.add(tierBonusTotalUsd);
         BigDecimal companyProfit = companyProfitBeforePayouts.subtract(tierBonusTotalUsd).subtract(extraBonusTotalUsd);
 
-        // ===== 管理层作为"特殊的项目负责人"，也要能确认自己名下（projectManagerId=管理层本人）
-        // 执行人员的工资——用跟普通项目负责人完全一样的一套确认机制（ExecutorWageConfirmation，
-        // managerId=管理层自己的员工id），只是入口挪到"工资单"主页面管理层自己那张卡片下面
-        // 单独一块，2026-07 新增。跟这个方法上面算"内部执行人力成本"用的是同一批 orders，
-        // 但这里要按"项目负责人→执行人员"分组才能拆出明细行给前端展示。 =====
+        // ===== 管理层作为"特殊的项目负责人"，也要能按执行人员单独确认自己名下
+        // （projectManagerId=管理层本人）执行人员的工资——用跟普通项目负责人完全一样的一套
+        // 确认机制（ExecutorWageConfirmation，managerId=管理层自己的员工id），只是入口挪到
+        // "工资单"主页面管理层自己那张卡片下面单独一块，2026-07 新增。跟这个方法上面算
+        // "内部执行人力成本"用的是同一批 orders，但这里要按"项目负责人→执行人员"分组才能
+        // 拆出明细行给前端展示。 =====
         Map<Long, Map<Long, List<CollaborationTracking>>> byPmThenExec = groupByManagerThenExecutor(orders);
-        Map<Long, ExecutorWageConfirmation> confirmationByManagerId = fetchWageConfirmations(yearMonth);
-        ExecutorWageConfirmation ownConfirmation = confirmationByManagerId.get(mgmt.getId());
-        boolean ownExecutorWageConfirmed = ownConfirmation != null && Boolean.TRUE.equals(ownConfirmation.getConfirmed());
-        List<PayslipDimensionRow> ownExecutorWageRows;
-        BigDecimal ownExecutorWageTotal;
-        if (ownExecutorWageConfirmed) {
-            ownExecutorWageRows = readExecutorWageSnapshotRows(ownConfirmation);
-            ownExecutorWageTotal = sumSnapshotTotal(ownExecutorWageRows);
-        } else {
-            Map<Long, List<CollaborationTracking>> execOrdersUnderMgmt =
-                    byPmThenExec.getOrDefault(mgmt.getId(), Collections.emptyMap());
-            ExecutorWageDetail live = buildLiveExecutorWageDetail(execOrdersUnderMgmt);
-            ownExecutorWageRows = live.rows;
-            ownExecutorWageTotal = live.total;
-        }
+        Map<Long, Map<Long, ExecutorWageConfirmation>> confirmationByManagerId = fetchWageConfirmations(yearMonth);
+        Map<Long, List<CollaborationTracking>> execOrdersUnderMgmt =
+                byPmThenExec.getOrDefault(mgmt.getId(), Collections.emptyMap());
+        Map<Long, ExecutorWageConfirmation> confirmationsForMgmt =
+                confirmationByManagerId.getOrDefault(mgmt.getId(), Collections.emptyMap());
+        ExecutorWageDetail ownWageDetail = buildExecutorWageRows(execOrdersUnderMgmt, confirmationsForMgmt);
+        boolean ownAllExecutorsConfirmed = !execOrdersUnderMgmt.isEmpty()
+                && execOrdersUnderMgmt.keySet().stream().allMatch(execId -> {
+                    ExecutorWageConfirmation c = confirmationsForMgmt.get(execId);
+                    return c != null && Boolean.TRUE.equals(c.getConfirmed());
+                });
 
         return PayslipDetailResponse.builder()
                 .type("MANAGEMENT")
@@ -440,9 +450,9 @@ public class PayslipService {
                 .otherStaffCost(otherStaffCostUsd)
                 .extraBonusPayoutTotal(extraBonusTotalUsd.setScale(SCALE, RoundingMode.HALF_UP))
                 .companyProfit(companyProfit.setScale(SCALE, RoundingMode.HALF_UP))
-                .executorWageRows(ownExecutorWageRows)
-                .executorWageTotal(ownExecutorWageTotal.setScale(SCALE, RoundingMode.HALF_UP))
-                .executorWageConfirmed(ownExecutorWageConfirmed)
+                .executorWageRows(ownWageDetail.rows)
+                .executorWageTotal(ownWageDetail.total.setScale(SCALE, RoundingMode.HALF_UP))
+                .executorWageConfirmed(ownAllExecutorsConfirmed)
                 .build();
     }
 
@@ -467,7 +477,7 @@ public class PayslipService {
         // 和执行人员视角（自己在每个项目负责人名下挣了多少）共用同一份分组结果，不重复扫描订单。
         Map<Long, Map<Long, List<CollaborationTracking>>> byPmThenExec = groupByManagerThenExecutor(orders);
         // 当月所有项目负责人的"确认执行人员工资"状态一次查完，不按人循环查（避免重蹈之前修过的 N+1）
-        Map<Long, ExecutorWageConfirmation> confirmationByManagerId = fetchWageConfirmations(yearMonth);
+        Map<Long, Map<Long, ExecutorWageConfirmation>> confirmationByManagerId = fetchWageConfirmations(yearMonth);
 
         Map<Long, Map<String, PayslipDimensionRow>> pmGrouped = new HashMap<>();
         Map<Long, BigDecimal> pmCommission = new HashMap<>();
@@ -525,9 +535,18 @@ public class PayslipService {
         return result;
     }
 
-    private Map<Long, ExecutorWageConfirmation> fetchWageConfirmations(String yearMonth) {
-        return wageConfirmationRepo.findByYearMonthAndIsDeletedFalse(yearMonth).stream()
-                .collect(Collectors.toMap(ExecutorWageConfirmation::getManagerId, w -> w, (a, b) -> a));
+    /**
+     * managerId -> executorId -> 确认记录（2026-07 起按执行人员单独确认，不再是每个项目负责人
+     * 一条）。改造之前的历史记录 executorId 为 NULL，这里直接跳过——那批记录代表的是"整批打包
+     * 确认"这个已经废弃的语义，不应该被新逻辑当成任何一个具体执行人员的确认状态来用。
+     */
+    private Map<Long, Map<Long, ExecutorWageConfirmation>> fetchWageConfirmations(String yearMonth) {
+        Map<Long, Map<Long, ExecutorWageConfirmation>> result = new HashMap<>();
+        for (ExecutorWageConfirmation c : wageConfirmationRepo.findByYearMonthAndIsDeletedFalse(yearMonth)) {
+            if (c.getExecutorId() == null) continue;
+            result.computeIfAbsent(c.getManagerId(), k -> new HashMap<>()).put(c.getExecutorId(), c);
+        }
+        return result;
     }
 
     // ================= 维度行累加 / 组装（单个员工、批量两条路径共用） =================
@@ -561,7 +580,7 @@ public class PayslipService {
                                                              BigDecimal totalCommission, BigDecimal rate,
                                                              List<CommissionBonusTier> tiers,
                                                              Map<Long, Map<Long, List<CollaborationTracking>>> byPmThenExec,
-                                                             Map<Long, ExecutorWageConfirmation> confirmationByManagerId) {
+                                                             Map<Long, Map<Long, ExecutorWageConfirmation>> confirmationByManagerId) {
         List<PayslipDimensionRow> rows = new ArrayList<>(rowsNoSummary);
         rows.sort((a, b) -> b.getVideoCount().compareTo(a.getVideoCount()));
         rows.add(buildSummaryRow(rows));
@@ -571,23 +590,20 @@ public class PayslipService {
                 ? commissionBonusService.computeBonusFromTiers(emp, tiers, totalCommission, rate)
                 : null;
 
-        // ===== 应发给自己名下执行人员的工资：这个项目负责人自己确认过就用冻结快照，没确认就
-        // 按现有记录实时算（跟管理层确认自己那份工资、执行人员各自被哪个项目负责人确认，是
-        // 三条完全独立的确认状态） =====
-        ExecutorWageConfirmation confirmation = confirmationByManagerId.get(emp.getId());
-        boolean executorWageConfirmed = confirmation != null && Boolean.TRUE.equals(confirmation.getConfirmed());
-        List<PayslipDimensionRow> executorWageRows;
-        BigDecimal executorWageTotal;
-        if (executorWageConfirmed) {
-            executorWageRows = readExecutorWageSnapshotRows(confirmation);
-            executorWageTotal = sumSnapshotTotal(executorWageRows);
-        } else {
-            Map<Long, List<CollaborationTracking>> execOrdersUnderPm =
-                    byPmThenExec.getOrDefault(emp.getId(), Collections.emptyMap());
-            ExecutorWageDetail live = buildLiveExecutorWageDetail(execOrdersUnderPm);
-            executorWageRows = live.rows;
-            executorWageTotal = live.total;
-        }
+        // ===== 应发给自己名下执行人员的工资：2026-07 起按执行人员单独确认——每个执行人员
+        // 独立判断"这个人confirm过了没"，confirm过的那个人用冻结快照，没confirm的那个人按
+        // 现有记录实时算，两种状态可以在同一张表里混着展示（跟管理层确认自己那份工资、
+        // 执行人员各自被哪个项目负责人确认，是完全独立的确认状态） =====
+        Map<Long, List<CollaborationTracking>> execOrdersUnderPm =
+                byPmThenExec.getOrDefault(emp.getId(), Collections.emptyMap());
+        Map<Long, ExecutorWageConfirmation> confirmationsForThisManager =
+                confirmationByManagerId.getOrDefault(emp.getId(), Collections.emptyMap());
+        ExecutorWageDetail wageDetail = buildExecutorWageRows(execOrdersUnderPm, confirmationsForThisManager);
+        boolean allExecutorsConfirmed = !execOrdersUnderPm.isEmpty()
+                && execOrdersUnderPm.keySet().stream().allMatch(execId -> {
+                    ExecutorWageConfirmation c = confirmationsForThisManager.get(execId);
+                    return c != null && Boolean.TRUE.equals(c.getConfirmed());
+                });
 
         return PayslipDetailResponse.builder()
                 .type("PROJECT_MANAGER")
@@ -595,14 +611,24 @@ public class PayslipService {
                 .commissionRate(emp.getDefaultCommissionRate())
                 .baseAmount(totalCommission.setScale(SCALE, RoundingMode.HALF_UP))
                 .tierBonusAmount(tierBonus)
-                .executorWageRows(executorWageRows)
-                .executorWageTotal(executorWageTotal.setScale(SCALE, RoundingMode.HALF_UP))
-                .executorWageConfirmed(executorWageConfirmed)
+                .executorWageRows(wageDetail.rows)
+                .executorWageTotal(wageDetail.total.setScale(SCALE, RoundingMode.HALF_UP))
+                .executorWageConfirmed(allExecutorsConfirmed)
                 .build();
     }
 
-    /** 项目负责人视角"应发给执行人员的工资"实时计算：按执行人员分组，组内明细+小计，最后整体汇总 */
-    private ExecutorWageDetail buildLiveExecutorWageDetail(Map<Long, List<CollaborationTracking>> execOrdersUnderPm) {
+    /**
+     * 项目负责人/管理层视角"应发给执行人员的工资"：按执行人员分组，每个执行人员独立判断——
+     * 这个执行人员的工资这个项目负责人已经confirm过就用冻结快照，没confirm就按当前记录实时算，
+     * 组内明细+小计（小计行 groupConfirmed 标注这个执行人员是不是已经confirm，供前端在这一行
+     * 放"确认/取消确认"这个执行人员工资的按钮），最后整体汇总。2026-07 起改成按执行人员单独
+     * 确认后，同一张表里可能同时存在"已确认"和"预计"两种状态的执行人员分组。
+     * 没有任何执行人员时（execOrdersUnderPm 为空）不追加汇总行——保持 rows 真正为空，
+     * 这样前端"这个人当月是否涉及执行人员"的判断（rows 是否非空）才不会永远被这一行汇总
+     * 行污染成"非空"。
+     */
+    private ExecutorWageDetail buildExecutorWageRows(Map<Long, List<CollaborationTracking>> execOrdersUnderPm,
+                                                       Map<Long, ExecutorWageConfirmation> confirmationsForThisManager) {
         List<Long> execIds = new ArrayList<>(execOrdersUnderPm.keySet());
         execIds.sort(Comparator.comparing(this::employeeNameOf, Comparator.nullsLast(Comparator.naturalOrder())));
 
@@ -611,22 +637,33 @@ public class PayslipService {
         BigDecimal total = BigDecimal.ZERO;
         for (Long execId : execIds) {
             String execName = employeeNameOf(execId);
-            List<PayslipDimensionRow> groupRows = buildDimensionRowsForOrders(execOrdersUnderPm.get(execId));
-            groupRows.sort(this::compareExecutorRows);
-            for (PayslipDimensionRow r : groupRows) {
-                r.setExecutorId(execId);
-                r.setExecutorName(execName);
+            ExecutorWageConfirmation confirmation =
+                    confirmationsForThisManager == null ? null : confirmationsForThisManager.get(execId);
+            boolean execConfirmed = confirmation != null && Boolean.TRUE.equals(confirmation.getConfirmed());
+            List<PayslipDimensionRow> groupRows;
+            if (execConfirmed) {
+                groupRows = readExecutorWageSnapshotRows(confirmation);
+            } else {
+                groupRows = buildDimensionRowsForOrders(execOrdersUnderPm.get(execId));
+                groupRows.sort(this::compareExecutorRows);
+                for (PayslipDimensionRow r : groupRows) {
+                    r.setExecutorId(execId);
+                    r.setExecutorName(execName);
+                }
             }
             PayslipDimensionRow subtotal = sumRowsAsSubtotal(groupRows);
             subtotal.setBrandName(execName + " 小计");
             subtotal.setExecutorId(execId);
             subtotal.setExecutorName(execName);
+            subtotal.setGroupConfirmed(execConfirmed);
             total = total.add(subtotal.getAmount());
             displayRows.addAll(groupRows);
             displayRows.add(subtotal);
             allDetail.addAll(groupRows);
         }
-        displayRows.add(buildSummaryRow(allDetail));
+        if (!execIds.isEmpty()) {
+            displayRows.add(buildSummaryRow(allDetail));
+        }
         return new ExecutorWageDetail(displayRows, total);
     }
 
@@ -637,7 +674,7 @@ public class PayslipService {
      */
     private PayslipDetailResponse buildExecutorCrossManagerDetail(Long execId,
                                                                    Map<Long, Map<Long, List<CollaborationTracking>>> byPmThenExec,
-                                                                   Map<Long, ExecutorWageConfirmation> confirmationByManagerId) {
+                                                                   Map<Long, Map<Long, ExecutorWageConfirmation>> confirmationByManagerId) {
         List<Long> pmIds = new ArrayList<>();
         for (Map.Entry<Long, Map<Long, List<CollaborationTracking>>> e : byPmThenExec.entrySet()) {
             if (e.getValue().containsKey(execId)) pmIds.add(e.getKey());
@@ -649,11 +686,14 @@ public class PayslipService {
         BigDecimal total = BigDecimal.ZERO;
         for (Long pmId : pmIds) {
             String pmName = employeeNameOf(pmId);
-            ExecutorWageConfirmation confirmation = confirmationByManagerId.get(pmId);
+            ExecutorWageConfirmation confirmation = confirmationByManagerId
+                    .getOrDefault(pmId, Collections.emptyMap()).get(execId);
             boolean groupConfirmed = confirmation != null && Boolean.TRUE.equals(confirmation.getConfirmed());
             List<PayslipDimensionRow> groupRows;
             if (groupConfirmed) {
-                groupRows = extractExecutorRowsFromSnapshot(confirmation, execId);
+                // 2026-07 起每条确认记录只对应一个执行人员，快照本身就已经是这个执行人员的
+                // 完整明细，不再需要从"整批打包"的快照里按 execId 过滤
+                groupRows = readExecutorWageSnapshotRows(confirmation);
             } else {
                 List<CollaborationTracking> ordersForPair = byPmThenExec.get(pmId).get(execId);
                 groupRows = buildDimensionRowsForOrders(ordersForPair);
@@ -677,18 +717,6 @@ public class PayslipService {
                 .rows(displayRows)
                 .baseAmount(total.setScale(SCALE, RoundingMode.HALF_UP))
                 .build();
-    }
-
-    private List<PayslipDimensionRow> extractExecutorRowsFromSnapshot(ExecutorWageConfirmation confirmation, Long execId) {
-        List<PayslipDimensionRow> snapshotRows = readExecutorWageSnapshotRows(confirmation);
-        List<PayslipDimensionRow> result = new ArrayList<>();
-        for (PayslipDimensionRow r : snapshotRows) {
-            if (execId.equals(r.getExecutorId()) && !Boolean.TRUE.equals(r.getIsGroupSubtotal())
-                    && !Boolean.TRUE.equals(r.getIsSummaryRow())) {
-                result.add(r);
-            }
-        }
-        return result;
     }
 
     private List<PayslipDimensionRow> buildDimensionRowsForOrders(List<CollaborationTracking> orders) {
@@ -841,14 +869,19 @@ public class PayslipService {
 
         BigDecimal total = "MANAGEMENT".equals(type) ? companyProfit : safeAdd(safeAdd(baseAmount, tierBonus), extraBonus);
 
-        // ===== 项目负责人专属：应发给执行人员的工资（人民币原值）换算 + 最终净得工资现算 =====
+        // ===== 项目负责人 + 管理层（作为"特殊项目负责人"）专属：应发给执行人员的工资
+        // （人民币原值）换算。finalNetWage（最终净得工资）只有项目负责人有意义——管理层的
+        // "总工资"本来就是公司利润，不存在"扣掉付给执行人员的钱之后还剩多少归自己"这个概念，
+        // 所以 finalNetWage 依然只在 isProjectManager 时计算，不能用 showsExecutorWages 那个
+        // 更宽的判断，否则 finalNetWage 会算出一个没有业务意义的"公司利润减执行人力成本"数字。
         // finalNetWage 用"两边都换算成请求币种之后再相减"，不是分别独立算好各自的美金/人民币值
         // 再各自四舍五入然后相减——这样用户拿页面上"总工资"和"应发给执行人员的工资"两个已经
         // 展示出来的数字手动相减，一定能跟这里算出来的 finalNetWage 完全对上。
         boolean isProjectManager = "PROJECT_MANAGER".equals(type);
-        List<PayslipDimensionRow> convertedExecutorWageRows = isProjectManager
+        boolean showsExecutorWages = isProjectManager || "MANAGEMENT".equals(type);
+        List<PayslipDimensionRow> convertedExecutorWageRows = showsExecutorWages
                 ? convertDimensionRows(src.getExecutorWageRows(), true, rate, toRmb) : null;
-        BigDecimal executorWageTotal = isProjectManager
+        BigDecimal executorWageTotal = showsExecutorWages
                 ? convertAmount(src.getExecutorWageTotal(), true, rate, toRmb) : null;
         BigDecimal finalNetWage = isProjectManager && total != null && executorWageTotal != null
                 ? total.subtract(executorWageTotal).setScale(SCALE, RoundingMode.HALF_UP) : null;
@@ -862,7 +895,7 @@ public class PayslipService {
                 .totalAmount(total)
                 .executorWageRows(convertedExecutorWageRows)
                 .executorWageTotal(executorWageTotal)
-                .executorWageConfirmed(isProjectManager ? src.getExecutorWageConfirmed() : null)
+                .executorWageConfirmed(showsExecutorWages ? src.getExecutorWageConfirmed() : null)
                 .finalNetWage(finalNetWage)
                 .grossProfit(grossProfit).distributableProfit(distributable)
                 .managerCommissionTotal(managerCommissionTotal).executorPayTotal(executorPayTotal)

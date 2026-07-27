@@ -130,12 +130,15 @@ public class PayslipController {
         return ApiResponse.success();
     }
 
-    /** 项目负责人自己确认名下执行人员的工资（跟管理层确认这个项目负责人自己的工资单完全独立） */
+    /**
+     * 项目负责人自己确认名下某一个执行人员的工资（跟管理层确认这个项目负责人自己的工资单完全
+     * 独立）。2026-07 起按执行人员单独确认，必须指定 executorId。
+     */
     @PostMapping("/executor-wages/confirm")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Void> confirmExecutorWages(@RequestBody ExecutorWagesRequest req) {
         Long managerId = resolveManagerId(req.getManagerId());
-        payslipService.confirmExecutorWages(managerId, req.getYearMonth());
+        payslipService.confirmExecutorWages(managerId, req.getExecutorId(), req.getYearMonth());
         return ApiResponse.success();
     }
 
@@ -143,7 +146,7 @@ public class PayslipController {
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Void> unconfirmExecutorWages(@RequestBody ExecutorWagesRequest req) {
         Long managerId = resolveManagerId(req.getManagerId());
-        payslipService.unconfirmExecutorWages(managerId, req.getYearMonth());
+        payslipService.unconfirmExecutorWages(managerId, req.getExecutorId(), req.getYearMonth());
         return ApiResponse.success();
     }
 
@@ -151,6 +154,8 @@ public class PayslipController {
     public static class ExecutorWagesRequest {
         /** ADMIN 可显式指定；STAFF 传了也会被后端忽略，强制用自己的员工 id */
         private Long managerId;
+        /** 要确认/取消确认的具体执行人员（2026-07 起按执行人员单独确认，必填） */
+        private Long executorId;
         private String yearMonth;
     }
 

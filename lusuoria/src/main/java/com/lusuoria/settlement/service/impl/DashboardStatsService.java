@@ -9,8 +9,10 @@ import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.InfluencerTeam;
+import com.lusuoria.settlement.entity.Payslip;
 import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
+import com.lusuoria.settlement.repository.PayslipRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -53,6 +55,7 @@ public class DashboardStatsService {
     @Autowired private ExchangeRateService exchangeRateService;
     @Autowired private com.lusuoria.settlement.util.ProfitCalculator profitCalculator;
     @Autowired private CommissionBonusService commissionBonusService;
+    @Autowired private PayslipRepository payslipRepo;
 
     // ============ 顶部汇总 ============
 
@@ -95,9 +98,10 @@ public class DashboardStatsService {
             totalCompanyProfit  = totalCompanyProfit.add(c.companyProfit);
         }
 
-        // 内部其他员工成本：财务、IT后勤这两个角色的固定月薪（不跟具体记录挂钩，
-        // 员工管理里维护的是"月薪"，这里就是这一个月的固定支出），要从公司利润里扣掉
-        BigDecimal totalOtherStaffCostRmb = otherStaffCostRmb(1);
+        // 内部其他员工成本：财务、IT后勤这两个角色的固定月薪（不跟具体记录挂钩，员工管理里
+        // 维护的是"月薪"，这里就是这一个月的固定支出）+ 法务当月的工资（管理层每月手动在
+        // "工资单"模块设置，不是固定月薪，设置了就计入，没设置就是0），都要从公司利润里扣掉
+        BigDecimal totalOtherStaffCostRmb = otherStaffCostRmb(1).add(legalStaffCostRmb(yearMonth, yearMonth));
         BigDecimal totalOtherStaffCostUsd = (rate != null && rate.compareTo(BigDecimal.ZERO) > 0)
                 ? totalOtherStaffCostRmb.divide(rate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
         totalCompanyProfit = totalCompanyProfit.subtract(totalOtherStaffCostUsd);
@@ -120,7 +124,12 @@ public class DashboardStatsService {
                 .build();
     }
 
-    /** 财务、IT后勤角色目前是固定月薪，跟具体记录无关；法务角色薪资方案还没设计，暂不计入 */
+    /**
+     * 财务、IT后勤角色是固定月薪，跟具体记录无关，走 otherStaffEmployees()/otherStaffCostRmb()
+     * 这条路径。法务角色（2026-07 起管理层设置了当月工资就计入）走单独的 legalStaffCostRmb()
+     * 路径，两者共同构成"内部其他员工成本"，不合并进这个角色集合是因为取数方式完全不同
+     * （固定值 vs 每月手动录入的 Payslip.legalSalaryRmb）。
+     */
     private static final java.util.Set<String> OTHER_STAFF_ROLES =
             new java.util.HashSet<>(java.util.Arrays.asList("财务", "IT后勤"));
 
@@ -151,9 +160,57 @@ public class DashboardStatsService {
         return Math.max(count, 1);
     }
 
+    /** 起止月份（yyyyMM）之间逐月展开的列表，闭区间，比如 202601~202603 = [202601, 202602, 202603] */
+    private List<String> monthsBetween(String startMonth, String endMonth) {
+        List<String> result = new ArrayList<>();
+        int y = Integer.parseInt(startMonth.substring(0, 4));
+        int m = Integer.parseInt(startMonth.substring(4));
+        int endY = Integer.parseInt(endMonth.substring(0, 4));
+        int endM = Integer.parseInt(endMonth.substring(4));
+        while (y < endY || (y == endY && m <= endM)) {
+            result.add(String.format("%04d%02d", y, m));
+            m++;
+            if (m > 12) { m = 1; y++; }
+        }
+        return result;
+    }
+
+    /**
+     * 法务角色薪资是管理层每月手动在"工资单"模块录入的（Payslip.legalSalaryRmb），不是像
+     * 财务/IT后勤那样的固定月薪，不能简单"单月金额 × 月份数"相乘——要逐月查 Payslip 表，
+     * 设置了就计入当月，没设置的月份就是 0。返回 employeeId -> 这个法务在整个月份范围内的
+     * 薪资合计（人民币），供 getSummary（单月）和 drilldownOtherStaffCost（按人拆分）复用。
+     */
+    private Map<Long, BigDecimal> legalStaffCostRmbByEmployee(String startMonth, String endMonth) {
+        Set<Long> legalEmployeeIds = new HashSet<>();
+        for (Employee e : employeeCache.getAll()) {
+            if ("法务".equals(e.getRole())) legalEmployeeIds.add(e.getId());
+        }
+        Map<Long, BigDecimal> result = new HashMap<>();
+        if (legalEmployeeIds.isEmpty()) return result;
+        for (String month : monthsBetween(startMonth, endMonth)) {
+            for (Payslip p : payslipRepo.findByYearMonthAndIsDeletedFalse(month)) {
+                if (legalEmployeeIds.contains(p.getEmployeeId()) && p.getLegalSalaryRmb() != null) {
+                    result.merge(p.getEmployeeId(), p.getLegalSalaryRmb(), BigDecimal::add);
+                }
+            }
+        }
+        return result;
+    }
+
+    /** 法务全体在整个月份范围内的薪资合计（人民币），供只需要总数、不需要按人拆分的场景用 */
+    private BigDecimal legalStaffCostRmb(String startMonth, String endMonth) {
+        BigDecimal sum = BigDecimal.ZERO;
+        for (BigDecimal v : legalStaffCostRmbByEmployee(startMonth, endMonth).values()) {
+            sum = sum.add(v);
+        }
+        return sum;
+    }
+
     // ============ 下钻：内部其他员工成本（按"员工角色-姓名"） ============
-    // 注意：这个成本压根不来自 CollaborationTracking，是财务/IT后勤这些员工的固定月薪，
-    // 按查询的月份范围跨了几个月来乘算，不需要遍历记录数据
+    // 注意：财务/IT后勤这部分成本压根不来自 CollaborationTracking，是固定月薪，按查询的月份
+    // 范围跨了几个月来乘算；法务这部分是管理层每月手动录入的实际值，逐月查 Payslip 表求和，
+    // 两种角色的取数方式不一样，不能用同一套乘法逻辑。
 
     public DashboardDrilldownResponse drilldownOtherStaffCost(String startMonth, String endMonth, String currency) {
         BigDecimal rate = rateForRange(endMonth);
@@ -168,6 +225,16 @@ public class DashboardStatsService {
                     .dimensionType("role_name")
                     .videoCount(1L) // 这里借用这个字段表示"人数"，一条记录=一个人
                     .amount(convertFromRmb(amountRmb, rate, toRmb))
+                    .build());
+        }
+        for (Map.Entry<Long, BigDecimal> entry : legalStaffCostRmbByEmployee(startMonth, endMonth).entrySet()) {
+            if (entry.getValue().compareTo(BigDecimal.ZERO) == 0) continue;
+            Employee e = employeeCache.findById(entry.getKey());
+            rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
+                    .dimensionLabel("法务 - " + (e != null ? e.getName() : "未知法务"))
+                    .dimensionType("role_name")
+                    .videoCount(1L)
+                    .amount(convertFromRmb(entry.getValue(), rate, toRmb))
                     .build());
         }
         rows.sort((a, b) -> b.getAmount().compareTo(a.getAmount()));
