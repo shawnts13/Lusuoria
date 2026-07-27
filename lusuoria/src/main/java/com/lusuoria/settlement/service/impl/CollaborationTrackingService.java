@@ -844,7 +844,12 @@ public class CollaborationTrackingService {
         String monthLabel = Integer.parseInt(month.substring(4)) + "月";
 
         List<CollaborationTracking> costedAllTypes = trackingRepo.findCostedOrdersForExecutorAndManager(
-                executor.getId(), t.getProjectManagerId(), month);
+                executor.getId(), t.getProjectManagerId(), month).stream()
+                // 重新设置已经设置过的记录时，这条记录自己也会落在"已赋值成本"的查询结果里——
+                // 必须把它自己排除掉，当作"还没设置过"来算，不然笔数/位次/本月共N笔的统计
+                // 会把这一笔算两遍（用户反馈：改过一次后再点，笔数会多算1）
+                .filter(c -> !c.getId().equals(t.getId()))
+                .collect(Collectors.toList());
 
         // 关键业务规则（2026-07 改）：内部执行成本是不是按费率梯度算，取决于这条记录的项目
         // 负责人有没有在"执行人员管理"/"员工管理"给这个执行人员的这个具体视频类型配置过梯度——

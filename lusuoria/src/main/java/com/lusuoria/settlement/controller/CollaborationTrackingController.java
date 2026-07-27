@@ -17,6 +17,7 @@ import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.excel.CollaborationTrackingExcelHandler;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
+import com.lusuoria.settlement.repository.ExecutorPayRateTierRepository;
 import com.lusuoria.settlement.repository.ImportBatchRepository;
 import com.lusuoria.settlement.repository.PendingApprovalRepository;
 import com.lusuoria.settlement.service.impl.CollaborationTrackingService;
@@ -58,6 +59,7 @@ public class CollaborationTrackingController {
     @Autowired private ImportBatchRepository importBatchRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private PendingApprovalRepository pendingApprovalRepo;
+    @Autowired private ExecutorPayRateTierRepository executorPayRateTierRepo;
     @Autowired private ProjectFieldVisibility fieldVisibility;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
@@ -121,9 +123,27 @@ public class CollaborationTrackingController {
                 PendingApprovalModule.COLLABORATION_TRACKING, PendingApprovalCategory.DELETE_REQUEST));
         Set<Long> pendingRollbackIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(
                 PendingApprovalModule.COLLABORATION_TRACKING, PendingApprovalCategory.PROGRESS_ROLLBACK));
+
+        // 批量标记"该记录的项目负责人是否已经为这个执行人员+这个视频类型配置过费率梯度"，
+        // 避免逐行查库（2026-07 新增，供前端决定"设置执行成本"按钮显示/隐藏）
+        Set<Long> managerIds = new HashSet<>();
+        for (CollaborationTracking t : result) {
+            if (t.getProjectManagerId() != null) managerIds.add(t.getProjectManagerId());
+        }
+        Set<String> configuredRateKeys = new HashSet<>();
+        if (!managerIds.isEmpty()) {
+            for (com.lusuoria.settlement.entity.ExecutorPayRateTier tier
+                    : executorPayRateTierRepo.findByManagerIdInAndIsDeletedFalse(managerIds)) {
+                configuredRateKeys.add(tier.getManagerId() + "|" + tier.getExecutorId() + "|" + tier.getVideoType());
+            }
+        }
+
         result.forEach(t -> {
             t.setHasPendingDeleteRequest(pendingDeleteIds.contains(t.getId()));
             t.setHasPendingRollbackRequest(pendingRollbackIds.contains(t.getId()));
+            boolean rateConfigured = t.getProjectManagerId() != null && t.getExecutorId() != null && t.getVideoType() != null
+                    && configuredRateKeys.contains(t.getProjectManagerId() + "|" + t.getExecutorId() + "|" + t.getVideoType());
+            t.setHasExecutorPayRateConfigured(rateConfigured);
         });
 
         // 字段级可见性统一走 ProjectFieldVisibility：FULL（ADMIN/管理层/财务/AUDITOR）看全部，
