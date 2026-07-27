@@ -71,7 +71,6 @@ public class InfluencerTeamController {
         team.setName(name);
         team.setBrandId(req.getBrandId());
         team.setForcePerRequirementContract(Boolean.TRUE.equals(req.getForcePerRequirementContract()));
-        team.setDefaultContractStartDate(req.getDefaultContractStartDate());
         team.setDefaultContractEndDate(req.getDefaultContractEndDate());
         InfluencerTeam saved = teamRepo.save(team);
         teamCache.refresh();

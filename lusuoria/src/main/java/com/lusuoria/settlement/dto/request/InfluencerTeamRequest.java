@@ -19,7 +19,6 @@ public class InfluencerTeamRequest {
     /** 特殊：品牌方是"一年签一次合同"时，这个团队单独覆盖成"一次需求签一次合同" */
     private Boolean forcePerRequirementContract;
 
-    /** 兜底默认合同有效期（品牌方是"一年签一次合同"时才有意义） */
-    private Date defaultContractStartDate;
+    /** 兜底默认合同到期日期（品牌方是"一年签一次合同"时才有意义） */
     private Date defaultContractEndDate;
 }

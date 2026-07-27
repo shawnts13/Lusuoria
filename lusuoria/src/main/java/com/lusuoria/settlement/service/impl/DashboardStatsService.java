@@ -9,6 +9,7 @@ import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.InfluencerTeam;
+import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -63,8 +64,8 @@ public class DashboardStatsService {
         ExchangeRateInfo rateInfo = exchangeRateService.getRateForMonth(yearMonth);
         BigDecimal rate = rateInfo.getUsdToCny();
 
-        // "视频项目数量"及本月汇总数据，统一按"发布时间"取
-        List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
+        // "视频项目数量"及本月汇总数据，统一按"发布时间"取；"折损"的记录不计入看板任何数据
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         long videoCount = orders.size();
 
         BigDecimal totalClientPrice = BigDecimal.ZERO;
@@ -174,7 +175,7 @@ public class DashboardStatsService {
     // ============ 下钻：视频项目数量（按品牌方 + 红人类型） ============
 
     public DashboardDrilldownResponse drilldownVideoCount(String startMonth, String endMonth, String dimension) {
-        List<CollaborationTracking> orders = trackingRepo.findByPublishMonthBetween(startMonth, endMonth);
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
 
         Map<String, Long> grouped = new LinkedHashMap<>();
         String dimensionType;
@@ -262,7 +263,7 @@ public class DashboardStatsService {
 
     public DashboardDrilldownResponse drilldownExecutionCost(String startMonth, String endMonth,
                                                               String currency, String dimension) {
-        List<CollaborationTracking> orders = trackingRepo.findByPublishMonthBetween(startMonth, endMonth);
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
         BigDecimal rate = rateForRange(endMonth);
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
@@ -323,7 +324,7 @@ public class DashboardStatsService {
      * managerNameOf() 用姓名字符串分组，不跟这里共用。
      */
     public DashboardDrilldownResponse drilldownCommission(String startMonth, String endMonth, String currency) {
-        List<CollaborationTracking> orders = trackingRepo.findByPublishMonthBetween(startMonth, endMonth);
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
         BigDecimal rate = rateForRange(endMonth);
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
@@ -371,7 +372,7 @@ public class DashboardStatsService {
             String startMonth, String endMonth, String currency, String dimension,
             java.util.function.Function<Computed, BigDecimal> extractor) {
 
-        List<CollaborationTracking> orders = trackingRepo.findByPublishMonthBetween(startMonth, endMonth);
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
         BigDecimal rate = rateForRange(endMonth);
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
@@ -538,5 +539,18 @@ public class DashboardStatsService {
 
     BigDecimal safe(BigDecimal v) {
         return v == null ? BigDecimal.ZERO : v;
+    }
+
+    /**
+     * 数据看板统计口径统一排除"折损"（DELAYED）的记录：折损代表这笔视频项目因异常原因终止，
+     * 不是真实发生的业务，客户合作价格/红人成本/项目毛利/内部执行成本/负责人提成/公司利润
+     * 这些看板数字（含顶部汇总和所有下钻明细）都不应该把这些记录算进去。findByPublishMonth(Between)
+     * 这两个仓储方法本身是通用查询（工资单等其他模块也在用同一套"当月未删除记录"语义，仓储层
+     * 不能加这个过滤），所以统一在看板服务这一层过滤，取数后立即调用，不要漏了某个下钻口径。
+     */
+    private List<CollaborationTracking> excludeDamaged(List<CollaborationTracking> orders) {
+        return orders.stream()
+                .filter(o -> o.getProgress() != CollaborationProgress.DELAYED)
+                .collect(Collectors.toList());
     }
 }
