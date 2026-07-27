@@ -214,10 +214,12 @@ public class CollaborationTrackingController {
             result = result.map(t -> applyFieldVisibility(t, ctx));
         }
 
-        Object[] sums = trackingRepo.sumByInfluencerAndCompletionStatus(influencerId, completed);
+        List<Object[]> sumRows = trackingRepo.sumByInfluencerAndCompletionStatus(influencerId, completed);
+        Object[] sums = !sumRows.isEmpty() ? sumRows.get(0)
+                : new Object[]{0L, java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO};
         InfluencerCollaborationPageResponse resp = new InfluencerCollaborationPageResponse();
         resp.setPage(result);
-        resp.setTotalCount((Long) sums[0]);
+        resp.setTotalCount(((Number) sums[0]).longValue());
         // GUEST 看不到"红人视频制作与发布成本"/"客户合作价格"这两个明细字段，汇总数字也不该露出来
         resp.setTotalInfluencerCost(canSeeBaseline ? (java.math.BigDecimal) sums[1] : null);
         resp.setTotalClientPrice(canSeeBaseline ? (java.math.BigDecimal) sums[2] : null);

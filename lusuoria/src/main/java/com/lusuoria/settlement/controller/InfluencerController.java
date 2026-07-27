@@ -58,10 +58,16 @@ public class InfluencerController {
      * 2026-07 新增默认排序规则：不管用户选的排序字段是什么，"合作中项目"有值的红人排最前，
      * 其次是"已完结项目"有值的，其余按用户选择的排序垫底——这个优先级没法用数据库分页直接
      * 表达（分页游标反映不了"是否有合作中/已完结项目"这种额外计算出来的属性，也不确定
-     * "在 ORDER BY 里塞相关子查询"在这套 Hibernate/Postgres 组合下是否被稳定支持），
-     * 所以按当前筛选条件把命中的红人整批取出来（复用导出功能同款的
-     * PageRequest.of(0, Integer.MAX_VALUE, sort) 写法），在内存里按这两级优先级重排后
-     * 再手动切出当前页——数据规模是"一个红人库"，不是海量数据表，这个代价可以接受。
+     * "在 ORDER BY 里塞相关子查询"在这套 Hibernate/Postgres 组合下是否被稳定支持）。
+     *
+     * 2026-07-28 性能重写：早期实现是按筛选条件把命中的红人整批查出"完整实体"
+     * （PageRequest.of(0, Integer.MAX_VALUE, sort)），导致每次翻页/筛选都把整张筛选结果集的
+     * 完整字段（含 notes/links 这类大字段）都拉一遍，是红人管理列表页载入变慢的根因。
+     * 现在改成：先只查 id（轻量投影，findIdsByFilters），用一条合并 SQL
+     * （countActiveAndCompletedByInfluencerIds）批量算出这批 id 里谁有合作中/已完结项目，
+     * 在内存里按这两级优先级对 id 重排、切出当前页，最后只对"这一页"的 id 才去查完整实体
+     * ——数据规模仍然是"一个红人库的 id 列表"，不是完整实体，代价可以接受；真正体积大的数据
+     * （完整实体）永远只查当前页这一小撮。
      */
     @GetMapping
     public ApiResponse<Page<Influencer>> list(
@@ -82,16 +88,21 @@ public class InfluencerController {
         Sort sort = sortDir.equalsIgnoreCase("desc")
                 ? Sort.by(Sort.Direction.DESC, sortBy)
                 : Sort.by(Sort.Direction.ASC,  sortBy);
-        PageRequest fetchAllPageable = PageRequest.of(0, Integer.MAX_VALUE, sort);
-        List<Influencer> allMatching = influencerRepo.findByFilters(
+        List<Long> allIds = influencerRepo.findIdsByFilters(
                 influencerType, platform, countryMarket, domain, brandId, teamId,
-                followerMin, followerMax, keyword, fetchAllPageable).getContent();
-        List<Influencer> sorted = reorderByProjectPriority(allMatching);
+                followerMin, followerMax, keyword, sort);
+        List<Long> sortedIds = reorderIdsByProjectPriority(allIds);
 
-        int total = sorted.size();
+        int total = sortedIds.size();
         int fromIndex = Math.min(page * size, total);
         int toIndex = Math.min(fromIndex + size, total);
-        List<Influencer> pageContent = sorted.subList(fromIndex, toIndex);
+        List<Long> pageIds = sortedIds.subList(fromIndex, toIndex);
+
+        List<Influencer> byId = influencerRepo.findAllById(pageIds);
+        Map<Long, Influencer> byIdMap = byId.stream()
+                .collect(Collectors.toMap(Influencer::getId, inf -> inf));
+        List<Influencer> pageContent = pageIds.stream()
+                .map(byIdMap::get).filter(java.util.Objects::nonNull).collect(Collectors.toList());
         attachBrandTeamPairs(pageContent);
         Page<Influencer> result = new org.springframework.data.domain.PageImpl<Influencer>(
                 pageContent, PageRequest.of(page, size, sort), total);
@@ -102,15 +113,17 @@ public class InfluencerController {
     }
 
     /** "合作中项目"有值的排最前，其次"已完结项目"有值的，其余保持原有相对顺序（稳定排序） */
-    private List<Influencer> reorderByProjectPriority(List<Influencer> list) {
-        if (list.isEmpty()) return list;
-        List<Long> ids = list.stream().map(Influencer::getId).collect(Collectors.toList());
+    private List<Long> reorderIdsByProjectPriority(List<Long> ids) {
+        if (ids.isEmpty()) return ids;
         Set<Long> activeIds = new HashSet<Long>();
-        trackingRepo.countActiveByInfluencerIds(ids).forEach(row -> activeIds.add((Long) row[0]));
         Set<Long> completedIds = new HashSet<Long>();
-        trackingRepo.countCompletedByInfluencerIds(ids).forEach(row -> completedIds.add((Long) row[0]));
-        return list.stream()
-                .sorted(Comparator.comparingInt(inf -> projectPriority(inf.getId(), activeIds, completedIds)))
+        trackingRepo.countActiveAndCompletedByInfluencerIds(ids).forEach(row -> {
+            Long influencerId = (Long) row[0];
+            if (((Number) row[1]).longValue() > 0) activeIds.add(influencerId);
+            if (((Number) row[2]).longValue() > 0) completedIds.add(influencerId);
+        });
+        return ids.stream()
+                .sorted(Comparator.comparingInt(id -> projectPriority(id, activeIds, completedIds)))
                 .collect(Collectors.toList());
     }
 
@@ -181,10 +194,11 @@ public class InfluencerController {
     public ApiResponse<Map<Long, ProjectCountResponse>> projectCounts(@RequestBody List<Long> influencerIds) {
         Map<Long, ProjectCountResponse> result = new java.util.LinkedHashMap<Long, ProjectCountResponse>();
         for (Long id : influencerIds) result.put(id, new ProjectCountResponse(0L, 0L));
-        trackingRepo.countActiveByInfluencerIds(influencerIds)
-                .forEach(row -> result.get((Long) row[0]).setActiveCount((Long) row[1]));
-        trackingRepo.countCompletedByInfluencerIds(influencerIds)
-                .forEach(row -> result.get((Long) row[0]).setCompletedCount((Long) row[1]));
+        trackingRepo.countActiveAndCompletedByInfluencerIds(influencerIds).forEach(row -> {
+            ProjectCountResponse r = result.get((Long) row[0]);
+            r.setActiveCount(((Number) row[1]).longValue());
+            r.setCompletedCount(((Number) row[2]).longValue());
+        });
         return ApiResponse.success(result);
     }
 

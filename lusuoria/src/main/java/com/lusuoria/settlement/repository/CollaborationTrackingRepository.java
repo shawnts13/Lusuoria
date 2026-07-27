@@ -162,26 +162,24 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     List<CollaborationTracking> findByIsDeletedFalse();
 
     /**
-     * 红人管理"合作中项目"（2026-07 由"合作项目"改名+改口径）统计用：按红人 id 分组统计
-     * 视频项目进度不是"客户已结算"也不是"折损"（这两个是终态）的跟踪记录数量。
+     * 红人管理"合作中项目"（进度不是"客户已结算"也不是"折损"）+ "已完结项目"（进度="客户已结算"）
+     * 各自数量，按红人 id 分组。2026-07 起合并成一条 SQL（之前是两条独立的 COUNT 查询，各自
+     * 扫一遍 CollaborationTracking 表），用 SUM(CASE WHEN ... THEN 1 ELSE 0 END) 一次算出两个
+     * 口径的计数，减少一半的数据库往返——这个查询会被红人管理列表页的批量计数、以及默认排序
+     * （"合作中项目有值的排最前"）复用，后者是每次翻页/筛选都会跑一次的高频路径，值得省这一趟。
+     * 返回：[influencerId, activeCount, completedCount]，每个数字类型统一按 Number 处理再转
+     * long——不同 Hibernate 版本/方言对 SUM(CASE WHEN...) 这种聚合表达式返回的具体包装类型
+     * （Long/BigInteger）不完全一致，直接强转 Long 有把握不住的风险。
      */
-    @Query("SELECT c.influencerId, COUNT(c) FROM CollaborationTracking c " +
+    @Query("SELECT c.influencerId, " +
+           "SUM(CASE WHEN c.progress IS NULL OR c.progress NOT IN (" +
+           "  com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+           "  com.lusuoria.settlement.enums.CollaborationProgress.DELAYED) THEN 1L ELSE 0L END), " +
+           "SUM(CASE WHEN c.progress = com.lusuoria.settlement.enums.CollaborationProgress.SETTLED THEN 1L ELSE 0L END) " +
+           "FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false AND c.influencerId IN :influencerIds " +
-           "AND (c.progress IS NULL OR c.progress NOT IN (" +
-           "     com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
-           "     com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)) " +
            "GROUP BY c.influencerId")
-    List<Object[]> countActiveByInfluencerIds(@Param("influencerIds") List<Long> influencerIds);
-
-    /**
-     * 红人管理"已完结项目"（2026-07 由"合作案例"改名+改口径）统计用：按红人 id 分组统计
-     * 视频项目进度="客户已结算"的跟踪记录数量（不含"折损"）。
-     */
-    @Query("SELECT c.influencerId, COUNT(c) FROM CollaborationTracking c " +
-           "WHERE c.isDeleted = false AND c.influencerId IN :influencerIds " +
-           "AND c.progress = com.lusuoria.settlement.enums.CollaborationProgress.SETTLED " +
-           "GROUP BY c.influencerId")
-    List<Object[]> countCompletedByInfluencerIds(@Param("influencerIds") List<Long> influencerIds);
+    List<Object[]> countActiveAndCompletedByInfluencerIds(@Param("influencerIds") List<Long> influencerIds);
 
     /**
      * 红人管理"合作中项目/已完结项目"下钻弹窗用：某个红人 + 类别（completed=true 只看"客户
@@ -200,6 +198,13 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     /**
      * 同上筛选条件，取"红人视频制作与发布成本"+"客户合作价格"合计（供弹窗汇总行用，
      * 汇总要覆盖全部命中记录，不能只按当前这一页现算）。
+     *
+     * 返回类型必须是 List<Object[]>，不能直接声明成 Object[]：这是之前踩过的坑——
+     * Spring Data JPA 对着一条"多列 SELECT、无 GROUP BY"的聚合查询，返回值实际上是
+     * "一行结果的 List"，里面每个元素才是那一整行的 Object[] 元组；如果方法签名直接写
+     * Object[]，实际拿到的对象在运行时是 List（或被再包一层 Object[]），
+     * 强转 (Long) 到内层字段时会报 "[Ljava.lang.Object; cannot be cast to java.lang.Long"
+     * ——跟本仓库其它同类聚合查询（countActiveAndCompletedByInfluencerIds 等）保持一致写法。
      */
     @Query("SELECT COUNT(c), COALESCE(SUM(c.influencerCost), 0), COALESCE(SUM(c.clientPrice), 0) " +
            "FROM CollaborationTracking c WHERE c.isDeleted = false AND c.influencerId = :influencerId AND (" +
@@ -207,7 +212,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "  OR (:completed = false AND (c.progress IS NULL OR c.progress NOT IN (" +
            "        com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
            "        com.lusuoria.settlement.enums.CollaborationProgress.DELAYED))))")
-    Object[] sumByInfluencerAndCompletionStatus(
+    List<Object[]> sumByInfluencerAndCompletionStatus(
             @Param("influencerId") Long influencerId, @Param("completed") boolean completed);
 
     // ===== 以下方法 2026-07 从 ProjectOrderRepository 迁移过来（"项目订单"模块已废弃），
