@@ -192,8 +192,12 @@ public class PayslipService {
      * 那部分，不受其他项目负责人是否确认影响。但"这个执行人员的工资单是不是这个月的最终版"
      * 是另一件事：只有当【所有】涉及的项目负责人都各自确认过后，才是最终版；只要还有人没确认，
      * 哪怕管理层自己已经确认了，也仍然是非最终版——所以最终确认这个动作本身要等所有人确认完。
-     * allConfirmed=false 时 anyConfirmed 标注是不是至少有一个（但不是全部）已确认，
-     * 供前端展示"待其他项目负责人确认"这个中间状态用。
+     *
+     * selfConfirmed 专门标注"管理层自己那部分"是否已确认（2026-07-28 新增，视角是这张主表格
+     * 唯一的观众——管理层）：如果管理层这个月不是这个执行人员的相关项目负责人之一，则视为
+     * "没有自己的那一份"，selfConfirmed 恒为 false（这种情况下前端只会在"预计"和"已确认"之间
+     * 切换，不会出现"待其他项目负责人确认"这个中间态——管理层在这个执行人员身上本来就没有
+     * 能做的动作，中间态没有意义）。
      */
     private ExecutorPmConfirmStatus resolveExecutorPmConfirmStatus(Long executorId, String yearMonth) {
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
@@ -204,28 +208,30 @@ public class PayslipService {
             }
         }
         if (pmIds.isEmpty()) return new ExecutorPmConfirmStatus(true, false, null);
+        Set<Long> managementIds = employeeRepo.findByRoleAndIsDeletedFalse("管理层").stream()
+                .map(Employee::getId).collect(Collectors.toSet());
         Map<Long, Map<Long, ExecutorWageConfirmation>> confirmations = fetchWageConfirmations(yearMonth);
         List<String> unconfirmedNames = new ArrayList<>();
-        int confirmedCount = 0;
+        boolean selfConfirmed = false;
         for (Long pmId : pmIds) {
             ExecutorWageConfirmation c = confirmations.getOrDefault(pmId, Collections.emptyMap()).get(executorId);
-            if (c != null && Boolean.TRUE.equals(c.getConfirmed())) {
-                confirmedCount++;
+            boolean confirmed = c != null && Boolean.TRUE.equals(c.getConfirmed());
+            if (confirmed) {
+                if (managementIds.contains(pmId)) selfConfirmed = true;
             } else {
                 unconfirmedNames.add(employeeNameOf(pmId));
             }
         }
         boolean allConfirmed = unconfirmedNames.isEmpty();
-        boolean anyConfirmed = confirmedCount > 0;
         String blockedReason = allConfirmed ? null
                 : "以下项目负责人还没确认这个执行人员的工资，无法进行最终确认：" + String.join("、", unconfirmedNames);
-        return new ExecutorPmConfirmStatus(allConfirmed, anyConfirmed, blockedReason);
+        return new ExecutorPmConfirmStatus(allConfirmed, selfConfirmed, blockedReason);
     }
 
     @lombok.Value
     private static class ExecutorPmConfirmStatus {
         boolean allConfirmed;
-        boolean anyConfirmed;
+        boolean selfConfirmed;
         String blockedReason;
     }
 
@@ -1078,7 +1084,7 @@ public class PayslipService {
         } else if ("执行人员".equals(emp.getRole()) && !Boolean.TRUE.equals(d.getConfirmed())) {
             ExecutorPmConfirmStatus status = resolveExecutorPmConfirmStatus(emp.getId(), yearMonth);
             blockedReason = status.getBlockedReason();
-            awaitingOtherManagers = status.isAnyConfirmed() && !status.isAllConfirmed();
+            awaitingOtherManagers = status.isSelfConfirmed() && !status.isAllConfirmed();
         } else {
             blockedReason = null;
         }
