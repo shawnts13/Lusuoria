@@ -478,14 +478,39 @@ public class CollaborationTrackingService {
         boolean isOwnExecutor = fvCtx.employeeId != null && tracking.getExecutor() != null
                 && fvCtx.employeeId.equals(tracking.getExecutor().getId());
 
-        // 提成比例：换了新的项目负责人、且请求体没带提成比例时，自动带入该负责人的默认提成比例
-        if (req.getProjectManagerId() != null && req.getCommissionRate() == null && fvCtx.isFull()) {
-            Employee manager = employeeCache.findById(req.getProjectManagerId());
-            if (manager != null && manager.getDefaultCommissionRate() != null) {
-                tracking.setCommissionRate(manager.getDefaultCommissionRate());
+        // 提成比例：2026-07 起不再受字段可见性档位（fvCtx.isFull()）限制——之前那样写，导致
+        // 项目负责人自己新建记录（fvCtx=PROJECT_MANAGER，不是 FULL）、以及异步Excel导入
+        // （后台线程丢失登录态，fvCtx 永远降级成最低档）这两种场景，提成比例永远填不进去、
+        // 一直是 null，是一个已确认的历史 bug（还有一种情况是"管理层"/"财务"这类 fvCtx=FULL
+        // 但前端字段对他们不可见的账号，表单会静默提交没被编辑过的默认值0，被当成"显式传了0"
+        // 直接落库，永久盖掉本该自动带入的默认值）。
+        //
+        // 新规则：
+        //   - 只要这条记录有项目负责人，提成比例就必须有值，不允许静默留空/留0——新建、或者
+        //     这次保存换了项目负责人时，自动同步这位负责人当前在"员工管理"配置的默认提成比例；
+        //     负责人还没配置默认提成比例时直接报错拒绝保存（前端会在提交前做同样的检查提前拦截，
+        //     这里是后端兜底，双重保险）。
+        //   - 项目负责人没变的情况下（普通编辑其他字段）不touch这个字段，不会覆盖已有值，
+        //     也不会尝试"顺便修一下"历史上已经错误的数据——已有的错误数据需要单独排查/修复，
+        //     不通过这里的编辑动作顺带静默改掉。
+        //   - 显式传入一个跟默认值不同的自定义提成比例，仍然只有 ADMIN 能做（RoleUtil.canEditCommission()，
+        //     语义跟前端"提成比例"字段只对 ADMIN 可见可编辑保持一致），不再用范围更宽、
+        //     会把"管理层"/"财务" STAFF 也算进去的 fvCtx.isFull()。
+        if (tracking.getProjectManager() != null
+                && (existingOrNull == null || !java.util.Objects.equals(oldProjectManagerId, req.getProjectManagerId()))) {
+            // 新建，或者这次保存换了项目负责人：不管请求里有没有带显式的提成比例，都先确认这位
+            // 负责人配置了默认提成比例——没配置就直接拒绝保存，避免碰巧把上一个负责人的提成比例
+            // 或者表单里没刷新的旧值当成这条记录的提成比例存下去
+            Employee manager = tracking.getProjectManager();
+            if (manager.getDefaultCommissionRate() == null) {
+                throw new RuntimeException("项目负责人\"" + manager.getName()
+                        + "\"还没有在\"员工管理\"配置默认提成比例，请先配置后再保存这条记录");
             }
-        }
-        if (req.getCommissionRate() != null && fvCtx.isFull()) {
+            java.math.BigDecimal explicit = (req.getCommissionRate() != null && RoleUtil.canEditCommission())
+                    ? req.getCommissionRate() : null;
+            tracking.setCommissionRate(explicit != null ? explicit : manager.getDefaultCommissionRate());
+        } else if (req.getCommissionRate() != null && RoleUtil.canEditCommission()) {
+            // 项目负责人没变：只有 ADMIN 手动改提成比例才生效，不做默认值校验/兜底
             tracking.setCommissionRate(req.getCommissionRate());
         }
 
