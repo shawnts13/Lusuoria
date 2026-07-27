@@ -7,6 +7,7 @@ import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
+import com.lusuoria.settlement.entity.InfluencerContract;
 import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.entity.ProgressReminder;
@@ -20,6 +21,7 @@ import com.lusuoria.settlement.enums.PaymentCycleType;
 import com.lusuoria.settlement.enums.ReminderCategory;
 import com.lusuoria.settlement.enums.ReminderUrgency;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
+import com.lusuoria.settlement.repository.InfluencerContractRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
 import com.lusuoria.settlement.repository.ProgressReminderDetailRepository;
@@ -72,7 +74,11 @@ public class ProgressReminderService {
 
     private static final String MANAGEMENT_ROLE = "管理层";
     private static final String FINANCE_ROLE = "财务";
+    /** 2026-07 新增：合同相关提醒（无论是不是自己名下的项目负责人/执行人员）法务全部可见 */
+    private static final String LEGAL_ROLE = "法务";
     private static final int[] CHECKPOINT_HOURS = {12, 18, 22};
+    /** 一年签一次合同：到期前多少天开始提醒 */
+    private static final int CONTRACT_EXPIRY_WINDOW_DAYS = 30;
     /** 品牌方月结回溯月份数的技术兜底（不是业务规则）：纯粹防止极端脏数据导致死循环 */
     private static final int MONTH_END_LOOKBACK_SAFETY_CAP = 36;
 
@@ -86,15 +92,24 @@ public class ProgressReminderService {
     /** "结款后更新提示内容"手动触发范围 */
     private static final Set<ReminderCategory> PAYMENT_CATEGORIES = EnumSet.of(
             ReminderCategory.COLLAB_PAYMENT_DUE, ReminderCategory.BRAND_MONTH_END_PAYMENT_DUE);
-    /** "项目流转后更新提示内容"手动触发范围（2026-07 新增） */
+    /** "项目流转后更新提示内容"手动触发范围（2026-07 新增，不含 CONTRACT_EXPIRING_SOON——
+     * 那一类是按日历/合同到期日驱动的，不是按"进度流转"驱动的，只在每天3点主批次里跑） */
     private static final Set<ReminderCategory> PROJECT_FLOW_CATEGORIES = EnumSet.of(
             ReminderCategory.PM_EXECUTOR_PROGRESS_STALL, ReminderCategory.FINANCE_PROGRESS_STALL,
             ReminderCategory.REQUIREMENT_INVOICE_OVERDUE, ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE);
+    /** 按具体项目负责人/涉及执行人员定向可见的类别（2026-07 新增 CONTRACT_EXPIRING_SOON） */
+    private static final Set<ReminderCategory> EMPLOYEE_OWNED_CATEGORIES = EnumSet.of(
+            ReminderCategory.PM_EXECUTOR_PROGRESS_STALL, ReminderCategory.REQUIREMENT_INVOICE_OVERDUE,
+            ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE, ReminderCategory.CONTRACT_EXPIRING_SOON);
+    /** 合同相关提醒（法务全量可见，不按具体项目负责人过滤） */
+    private static final Set<ReminderCategory> CONTRACT_CATEGORIES = EnumSet.of(
+            ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE, ReminderCategory.CONTRACT_EXPIRING_SOON);
 
     @Autowired private ProgressReminderRepository reminderRepo;
     @Autowired private ProgressReminderDetailRepository detailRepo;
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private InfluencerRepository influencerRepo;
+    @Autowired private InfluencerContractRepository influencerContractRepo;
     @Autowired private InfluencerRequirementRepository requirementRepo;
     @Autowired private ReminderAcknowledgementRepository ackRepo;
     @Autowired private BrandCache brandCache;
@@ -121,6 +136,7 @@ public class ProgressReminderService {
             runFinanceProgressStall(today, batchDate);
             runRequirementInvoiceOverdue(today, batchDate);
             runRequirementContractOverdue(today, batchDate);
+            runContractExpiringSoon(today, batchDate);
         } catch (RuntimeException e) {
             // GlobalExceptionHandler 只会把异常包成 400 返回给前端，不会打印堆栈，
             // 排查问题时看不到具体原因，这里手动记一下，方便去 Render 日志里查
@@ -671,7 +687,156 @@ public class ProgressReminderService {
         }
     }
 
-    // ---- Part C/D/E/F 共用的小工具 ----
+    /**
+     * Part G（2026-07 新增）：品牌方/团队"一年签一次合同"场景下，合同即将到期/已过期的提醒。
+     * 候选范围按"当前存在合作关系"判断（不是按某次需求是否完结）——只要 (红人,品牌方,团队) 这个
+     * 组合下有任意一条未删除的合作跟踪记录，且这个组合的合同签订周期是"一年签一次"
+     * （InfluencerTeam.isPerRequirementContract 判定为 false），就纳入候选；不管底下有多少条
+     * 视频/跟踪记录，只按这个组合整体判断一次、生成一条提醒明细（去重，不会同一红人在同一
+     * 团队下做过多条视频就重复提醒好几遍）。
+     *
+     * 到期日优先级：红人自己在这个(品牌方,团队)下"当前"的 InfluencerContract（同一红人同一
+     * 品牌方团队下可能有多条历史合同，取 endDate 最大的一条）> 团队的兜底默认有效期
+     * （InfluencerTeam.defaultContractEndDate）> 都没有则跳过（没数据没法判断）。
+     *
+     * 到期前30天开始提醒，复用 ReminderUrgency 这个枚举类型（跟"进度滞留-财务"一样，只是借用
+     * 类型和红/橙/绿三个颜色值，语义换成这里自定义的0/14/30天窗口，不是原来的0/3/7天）——
+     * 前端对 CONTRACT_EXPIRING_SOON 这个类别单独换了一套label/color映射（黄/橙/红），
+     * 见 ProgressReminderCardList.vue。
+     *
+     * 涉及的项目负责人各自一张卡（跟 Part E/F 一致），执行人员通过 involvedEmployeeIds 获得
+     * 可见性。这一类不支持"标记已处理"——InfluencerContract 不是 BaseEntity，没有 updatedAt，
+     * 没有可靠的"业务记录是否已经变化"时间戳可用，只在每天3点主批次里跑一次。
+     */
+    private void runContractExpiringSoon(LocalDate today, Date batchDate) {
+        List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
+
+        // 按 (红人,品牌方,团队) 三元组去重成候选合同关系（不看进度/是否完结）
+        Map<String, List<CollaborationTracking>> byTriple = new LinkedHashMap<>();
+        for (CollaborationTracking t : all) {
+            if (t.getInfluencerId() == null || t.getBrandId() == null) continue;
+            String key = t.getInfluencerId() + "|" + t.getBrandId() + "|" + (t.getTeamId() != null ? t.getTeamId() : -1L);
+            byTriple.computeIfAbsent(key, k -> new ArrayList<>()).add(t);
+        }
+        if (byTriple.isEmpty()) return;
+
+        // 批量查这批红人的全部合同，避免逐个组合查库；同一 (红人,品牌方,团队) 下可能有多条
+        // 历史合同，取 endDate 最大的一条作为"当前"合同
+        Set<Long> influencerIds = new HashSet<>();
+        for (List<CollaborationTracking> group : byTriple.values()) influencerIds.add(group.get(0).getInfluencerId());
+        Map<String, InfluencerContract> currentContractByTriple = new HashMap<>();
+        for (InfluencerContract c : influencerContractRepo.findByInfluencerIdIn(new ArrayList<>(influencerIds))) {
+            String key = c.getInfluencerId() + "|" + c.getBrandId() + "|" + (c.getTeamId() != null ? c.getTeamId() : -1L);
+            InfluencerContract existing = currentContractByTriple.get(key);
+            if (existing == null || c.getEndDate().after(existing.getEndDate())) {
+                currentContractByTriple.put(key, c);
+            }
+        }
+
+        Map<Long, String> accountNameById = buildAccountNameIndex(all);
+
+        Map<String, List<ProgressReminderDetail>> byKey = new LinkedHashMap<>();
+        Map<String, Long> pmIdByKey = new HashMap<>();
+        Map<String, ReminderUrgency> urgencyByKey = new HashMap<>();
+        Map<String, Set<Long>> involvedByKey = new HashMap<>();
+
+        for (Map.Entry<String, List<CollaborationTracking>> tripleEntry : byTriple.entrySet()) {
+            List<CollaborationTracking> group = tripleEntry.getValue();
+            CollaborationTracking sample = group.get(0);
+            Brand brand = brandCache.findById(sample.getBrandId());
+            InfluencerTeam team = sample.getTeamId() != null ? teamCache.findById(sample.getTeamId()) : null;
+            if (InfluencerTeam.isPerRequirementContract(brand, team)) continue; // 只处理"一年签一次"的组合
+
+            InfluencerContract individual = currentContractByTriple.get(tripleEntry.getKey());
+            Date endDate;
+            String sourceLabel;
+            if (individual != null) {
+                endDate = individual.getEndDate();
+                sourceLabel = "按红人个人合同判断";
+            } else if (team != null && team.getDefaultContractEndDate() != null) {
+                endDate = team.getDefaultContractEndDate();
+                sourceLabel = "按团队兜底默认有效期判断";
+            } else {
+                continue; // 没有任何数据来源，没法判断，跳过
+            }
+
+            long daysRemaining = ChronoUnit.DAYS.between(today, toLocalDate(endDate));
+            ReminderUrgency urgency = contractExpiryUrgency(daysRemaining);
+            if (urgency == null) continue;
+
+            Map<Long, Set<Long>> executorsByPm = new LinkedHashMap<>();
+            for (CollaborationTracking t : group) {
+                if (t.getProjectManagerId() == null) continue;
+                Set<Long> execs = executorsByPm.computeIfAbsent(t.getProjectManagerId(), k -> new LinkedHashSet<>());
+                if (t.getExecutorId() != null && !t.getExecutorId().equals(t.getProjectManagerId())) {
+                    execs.add(t.getExecutorId());
+                }
+            }
+            for (Map.Entry<Long, Set<Long>> pmEntry : executorsByPm.entrySet()) {
+                ProgressReminderDetail detail = new ProgressReminderDetail();
+                detail.setIsDeleted(false);
+                detail.setTrackingId(sample.getId());
+                detail.setBrandName(brand != null ? brand.getName() : null);
+                detail.setTeamName(team != null ? team.getName() : null);
+                detail.setAccountName(accountNameById.get(sample.getInfluencerId()));
+                detail.setDemandContent(sourceLabel);
+                detail.setCycleDays(CONTRACT_EXPIRY_WINDOW_DAYS);
+                detail.setDeadlineDate(endDate);
+                detail.setOverdueDays((int) Math.max(0, -daysRemaining));
+                // requirementId 这一列这类没有对应的"需求"，借用来存红人 id，供前端"查看详情"
+                // 直接跳转打开该红人的编辑弹窗（"已签署合同"区块），不是 REQUIREMENT_INVOICE_OVERDUE/
+                // REQUIREMENT_CONTRACT_OVERDUE 那种真正的需求 id
+                detail.setRequirementId(sample.getInfluencerId());
+
+                String key = pmEntry.getKey() + "|" + urgency.name();
+                byKey.computeIfAbsent(key, k -> new ArrayList<>()).add(detail);
+                pmIdByKey.put(key, pmEntry.getKey());
+                urgencyByKey.put(key, urgency);
+                if (!pmEntry.getValue().isEmpty()) {
+                    involvedByKey.computeIfAbsent(key, k -> new LinkedHashSet<>()).addAll(pmEntry.getValue());
+                }
+            }
+        }
+
+        for (Map.Entry<String, List<ProgressReminderDetail>> entry : byKey.entrySet()) {
+            String key = entry.getKey();
+            saveContractExpiryReminder(batchDate, pmIdByKey.get(key), urgencyByKey.get(key),
+                    entry.getValue(), involvedByKey.get(key));
+        }
+    }
+
+    /** 到期前30天开始提醒：0天或已过期=OVERDUE，1-14天=NEAR，15-30天=UPCOMING（借用
+     * ReminderUrgency 类型，语义/窗口不是原来的0/3/7天，前端按类别单独映射颜色/文案） */
+    private ReminderUrgency contractExpiryUrgency(long daysRemaining) {
+        if (daysRemaining > CONTRACT_EXPIRY_WINDOW_DAYS) return null;
+        if (daysRemaining <= 0) return ReminderUrgency.OVERDUE;
+        if (daysRemaining <= 14) return ReminderUrgency.NEAR;
+        return ReminderUrgency.UPCOMING;
+    }
+
+    private void saveContractExpiryReminder(Date batchDate, Long audienceEmployeeId, ReminderUrgency urgency,
+                                              List<ProgressReminderDetail> details, Set<Long> involvedExecutorIds) {
+        ProgressReminder reminder = new ProgressReminder();
+        reminder.setIsDeleted(false);
+        reminder.setBatchDate(batchDate);
+        reminder.setCategory(ReminderCategory.CONTRACT_EXPIRING_SOON);
+        reminder.setUrgency(urgency);
+        reminder.setAudienceEmployeeRole("项目负责人");
+        reminder.setAudienceEmployeeId(audienceEmployeeId);
+        if (involvedExecutorIds != null && !involvedExecutorIds.isEmpty()) {
+            reminder.setInvolvedEmployeeIds(involvedExecutorIds.stream()
+                    .map(String::valueOf).collect(Collectors.joining("\n")));
+        }
+        reminder.setCount(details.size());
+        Employee emp = audienceEmployeeId != null ? employeeCache.findById(audienceEmployeeId) : null;
+        String empName = emp != null ? emp.getName() : ("员工#" + audienceEmployeeId);
+        reminder.setTitle("项目负责人-" + empName + "-手下的" + details.size() + "个红人合作，合同签订周期即将到期或已到期，请跟进续签");
+        reminder = reminderRepo.save(reminder);
+        for (ProgressReminderDetail d : details) d.setReminderId(reminder.getId());
+        detailRepo.saveAll(details);
+    }
+
+    // ---- Part C/D/E/F/G 共用的小工具 ----
 
     private Map<Long, String> buildAccountNameIndex(List<CollaborationTracking> list) {
         Set<Long> influencerIds = new HashSet<>();
@@ -805,9 +970,6 @@ public class ProgressReminderService {
         return r.getUrgency() != null ? r.getUrgency().ordinal() : 0;
     }
 
-    private static final Set<ReminderCategory> EMPLOYEE_OWNED_CATEGORIES = PROJECT_FLOW_CATEGORIES.stream()
-            .filter(c -> c != ReminderCategory.FINANCE_PROGRESS_STALL).collect(Collectors.toSet());
-
     private List<ProgressReminder> resolveVisibleReminders() {
         if (hasFullReminderVisibility()) {
             return new ArrayList<>(reminderRepo.findAllByIsDeletedFalse());
@@ -816,6 +978,11 @@ public class ProgressReminderService {
         String employeeRole = employeeRoleUtil.getCurrentEmployeeRole();
         if (FINANCE_ROLE.equals(employeeRole)) {
             result.addAll(reminderRepo.findByAudienceEmployeeRole(FINANCE_ROLE));
+        }
+        // 2026-07 新增：法务全量可见合同相关提醒（合同上传逾期 + 合同即将到期），不按具体
+        // 项目负责人/是否涉及执行人员过滤——这两类跟法务的职责直接相关，不是"顺带看到"
+        if (LEGAL_ROLE.equals(employeeRole)) {
+            result.addAll(reminderRepo.findByCategoryIn(CONTRACT_CATEGORIES));
         }
         Long employeeId = employeeRoleUtil.getCurrentEmployeeId();
         if (employeeId != null) {
@@ -835,6 +1002,16 @@ public class ProgressReminderService {
     }
 
     /**
+     * 某个类别的"全量可见"判定（2026-07 泛化）：ADMIN/管理层对所有类别都是全量可见；
+     * 法务对合同相关这两类（CONTRACT_CATEGORIES）也是全量可见，不按具体项目负责人/是否
+     * 涉及执行人员过滤——法务不是"顺带看到"，是这两类提醒本来就该完整给他们看。
+     */
+    private boolean hasFullVisibilityFor(ReminderCategory category) {
+        if (hasFullReminderVisibility()) return true;
+        return CONTRACT_CATEGORIES.contains(category) && LEGAL_ROLE.equals(employeeRoleUtil.getCurrentEmployeeRole());
+    }
+
+    /**
      * 某条提醒的明细，按离最迟结款日的接近程度/超期天数排序（两种排序方向巧合共用同一列）。
      * 如果当前登录人不是这条卡片的项目负责人本人（而是作为"涉及的执行人员"看到这张卡片），
      * 明细会额外按自己实际执行的那部分过滤——卡片本身不拆分，但执行人员点进去只看自己相关的。
@@ -846,7 +1023,7 @@ public class ProgressReminderService {
             return Collections.emptyList();
         }
         List<ProgressReminderDetail> details = detailRepo.findByReminderIdOrderByDeadlineDateAsc(reminderId);
-        if (!hasFullReminderVisibility()) {
+        if (!hasFullVisibilityFor(reminder.getCategory())) {
             if (ACKNOWLEDGEABLE_CATEGORIES.contains(reminder.getCategory())) {
                 details = filterAcknowledged(reminder.getCategory(), details);
             }
@@ -878,6 +1055,28 @@ public class ProgressReminderService {
                 List<CollaborationTracking> linked =
                         trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(d.getInternalRequirementNo());
                 return linked.stream().anyMatch(t -> employeeId.equals(t.getExecutorId()));
+            }).collect(Collectors.toList());
+        }
+
+        // CONTRACT_EXPIRING_SOON：trackingId 只是这个 (红人,品牌方,团队) 组合下随便挑的一条
+        // 占位记录（见 runContractExpiringSoon），不能只看这一条的执行人员是不是我——要把这条
+        // 占位记录还原成完整的 (红人,品牌方,团队) 三元组，再看这个组合下所有未删除的合作跟踪
+        // 记录里有没有我作为执行人员的（只要有一条就算，因为这条提醒本身是按这个组合整体展示的）
+        if (category == ReminderCategory.CONTRACT_EXPIRING_SOON) {
+            List<Long> sampleIds = details.stream().map(ProgressReminderDetail::getTrackingId)
+                    .filter(Objects::nonNull).distinct().collect(Collectors.toList());
+            if (sampleIds.isEmpty()) return Collections.emptyList();
+            Map<Long, CollaborationTracking> sampleById = new HashMap<>();
+            for (CollaborationTracking t : trackingRepo.findAllById(sampleIds)) sampleById.put(t.getId(), t);
+            List<CollaborationTracking> allActive = trackingRepo.findByIsDeletedFalse();
+            return details.stream().filter(d -> {
+                CollaborationTracking sample = sampleById.get(d.getTrackingId());
+                if (sample == null) return false;
+                return allActive.stream()
+                        .anyMatch(t -> Objects.equals(t.getInfluencerId(), sample.getInfluencerId())
+                                && Objects.equals(t.getBrandId(), sample.getBrandId())
+                                && Objects.equals(t.getTeamId(), sample.getTeamId())
+                                && employeeId.equals(t.getExecutorId()));
             }).collect(Collectors.toList());
         }
 
@@ -971,7 +1170,7 @@ public class ProgressReminderService {
     }
 
     private boolean canViewReminder(ProgressReminder r) {
-        if (hasFullReminderVisibility()) return true;
+        if (hasFullVisibilityFor(r.getCategory())) return true;
         if (r.getAudienceEmployeeId() != null) {
             Long empId = employeeRoleUtil.getCurrentEmployeeId();
             if (empId == null) return false;
