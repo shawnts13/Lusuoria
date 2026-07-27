@@ -9,6 +9,7 @@ import com.lusuoria.settlement.dto.response.ExecutorCostSuggestionResponse;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
+import com.lusuoria.settlement.entity.ExchangeRateCache;
 import com.lusuoria.settlement.entity.ExecutorPayRateTier;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.PendingApproval;
@@ -17,6 +18,7 @@ import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
+import com.lusuoria.settlement.repository.ExchangeRateCacheRepository;
 import com.lusuoria.settlement.repository.ExecutorPayRateTierRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
@@ -81,6 +83,7 @@ public class CollaborationTrackingService {
     @Autowired private InfluencerRequirementService requirementService;
     @Autowired private com.lusuoria.settlement.util.EmployeeRoleUtil employeeRoleUtil;
     @Autowired private ExecutorPayRateTierRepository executorPayRateTierRepo;
+    @Autowired private ExchangeRateCacheRepository exchangeRateCacheRepo;
 
     /** 自定义异常：去重命中 */
     public static class DuplicateTrackingException extends RuntimeException {
@@ -1036,16 +1039,50 @@ public class CollaborationTrackingService {
      * 存好的毛利等字段就不会跟着更新，直到这条记录下次被保存。这个方法就是用来处理这种
      * "数据库改了原始值、但没走保存流程"之后的手动补算，仅 ADMIN 可调用。
      *
-     * @return 实际处理的记录数
+     * 2026-07 新增：顺带修复汇率缺失/异常（null 或 ≤0，汇率不可能合法地是0）的记录——这类
+     * 记录大多是因为"汇率维护"保存某个月份汇率的时候，这条记录还没有发布时间（发布时间是
+     * 后补的），当时没被那次批量覆盖覆盖到（见 ExchangeRateService.saveRate()，那个方法只
+     * 覆盖"当时"已经落在这个月的记录）。这里按记录自己的发布时间反查"汇率维护"里对应月份
+     * 是否已经配置了汇率，配置了就直接回填；发布时间为空、或者对应月份汇率压根没配置过，
+     * 没法自动判断该用哪个汇率，跳过不动，计入"仍然缺失"数量里，由调用方决定要不要提示。
+     *
+     * @return 一句人类可读的处理结果摘要，包含处理总数、自动补上汇率的条数、仍然缺失的条数
      */
     @Transactional
-    public int recomputeAllProfits() {
+    public String recomputeAllProfits() {
         List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
+        SimpleDateFormat monthFormat = new SimpleDateFormat("yyyyMM");
+        int fixedExchangeRateCount = 0;
+        int stillMissingExchangeRateCount = 0;
         for (CollaborationTracking t : all) {
+            boolean rateInvalid = t.getExchangeRate() == null
+                    || t.getExchangeRate().compareTo(java.math.BigDecimal.ZERO) <= 0;
+            if (rateInvalid) {
+                ExchangeRateCache cache = t.getPublishDate() != null
+                        ? exchangeRateCacheRepo.findByYearMonth(monthFormat.format(t.getPublishDate())).orElse(null)
+                        : null;
+                if (cache != null && cache.getUsdToCny() != null
+                        && cache.getUsdToCny().compareTo(java.math.BigDecimal.ZERO) > 0) {
+                    t.setExchangeRate(cache.getUsdToCny());
+                    fixedExchangeRateCount++;
+                } else {
+                    stillMissingExchangeRateCount++;
+                }
+            }
             profitCalculator.calculate(t);
             trackingRepo.save(t);
         }
-        return all.size();
+
+        StringBuilder msg = new StringBuilder("已重新计算 " + all.size() + " 条记录");
+        if (fixedExchangeRateCount > 0) {
+            msg.append("，其中 ").append(fixedExchangeRateCount).append(" 条记录按发布时间所在月份自动补上了缺失/异常的汇率");
+        }
+        if (stillMissingExchangeRateCount > 0) {
+            msg.append("，另有 ").append(stillMissingExchangeRateCount)
+               .append(" 条记录汇率仍然缺失或异常（发布时间还没填写，或者对应月份还没在\"汇率维护\"配置汇率），"
+                       + "需要先补上发布时间/配置汇率后再重新计算一次");
+        }
+        return msg.toString();
     }
 
     private String emptyToNull(String s) {

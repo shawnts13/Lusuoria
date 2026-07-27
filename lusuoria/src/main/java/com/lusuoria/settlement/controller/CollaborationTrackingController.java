@@ -277,15 +277,15 @@ public class CollaborationTrackingController {
     }
 
     /**
-     * 批量重新计算所有记录的毛利/可分配利润/提成/公司利润（仅 ADMIN）。
-     * 用途见 CollaborationTrackingService.recomputeAllProfits() 的说明——主要是给"有人绕过
-     * 系统直接改了数据库里的红人成本/客户合作价格之类原始值"这种情况做善后。
+     * 批量重新计算所有记录的毛利/可分配利润/提成/公司利润，顺带修复汇率缺失/异常的记录
+     * （仅 ADMIN）。用途见 CollaborationTrackingService.recomputeAllProfits() 的说明——主要是
+     * 给"有人绕过系统直接改了数据库里的红人成本/客户合作价格之类原始值"、以及"记录的发布
+     * 时间是后补的、错过了汇率维护那次批量覆盖"这两种情况做善后。
      */
     @PostMapping("/recompute-profits")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<String> recomputeProfits() {
-        int count = trackingService.recomputeAllProfits();
-        return ApiResponse.success("已重新计算 " + count + " 条记录");
+        return ApiResponse.success(trackingService.recomputeAllProfits());
     }
 
     // ============ Excel ============
