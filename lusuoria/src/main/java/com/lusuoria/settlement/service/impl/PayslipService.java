@@ -9,12 +9,14 @@ import com.lusuoria.settlement.dto.response.PayslipRowResponse;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.CommissionBonusTier;
 import com.lusuoria.settlement.entity.Employee;
+import com.lusuoria.settlement.entity.ExecutorPayRateTier;
 import com.lusuoria.settlement.entity.ExecutorWageConfirmation;
 import com.lusuoria.settlement.entity.Payslip;
 import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.EmployeeRepository;
+import com.lusuoria.settlement.repository.ExecutorPayRateTierRepository;
 import com.lusuoria.settlement.repository.ExecutorWageConfirmationRepository;
 import com.lusuoria.settlement.repository.PayslipRepository;
 import com.lusuoria.settlement.util.EmployeeRoleUtil;
@@ -69,6 +71,7 @@ public class PayslipService {
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
     @Autowired private ObjectMapper objectMapper;
     @Autowired private ExecutorWageConfirmationRepository wageConfirmationRepo;
+    @Autowired private ExecutorPayRateTierRepository executorPayRateTierRepo;
 
     // ================= 对外主入口 =================
 
@@ -264,6 +267,7 @@ public class PayslipService {
             r.setExecutorId(executorId);
             r.setExecutorName(employeeNameOf(executorId));
         }
+        rows = withTierSummaries(managerId, executorId, rows);
 
         ExecutorWageConfirmation confirmation = wageConfirmationRepo
                 .findByManagerIdAndExecutorIdAndYearMonthAndIsDeletedFalse(managerId, executorId, yearMonth)
@@ -433,7 +437,7 @@ public class PayslipService {
                 byPmThenExec.getOrDefault(mgmt.getId(), Collections.emptyMap());
         Map<Long, ExecutorWageConfirmation> confirmationsForMgmt =
                 confirmationByManagerId.getOrDefault(mgmt.getId(), Collections.emptyMap());
-        ExecutorWageDetail ownWageDetail = buildExecutorWageRows(execOrdersUnderMgmt, confirmationsForMgmt);
+        ExecutorWageDetail ownWageDetail = buildExecutorWageRows(mgmt.getId(), execOrdersUnderMgmt, confirmationsForMgmt);
         boolean ownAllExecutorsConfirmed = !execOrdersUnderMgmt.isEmpty()
                 && execOrdersUnderMgmt.keySet().stream().allMatch(execId -> {
                     ExecutorWageConfirmation c = confirmationsForMgmt.get(execId);
@@ -561,17 +565,23 @@ public class PayslipService {
         row.setAmount(row.getAmount().add(clientPrice));
     }
 
+    /**
+     * 2026-07 起分组 key 里加了单价（payRmb）：同一个"品牌方+团队+视频类型"组合，如果当月
+     * 实际单价不一致（说明这批视频横跨了梯度分档的边界，比如前25条按¥20/条、第26条起按
+     * ¥15/条），会拆成多行，每行都是单一单价，配合"单价"列 + 后面追加的"梯度小结"行，
+     * 项目负责人才能看出"为什么这几条钱不一样多"，而不是一个笼统的合计数字掩盖了差异。
+     */
     private void accumulateExecutorRow(Map<String, PayslipDimensionRow> grouped, CollaborationTracking o, BigDecimal payRmb) {
         String brandName = dashboardStatsService.brandNameOf(o.getBrandId());
         String teamName = dashboardStatsService.teamNameOf(o.getTeam());
         VideoType vt = o.getVideoType();
         String videoTypeKey = vt != null ? vt.name() : null;
-        String key = videoTypeKey + "|" + brandName + "|" + teamName;
+        String key = videoTypeKey + "|" + brandName + "|" + teamName + "|" + payRmb.stripTrailingZeros().toPlainString();
         PayslipDimensionRow row = grouped.computeIfAbsent(key, k ->
                 PayslipDimensionRow.builder().brandName(brandName).teamName(teamName)
                         .videoType(videoTypeKey)
                         .videoTypeLabel(vt != null ? vt.getLabel() : "未填写视频类型")
-                        .videoCount(0L).amount(BigDecimal.ZERO).isSummaryRow(false).build());
+                        .videoCount(0L).amount(BigDecimal.ZERO).unitPrice(payRmb).isSummaryRow(false).build());
         row.setVideoCount(row.getVideoCount() + 1);
         row.setAmount(row.getAmount().add(payRmb));
     }
@@ -598,7 +608,7 @@ public class PayslipService {
                 byPmThenExec.getOrDefault(emp.getId(), Collections.emptyMap());
         Map<Long, ExecutorWageConfirmation> confirmationsForThisManager =
                 confirmationByManagerId.getOrDefault(emp.getId(), Collections.emptyMap());
-        ExecutorWageDetail wageDetail = buildExecutorWageRows(execOrdersUnderPm, confirmationsForThisManager);
+        ExecutorWageDetail wageDetail = buildExecutorWageRows(emp.getId(), execOrdersUnderPm, confirmationsForThisManager);
         boolean allExecutorsConfirmed = !execOrdersUnderPm.isEmpty()
                 && execOrdersUnderPm.keySet().stream().allMatch(execId -> {
                     ExecutorWageConfirmation c = confirmationsForThisManager.get(execId);
@@ -627,7 +637,7 @@ public class PayslipService {
      * 这样前端"这个人当月是否涉及执行人员"的判断（rows 是否非空）才不会永远被这一行汇总
      * 行污染成"非空"。
      */
-    private ExecutorWageDetail buildExecutorWageRows(Map<Long, List<CollaborationTracking>> execOrdersUnderPm,
+    private ExecutorWageDetail buildExecutorWageRows(Long managerId, Map<Long, List<CollaborationTracking>> execOrdersUnderPm,
                                                        Map<Long, ExecutorWageConfirmation> confirmationsForThisManager) {
         List<Long> execIds = new ArrayList<>(execOrdersUnderPm.keySet());
         execIds.sort(Comparator.comparing(this::employeeNameOf, Comparator.nullsLast(Comparator.naturalOrder())));
@@ -650,6 +660,7 @@ public class PayslipService {
                     r.setExecutorId(execId);
                     r.setExecutorName(execName);
                 }
+                groupRows = withTierSummaries(managerId, execId, groupRows);
             }
             PayslipDimensionRow subtotal = sumRowsAsSubtotal(groupRows);
             subtotal.setBrandName(execName + " 小计");
@@ -698,6 +709,7 @@ public class PayslipService {
                 List<CollaborationTracking> ordersForPair = byPmThenExec.get(pmId).get(execId);
                 groupRows = buildDimensionRowsForOrders(ordersForPair);
                 groupRows.sort(this::compareExecutorRows);
+                groupRows = withTierSummaries(pmId, execId, groupRows);
             }
             for (PayslipDimensionRow r : groupRows) r.setProjectManagerName(pmName);
 
@@ -730,10 +742,95 @@ public class PayslipService {
         return new ArrayList<>(grouped.values());
     }
 
+    /**
+     * 2026-07 起排序改成：视频类型（分组用，不变）→ 品牌方 → 团队 → 视频数倒序。
+     * 之前只按"视频数倒序"排，现在同一个视频类型下可能因为单价拆分出好几行，按品牌方/团队
+     * 排在一起更方便项目负责人核对同一个客户下的记录，视频数倒序还是排在同一品牌/团队内部。
+     */
     private int compareExecutorRows(PayslipDimensionRow a, PayslipDimensionRow b) {
         int ta = videoTypeOrdinal(a.getVideoType());
         int tb = videoTypeOrdinal(b.getVideoType());
-        return ta != tb ? Integer.compare(ta, tb) : b.getVideoCount().compareTo(a.getVideoCount());
+        if (ta != tb) return Integer.compare(ta, tb);
+        int brandCmp = safeCompare(a.getBrandName(), b.getBrandName());
+        if (brandCmp != 0) return brandCmp;
+        int teamCmp = safeCompare(a.getTeamName(), b.getTeamName());
+        if (teamCmp != 0) return teamCmp;
+        return b.getVideoCount().compareTo(a.getVideoCount());
+    }
+
+    /** null 安全的字符串比较（品牌方/团队名可能为空，比如红人没关联团队） */
+    private int safeCompare(String a, String b) {
+        if (a == null && b == null) return 0;
+        if (a == null) return 1;
+        if (b == null) return -1;
+        return a.compareTo(b);
+    }
+
+    /**
+     * 在已经排好序的执行人员薪酬明细行里，按视频类型分段插入"梯度小结"行（2026-07 新增）：
+     * 只有这个视频类型配置了2档以上真正意义上的梯度（不是"每条固定价"那种单档）才插入，
+     * 每一档配了多少条按这一段明细行里"单价等于这一档单价"的行数求和——这批明细行已经是
+     * 按 accumulateExecutorRow 的单价分组拆开的，同一档的所有明细行单价必然一致，加总不会
+     * 漏掉也不会重复。传入的 rows 必须已经按 compareExecutorRows 排过序（同一视频类型的行
+     * 是连续的一段），否则这里按"视频类型变化"切分段落的逻辑会不对。
+     */
+    private List<PayslipDimensionRow> withTierSummaries(Long managerId, Long executorId, List<PayslipDimensionRow> sortedRows) {
+        if (sortedRows.isEmpty()) return sortedRows;
+        List<PayslipDimensionRow> result = new ArrayList<>();
+        String currentType = null;
+        List<PayslipDimensionRow> currentTypeRows = new ArrayList<>();
+        for (PayslipDimensionRow row : sortedRows) {
+            if (!Objects.equals(row.getVideoType(), currentType)) {
+                appendTierSummaryIfNeeded(managerId, executorId, currentType, currentTypeRows, result);
+                currentType = row.getVideoType();
+                currentTypeRows = new ArrayList<>();
+            }
+            result.add(row);
+            currentTypeRows.add(row);
+        }
+        appendTierSummaryIfNeeded(managerId, executorId, currentType, currentTypeRows, result);
+        return result;
+    }
+
+    private void appendTierSummaryIfNeeded(Long managerId, Long executorId, String videoTypeKey,
+                                            List<PayslipDimensionRow> rowsForType, List<PayslipDimensionRow> result) {
+        if (videoTypeKey == null || rowsForType.isEmpty()) return;
+        VideoType videoType;
+        try {
+            videoType = VideoType.valueOf(videoTypeKey);
+        } catch (IllegalArgumentException e) {
+            return;
+        }
+        List<ExecutorPayRateTier> tiers = executorPayRateTierRepo
+                .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(managerId, executorId, videoType);
+        // 只有1档=每条固定价，不存在"跨档"的问题，不需要这行说明
+        if (tiers.size() <= 1) return;
+
+        StringBuilder sb = new StringBuilder("梯度小结：");
+        for (int i = 0; i < tiers.size(); i++) {
+            ExecutorPayRateTier tier = tiers.get(i);
+            String rangeLabel = tier.getMaxCount() == null
+                    ? tier.getMinCount() + "条+"
+                    : (tier.getMinCount().equals(tier.getMaxCount())
+                        ? "第" + tier.getMinCount() + "条" : tier.getMinCount() + "-" + tier.getMaxCount() + "条");
+            long countInTier = rowsForType.stream()
+                    .filter(r -> r.getUnitPrice() != null && r.getUnitPrice().compareTo(tier.getRate()) == 0)
+                    .mapToLong(r -> r.getVideoCount() != null ? r.getVideoCount() : 0)
+                    .sum();
+            if (i > 0) sb.append("；");
+            sb.append(rangeLabel).append("¥").append(fmtTierAmount(tier.getRate())).append("/条（本月").append(countInTier).append("条）");
+        }
+        result.add(PayslipDimensionRow.builder()
+                .brandName(sb.toString())
+                .videoType(videoTypeKey)
+                .videoCount(0L)
+                .amount(BigDecimal.ZERO)
+                .isTierSummaryRow(true)
+                .build());
+    }
+
+    private String fmtTierAmount(BigDecimal v) {
+        return v == null ? "0.00" : v.setScale(SCALE, RoundingMode.HALF_UP).toString();
     }
 
     /** 一组明细行的小计（区别于 buildSummaryRow 那个整体汇总行，isGroupSubtotal=true） */
@@ -917,7 +1014,9 @@ public class PayslipService {
                     .videoCount(r.getVideoCount())
                     .amount(convertAmount(r.getAmount(), amountIsRmb, rate, toRmb))
                     .amount2(convertAmount(r.getAmount2(), false, rate, toRmb))
+                    .unitPrice(convertAmount(r.getUnitPrice(), amountIsRmb, rate, toRmb))
                     .isSummaryRow(r.getIsSummaryRow())
+                    .isTierSummaryRow(r.getIsTierSummaryRow())
                     .projectManagerName(r.getProjectManagerName())
                     .executorId(r.getExecutorId())
                     .executorName(r.getExecutorName())

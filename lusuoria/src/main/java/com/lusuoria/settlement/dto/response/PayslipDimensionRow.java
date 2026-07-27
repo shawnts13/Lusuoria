@@ -56,4 +56,20 @@ public class PayslipDimensionRow {
      * 一致，直接看 PayslipDetailResponse.executorWageConfirmed 这一个字段就够了。
      */
     private Boolean groupConfirmed;
+
+    /**
+     * 执行人员薪酬明细专属（2026-07 新增）：这一行对应的单价（元/条）。同一个
+     * (品牌方,团队,视频类型) 组合如果当月实际单价不一致（说明这批视频横跨了梯度分档的边界），
+     * 会按单价拆成多行分别展示，每行都是同一个单价，这样项目负责人才看得出"为什么这几条钱
+     * 不一样多"，而不是一个笼统的合计数字。
+     */
+    private BigDecimal unitPrice;
+
+    /**
+     * "梯度小结"行（2026-07 新增，isTierSummaryRow=true）：某个视频类型如果配置了 2 档以上
+     * 真正意义上的梯度（不是"每条固定价"那种单档），在这个视频类型的明细行之后插入一行，
+     * 把配置的梯度区间 + 当月实际落在每一档的条数拼成一句话（说明文案存在 brandName 字段里，
+     * 复用 buildSummaryRow 那种"整行只放一段说明"的展示方式，不需要另开字段）。
+     */
+    private Boolean isTierSummaryRow;
 }
