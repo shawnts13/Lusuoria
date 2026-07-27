@@ -867,7 +867,8 @@ public class CollaborationTrackingService {
             StringBuilder sb = new StringBuilder();
             sb.append("该项目负责人尚未在\"执行人员管理\"模块为其设置\"").append(videoType.getLabel())
                     .append("\"的薪资信息，请先进行设置后，再手动设置该视频条目的执行人员薪酬。");
-            sb.append(monthLabel).append("该执行人员已为你结算：");
+            // 换行：上面这句是"怎么办"，下面是"当前月的结算情况"，两句性质不同，挤一起容易看花
+            sb.append("\n").append(monthLabel).append("该执行人员已为你结算：");
             if (countByType.isEmpty()) {
                 sb.append("暂无记录");
             } else {
@@ -907,7 +908,9 @@ public class CollaborationTrackingService {
         // 的记录"应该是多少钱"，跟实际填的值对不上的归入"特殊薪酬"，纯查询时计算，不落库
         String specialPayNote = computeSpecialPayNote(costedAllTypes, t.getProjectManagerId(), executor.getId());
         if (specialPayNote != null) {
-            resp.setBreakdown(resp.getBreakdown() + " " + specialPayNote);
+            // 换行而不是拼一个空格：这两句是不同性质的信息（本次建议金额 vs 本月历史特殊薪酬提示），
+            // 挤在同一段容易看花，前端这个字段是按 white-space:pre-line 展示的，\n 会真正换行
+            resp.setBreakdown(resp.getBreakdown() + "\n" + specialPayNote);
         }
         return resp;
     }
