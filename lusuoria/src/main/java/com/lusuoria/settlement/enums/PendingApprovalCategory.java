@@ -6,10 +6,13 @@ package com.lusuoria.settlement.enums;
  * PROGRESS_ROLLBACK：红人合作跟踪"视频项目进度"倒退审核——当"红人结款进度"已经填了值，
  * 又要把"视频项目进度"改回不满足前置条件的状态时，不能直接生效，要走管理员审核
  * （跟删除审核是完全一样的"发起申请 -> 管理员在待处理里同意/拒绝"模式）。
+ * EXECUTOR_COST_MODIFY：内部执行成本"二次修改"审核（2026-07 新增）——审核人不是 ADMIN，
+ * 而是该记录的项目负责人本人，见 CollaborationTrackingService.setExecutorCost()。
  */
 public enum PendingApprovalCategory {
     DELETE_REQUEST("删除审核"),
-    PROGRESS_ROLLBACK("视频项目进度倒退审核");
+    PROGRESS_ROLLBACK("视频项目进度倒退审核"),
+    EXECUTOR_COST_MODIFY("内部执行成本修改审核");
 
     private final String label;
     PendingApprovalCategory(String label) { this.label = label; }

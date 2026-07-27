@@ -10,6 +10,7 @@ import com.lusuoria.settlement.enums.PendingApprovalStatus;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.PendingApprovalRepository;
 import com.lusuoria.settlement.util.MultiValueUtil;
+import com.lusuoria.settlement.util.ProfitCalculator;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
@@ -17,6 +18,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
@@ -42,6 +45,7 @@ public class PendingApprovalService {
     @Autowired private PendingApprovalRepository pendingApprovalRepo;
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private InfluencerRequirementService requirementService;
+    @Autowired private ProfitCalculator profitCalculator;
 
     /**
      * 发起删除申请。如果这条记录已经有一条"待审核"的删除申请，直接复用（不重复创建）。
@@ -111,6 +115,50 @@ public class PendingApprovalService {
                 });
     }
 
+    /**
+     * 发起"内部执行成本二次修改"审核（2026-07 新增，只有红人合作跟踪模块用得到）。
+     * 审核人是该记录的项目负责人本人，不是 ADMIN——见 approve()/reject() 里的 assertCanResolve()。
+     * 如果这条记录已经有一条"待审核"的修改申请，直接复用（不重复创建、不覆盖已有申请的内容，
+     * 跟删除审核/进度倒退审核同一套"去重"约定）。
+     */
+    @Transactional
+    public PendingApproval requestExecutorCostModify(Long trackingId, String internalProjectNo, String summary,
+                                                       BigDecimal previousAmount, Boolean previousNotApplicable,
+                                                       BigDecimal requestedAmount, boolean requestedNotApplicable) {
+        return pendingApprovalRepo
+                .findByTargetModuleAndTargetIdAndCategoryAndStatus(
+                        PendingApprovalModule.COLLABORATION_TRACKING, trackingId,
+                        PendingApprovalCategory.EXECUTOR_COST_MODIFY, PendingApprovalStatus.PENDING)
+                .orElseGet(() -> {
+                    PendingApproval p = new PendingApproval();
+                    p.setCategory(PendingApprovalCategory.EXECUTOR_COST_MODIFY);
+                    p.setTargetModule(PendingApprovalModule.COLLABORATION_TRACKING);
+                    p.setTargetId(trackingId);
+                    p.setTargetInternalProjectNo(internalProjectNo);
+                    p.setTargetSummary(summary);
+                    p.setReason(describeExecutorCostChange(previousAmount, previousNotApplicable, requestedAmount, requestedNotApplicable));
+                    p.setRequestedBy(RoleUtil.getCurrentUsername());
+                    p.setStatus(PendingApprovalStatus.PENDING);
+                    p.setPreviousExecutorCostAmount(previousAmount);
+                    p.setPreviousExecutorCostNotApplicable(previousNotApplicable);
+                    p.setRequestedExecutorCostAmount(requestedNotApplicable ? null : requestedAmount);
+                    p.setRequestedExecutorCostNotApplicable(requestedNotApplicable);
+                    snapshotOwner(p, trackingId);
+                    return pendingApprovalRepo.save(p);
+                });
+    }
+
+    private String describeExecutorCostChange(BigDecimal prevAmount, Boolean prevNotApplicable,
+                                                BigDecimal newAmount, boolean newNotApplicable) {
+        String from = Boolean.TRUE.equals(prevNotApplicable) ? "不涉及执行人员" : "¥" + fmtAmount(prevAmount);
+        String to = newNotApplicable ? "不涉及执行人员" : "¥" + fmtAmount(newAmount);
+        return "内部执行成本由 " + from + " 改为 " + to;
+    }
+
+    private String fmtAmount(BigDecimal v) {
+        return v == null ? "0.00" : v.setScale(2, RoundingMode.HALF_UP).toString();
+    }
+
     /** 某条业务记录当前是否有一条"待审核"的删除申请 */
     public boolean hasPendingDeleteRequest(PendingApprovalModule module, Long targetId) {
         return pendingApprovalRepo.existsByTargetModuleAndTargetIdAndCategoryAndStatus(
@@ -133,22 +181,56 @@ public class PendingApprovalService {
         return pendingApprovalRepo.findPendingTargetIds(module, PendingApprovalCategory.PROGRESS_ROLLBACK);
     }
 
+    /** 某个模块下，哪些记录当前有"待审核"的内部执行成本修改申请（供列表页批量标记"修改审核中"用） */
+    public List<Long> findPendingExecutorCostModifyTargetIds(PendingApprovalModule module) {
+        return pendingApprovalRepo.findPendingTargetIds(module, PendingApprovalCategory.EXECUTOR_COST_MODIFY);
+    }
+
     @Transactional(readOnly = true)
     public Page<PendingApproval> listPending(PendingApprovalCategory category, Pageable pageable) {
         return pendingApprovalRepo.findPending(category, pageable);
     }
 
+    /**
+     * "待我审核"（2026-07 新增，EXECUTOR_COST_MODIFY 专属）：当前登录账号作为项目负责人，
+     * 名下待自己审核的内部执行成本修改申请。没有关联员工时返回空列表。
+     */
+    @Transactional(readOnly = true)
+    public List<PendingApproval> listMyApprovalQueue(Long employeeId) {
+        if (employeeId == null) return Collections.emptyList();
+        return pendingApprovalRepo.findMyApprovalQueue(employeeId, PendingApprovalCategory.EXECUTOR_COST_MODIFY);
+    }
+
+    /**
+     * 谁能审核这条待处理事项：DELETE_REQUEST/PROGRESS_ROLLBACK 只有 ADMIN 能处理（沿用原规则）；
+     * EXECUTOR_COST_MODIFY 只有该记录的项目负责人本人能处理，ADMIN 不能代替
+     * （2026-07 新增，跟"设置执行成本"本身"管理层提交修改也要走审核、不享受直接生效特权"
+     * 这条规则保持一致——审核权同样不给管理层/ADMIN 兜底）。
+     */
+    private void assertCanResolve(PendingApproval p, Long currentEmployeeId) {
+        if (p.getCategory() == PendingApprovalCategory.EXECUTOR_COST_MODIFY) {
+            if (currentEmployeeId == null || !currentEmployeeId.equals(p.getTargetProjectManagerId())) {
+                throw new RuntimeException("只有该记录的项目负责人本人可以审核这条内部执行成本修改申请");
+            }
+        } else if (!RoleUtil.isAdmin()) {
+            throw new RuntimeException("无权限处理这条待处理事项");
+        }
+    }
+
     /** 同意：按类别真正执行对应的改动 */
     @Transactional
-    public PendingApproval approve(Long id) {
+    public PendingApproval approve(Long id, Long currentEmployeeId) {
         PendingApproval p = pendingApprovalRepo.findById(id)
                 .orElseThrow(() -> new RuntimeException("待处理事项不存在：" + id));
         if (p.getStatus() != PendingApprovalStatus.PENDING) {
             throw new RuntimeException("这条事项已经处理过了（当前状态：" + p.getStatus().getLabel() + "）");
         }
+        assertCanResolve(p, currentEmployeeId);
 
         if (p.getCategory() == PendingApprovalCategory.PROGRESS_ROLLBACK) {
             executeProgressRollback(p);
+        } else if (p.getCategory() == PendingApprovalCategory.EXECUTOR_COST_MODIFY) {
+            executeExecutorCostModify(p);
         } else {
             executeTrackingDeletion(p.getTargetId());
         }
@@ -159,14 +241,15 @@ public class PendingApprovalService {
         return pendingApprovalRepo.save(p);
     }
 
-    /** 拒绝：记录原样保留，不做任何改动（对两种类别都一样） */
+    /** 拒绝：记录原样保留，不做任何改动（对所有类别都一样） */
     @Transactional
-    public PendingApproval reject(Long id, String note) {
+    public PendingApproval reject(Long id, String note, Long currentEmployeeId) {
         PendingApproval p = pendingApprovalRepo.findById(id)
                 .orElseThrow(() -> new RuntimeException("待处理事项不存在：" + id));
         if (p.getStatus() != PendingApprovalStatus.PENDING) {
             throw new RuntimeException("这条事项已经处理过了（当前状态：" + p.getStatus().getLabel() + "）");
         }
+        assertCanResolve(p, currentEmployeeId);
         p.setStatus(PendingApprovalStatus.REJECTED);
         p.setResolvedBy(RoleUtil.getCurrentUsername());
         p.setResolvedAt(new Date());
@@ -206,9 +289,31 @@ public class PendingApprovalService {
     }
 
     /**
-     * "确认删除"（标记已读，2026-07 新增）：非管理员在自己的"处理结果通知"列表里点击后调用，
-     * 只影响这个员工自己后续还看不看得到这条通知，不影响管理员审批队列、不影响其他共同
-     * 受众（比如同一条记录的项目负责人和执行人员各自独立标记）。
+     * 真正执行"内部执行成本二次修改"（2026-07 新增）：把目标记录的内部执行成本/
+     * "不涉及执行人员"标记改成申请当时提交的值，并按 ProfitCalculator 重新计算下游的
+     * 毛利/可分配利润/提成/公司利润。只有这里（审核通过）才会真正落地，申请提交那一刻
+     * 并不会改动目标记录。不复用 CollaborationTrackingService.setExecutorCost()——那个方法
+     * 依赖本 Service 做审核判定，为避免循环依赖，这里直接在本 Service 内完成同样的落地逻辑。
+     */
+    private void executeExecutorCostModify(PendingApproval p) {
+        CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(p.getTargetId())
+                .orElseThrow(() -> new RuntimeException("跟踪记录不存在或已被删除：" + p.getTargetId()));
+        if (Boolean.TRUE.equals(p.getRequestedExecutorCostNotApplicable())) {
+            t.setExecutorCostNotApplicable(true);
+        } else {
+            t.setExecutorCostNotApplicable(false);
+            t.setInternalExecutionCost(p.getRequestedExecutorCostAmount());
+            profitCalculator.calculate(t);
+        }
+        trackingRepo.save(t);
+    }
+
+    /**
+     * "确认删除"（2026-07 起是真正的数据库硬删除）：项目负责人/执行人员在自己的"处理结果
+     * 通知"列表里点击后调用，先记这个员工自己已经点过；只有 targetProjectManagerId/
+     * targetExecutorId 里非空的这几个人都点过之后，才会真正把这行 PendingApproval 从
+     * 数据库删掉——避免一方先点了删除，另一方还没来得及看就丢了这条通知。
+     * 还没凑齐时只是记一下"这个员工点过了"，不影响其他共同受众各自独立的查看状态。
      */
     @Transactional
     public void dismiss(Long id, Long employeeId) {
@@ -224,6 +329,14 @@ public class PendingApprovalService {
         if (!dismissed.contains(idStr)) {
             dismissed.add(idStr);
             p.setDismissedByEmployeeIds(String.join("\n", dismissed));
+        }
+        boolean allCleared = (p.getTargetProjectManagerId() == null
+                        || dismissed.contains(String.valueOf(p.getTargetProjectManagerId())))
+                && (p.getTargetExecutorId() == null
+                        || dismissed.contains(String.valueOf(p.getTargetExecutorId())));
+        if (allCleared) {
+            pendingApprovalRepo.delete(p);
+        } else {
             pendingApprovalRepo.save(p);
         }
     }

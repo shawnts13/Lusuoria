@@ -92,10 +92,30 @@ public class PendingApproval extends BaseEntity {
     private Long targetExecutorId;
 
     /**
-     * 已经点过"确认删除"（标记已读）的员工 id，换行分隔（沿用系统"多值单列文本"的既有约定，
-     * 见 MultiValueUtil）。只影响非管理员的"处理结果通知"列表是否还展示这条，不影响管理员
-     * 审批队列——管理员永远能看到全部记录。
+     * 已经点过"确认删除"的员工 id，换行分隔（沿用系统"多值单列文本"的既有约定，
+     * 见 MultiValueUtil）。2026-07 起这个动作变成真正的数据库硬删除：只有
+     * targetProjectManagerId/targetExecutorId 里非空的这几个人都点过之后，
+     * 这行记录才会被真正 delete 掉（避免一方还没看到通知就被另一方删没了），
+     * 见 PendingApprovalService.dismiss()。
      */
     @Column(name = "dismissed_by_employee_ids", columnDefinition = "TEXT")
     private String dismissedByEmployeeIds;
+
+    /**
+     * 以下四个字段只有 category=EXECUTOR_COST_MODIFY 时才有值（2026-07 新增）：
+     * 内部执行成本"二次修改"审核——申请当时的"改之前"快照和"申请改成"的目标值，
+     * 供项目负责人在"待处理"模块审核时对比查看；同意时 PendingApprovalService
+     * 按 requested* 这两个字段真正落地到目标记录上。
+     */
+    @Column(name = "previous_executor_cost_amount", precision = 15, scale = 2)
+    private java.math.BigDecimal previousExecutorCostAmount;
+
+    @Column(name = "previous_executor_cost_not_applicable")
+    private Boolean previousExecutorCostNotApplicable;
+
+    @Column(name = "requested_executor_cost_amount", precision = 15, scale = 2)
+    private java.math.BigDecimal requestedExecutorCostAmount;
+
+    @Column(name = "requested_executor_cost_not_applicable")
+    private Boolean requestedExecutorCostNotApplicable;
 }

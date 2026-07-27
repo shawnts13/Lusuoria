@@ -7,6 +7,7 @@ import com.lusuoria.settlement.dto.request.DeleteRequestReasonRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.dto.response.CollaborationStatusUpdateResult;
 import com.lusuoria.settlement.dto.response.ExecutorCostSuggestionResponse;
+import com.lusuoria.settlement.dto.response.ExecutorCostUpdateResult;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.ImportBatch;
 import com.lusuoria.settlement.entity.PendingApproval;
@@ -123,6 +124,8 @@ public class CollaborationTrackingController {
                 PendingApprovalModule.COLLABORATION_TRACKING, PendingApprovalCategory.DELETE_REQUEST));
         Set<Long> pendingRollbackIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(
                 PendingApprovalModule.COLLABORATION_TRACKING, PendingApprovalCategory.PROGRESS_ROLLBACK));
+        Set<Long> pendingExecutorCostModifyIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(
+                PendingApprovalModule.COLLABORATION_TRACKING, PendingApprovalCategory.EXECUTOR_COST_MODIFY));
 
         // 批量标记"该记录的项目负责人是否已经为这个执行人员+这个视频类型配置过费率梯度"，
         // 避免逐行查库（2026-07 新增，供前端决定"设置执行成本"按钮显示/隐藏）
@@ -141,6 +144,7 @@ public class CollaborationTrackingController {
         result.forEach(t -> {
             t.setHasPendingDeleteRequest(pendingDeleteIds.contains(t.getId()));
             t.setHasPendingRollbackRequest(pendingRollbackIds.contains(t.getId()));
+            t.setHasPendingExecutorCostModifyRequest(pendingExecutorCostModifyIds.contains(t.getId()));
             boolean rateConfigured = t.getProjectManagerId() != null && t.getExecutorId() != null && t.getVideoType() != null
                     && configuredRateKeys.contains(t.getProjectManagerId() + "|" + t.getExecutorId() + "|" + t.getVideoType());
             t.setHasExecutorPayRateConfigured(rateConfigured);
@@ -263,16 +267,22 @@ public class CollaborationTrackingController {
 
     /**
      * 内部执行成本弹窗确认时调用：保存金额（或确认"不涉及执行人员"），跟状态流转是分开的两步操作。
+     *
+     * 2026-07 起"非首次修改"且操作人不是该记录的项目负责人本人时不会直接生效，见
+     * CollaborationTrackingService.setExecutorCost()——返回结果的 pendingApproval=true
+     * 时，tracking 仍是改动前的原始记录，前端应提示"已提交项目负责人审核"，不能当成已保存成功。
      */
     @PatchMapping("/{id}/executor-cost")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
-    public ApiResponse<CollaborationTracking> setExecutorCost(
+    public ApiResponse<ExecutorCostUpdateResult> setExecutorCost(
             @PathVariable Long id, @RequestBody ExecutorCostRequest req) {
-        CollaborationTracking saved = trackingService.setExecutorCost(
+        ExecutorCostUpdateResult result = trackingService.setExecutorCost(
                 id, req.getExecutorId(), req.getAmount(), req.isNotApplicable());
         ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
-        CollaborationTracking out = ctx.isFull() ? saved : applyFieldVisibility(saved, ctx);
-        return ApiResponse.success(out);
+        if (!ctx.isFull()) {
+            result.setTracking(applyFieldVisibility(result.getTracking(), ctx));
+        }
+        return ApiResponse.success(result);
     }
 
     /** 内部执行成本保存请求体 */

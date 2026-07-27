@@ -16,8 +16,11 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 /**
- * 待处理事项。审批队列（list/approve/reject）只有 ADMIN 能看到、能操作——审批本身是管理员
- * 专属动作，不受"待处理"模块 2026-07 向所有非访客角色开放这个变化的影响。
+ * 待处理事项。审批队列（list）只有 ADMIN 能看到——审批本身对 DELETE_REQUEST/PROGRESS_ROLLBACK
+ * 两类是管理员专属动作。approve/reject 这两个接口 2026-07 起放开给非管理员调用，但仅限于
+ * EXECUTOR_COST_MODIFY 类别、且必须是目标记录的项目负责人本人——具体由
+ * PendingApprovalService.assertCanResolve() 精确校验，不是这里简单放行了事；
+ * 项目负责人自己的审核队列走 /my-approvals，不是完整审批队列。
  * 非管理员通过 /my-notifications + /{id}/dismiss 看自己相关记录的"处理结果通知"
  * （已同意/已拒绝），不是完整审批队列。
  */
@@ -38,17 +41,26 @@ public class PendingApprovalController {
         return ApiResponse.success(pendingApprovalService.listPending(category, pageable));
     }
 
+    /**
+     * "待我审核"（2026-07 新增）：当前登录账号作为项目负责人，名下待自己审核的内部执行成本
+     * 修改申请。不是完整审批队列——DELETE_REQUEST/PROGRESS_ROLLBACK 不会出现在这里。
+     */
+    @GetMapping("/my-approvals")
+    public ApiResponse<List<PendingApproval>> myApprovals() {
+        return ApiResponse.success(pendingApprovalService.listMyApprovalQueue(employeeRoleUtil.getCurrentEmployeeId()));
+    }
+
     @PostMapping("/{id}/approve")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<PendingApproval> approve(@PathVariable Long id) {
-        return ApiResponse.success(pendingApprovalService.approve(id));
+        return ApiResponse.success(pendingApprovalService.approve(id, employeeRoleUtil.getCurrentEmployeeId()));
     }
 
     @PostMapping("/{id}/reject")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<PendingApproval> reject(@PathVariable Long id, @RequestBody(required = false) RejectApprovalRequest req) {
         String note = req != null ? req.getNote() : null;
-        return ApiResponse.success(pendingApprovalService.reject(id, note));
+        return ApiResponse.success(pendingApprovalService.reject(id, note, employeeRoleUtil.getCurrentEmployeeId()));
     }
 
     /**
@@ -60,7 +72,7 @@ public class PendingApprovalController {
         return ApiResponse.success(pendingApprovalService.listMyNotifications(employeeRoleUtil.getCurrentEmployeeId()));
     }
 
-    /** "确认删除"（标记已读）：只有这条记录的项目负责人/执行人员本人能操作 */
+    /** "确认删除"（2026-07 起是真正的数据库硬删除，见 Service 层注释）：只有这条记录的项目负责人/执行人员本人能操作 */
     @PostMapping("/{id}/dismiss")
     public ApiResponse<Void> dismiss(@PathVariable Long id) {
         pendingApprovalService.dismiss(id, employeeRoleUtil.getCurrentEmployeeId());

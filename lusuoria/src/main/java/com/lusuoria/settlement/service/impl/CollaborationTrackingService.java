@@ -1013,30 +1013,67 @@ public class CollaborationTrackingService {
      * notApplicable=false：executorId 非空时顺带把执行人员也定下来（弹窗允许在这条记录
      * 还没选执行人员的情况下现场选人）；executorId 和记录里已有的执行人员必须至少有一个非空，
      * 否则拒绝——不能在没有执行人员的情况下直接填一个金额。
+     *
+     * "二次修改需审核"（2026-07 新增）：这条记录的内部执行成本只要成功保存过一次
+     * （executorCostEverSet=true，不管那一次是金额还是"不涉及执行人员"），之后任何改动
+     * 都算"非首次修改"——除非操作人正是这条记录的项目负责人本人，否则不会直接生效，而是
+     * 提交一条待审核事项，由该记录的项目负责人在"待处理"模块同意后才真正落地
+     * （管理层/ADMIN 提交修改也不例外，不享受直接生效特权）。返回结果用
+     * ExecutorCostUpdateResult 区分这两种情况，跟"状态流转"里"进度倒退需要审核"的
+     * CollaborationStatusUpdateResult 是同一个思路。
      */
     @Transactional
-    public CollaborationTracking setExecutorCost(Long id, Long executorId, java.math.BigDecimal amount, boolean notApplicable) {
+    public com.lusuoria.settlement.dto.response.ExecutorCostUpdateResult setExecutorCost(
+            Long id, Long executorId, java.math.BigDecimal amount, boolean notApplicable) {
         CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
 
-        if (notApplicable) {
-            t.setExecutorCostNotApplicable(true);
-            return trackingRepo.save(t);
+        com.lusuoria.settlement.dto.response.ExecutorCostUpdateResult result =
+                new com.lusuoria.settlement.dto.response.ExecutorCostUpdateResult();
+
+        boolean isFirstTime = !Boolean.TRUE.equals(t.getExecutorCostEverSet());
+        Long currentEmployeeId = employeeRoleUtil.getCurrentEmployeeId();
+        boolean isProjectManagerSelf = currentEmployeeId != null && currentEmployeeId.equals(t.getProjectManagerId());
+
+        if (!isFirstTime && !isProjectManagerSelf) {
+            // 非首次修改、操作人又不是这条记录的项目负责人本人：不直接生效，提交审核。
+            // 这条路径下这条记录必然已经有过一次成功保存（isFirstTime=false），executorId
+            // 早就定下来了，不需要也不接受这次请求顺带改动执行人员本身。
+            if (t.getProjectManagerId() == null) {
+                throw new RuntimeException("该记录还没有项目负责人，无法提交内部执行成本修改审核，请先在编辑表单里设置项目负责人");
+            }
+            String summary = (t.getBrand() != null ? t.getBrand().getName() : "未知品牌")
+                    + " - " + (t.getInfluencer() != null ? t.getInfluencer().getAccountName() : "未知红人");
+            pendingApprovalService.requestExecutorCostModify(
+                    t.getId(), t.getInternalProjectNo(), summary,
+                    t.getInternalExecutionCost(), t.getExecutorCostNotApplicable(),
+                    amount, notApplicable);
+            result.setTracking(t);
+            result.setPendingApproval(true);
+            return result;
         }
 
-        if (executorId != null) {
-            Employee executor = employeeCache.findById(executorId);
-            if (executor == null) throw new RuntimeException("内部执行人员不存在：" + executorId);
-            t.setExecutor(executor);
+        if (notApplicable) {
+            t.setExecutorCostNotApplicable(true);
+        } else {
+            if (executorId != null) {
+                Employee executor = employeeCache.findById(executorId);
+                if (executor == null) throw new RuntimeException("内部执行人员不存在：" + executorId);
+                t.setExecutor(executor);
+            }
+            if (t.getExecutor() == null) {
+                throw new RuntimeException("请先选择内部执行人员，或选择\"不涉及执行人员\"");
+            }
+            t.setExecutorCostNotApplicable(false);
+            t.setInternalExecutionCost(amount);
+            // 内部执行成本变了，项目毛利往下的可分配利润/负责人提成/公司利润这些都要跟着重新算一遍
+            profitCalculator.calculate(t);
         }
-        if (t.getExecutor() == null) {
-            throw new RuntimeException("请先选择内部执行人员，或选择\"不涉及执行人员\"");
-        }
-        t.setExecutorCostNotApplicable(false);
-        t.setInternalExecutionCost(amount);
-        // 内部执行成本变了，项目毛利往下的可分配利润/负责人提成/公司利润这些都要跟着重新算一遍
-        profitCalculator.calculate(t);
-        return trackingRepo.save(t);
+        t.setExecutorCostEverSet(true);
+        CollaborationTracking saved = trackingRepo.save(t);
+        result.setTracking(saved);
+        result.setPendingApproval(false);
+        return result;
     }
 
     /**

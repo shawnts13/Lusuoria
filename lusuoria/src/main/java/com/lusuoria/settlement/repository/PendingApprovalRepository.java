@@ -56,4 +56,15 @@ public interface PendingApprovalRepository extends JpaRepository<PendingApproval
            "AND (p.targetProjectManagerId = :employeeId OR p.targetExecutorId = :employeeId) " +
            "ORDER BY p.resolvedAt DESC")
     List<PendingApproval> findResolvedForEmployee(@Param("employeeId") Long employeeId);
+
+    /**
+     * "待我审核"用（2026-07 新增，EXECUTOR_COST_MODIFY 专属）：某个项目负责人名下，
+     * 当前还"待审核"、且审核人正是这个项目负责人本人（不是 ADMIN）的事项。
+     */
+    @Query("SELECT p FROM PendingApproval p " +
+           "WHERE p.status = com.lusuoria.settlement.enums.PendingApprovalStatus.PENDING " +
+           "AND p.category = :category AND p.targetProjectManagerId = :employeeId " +
+           "ORDER BY p.createdAt DESC")
+    List<PendingApproval> findMyApprovalQueue(@Param("employeeId") Long employeeId,
+                                               @Param("category") PendingApprovalCategory category);
 }

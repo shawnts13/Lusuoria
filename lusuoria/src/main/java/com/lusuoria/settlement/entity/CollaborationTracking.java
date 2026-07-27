@@ -238,6 +238,17 @@ public class CollaborationTracking extends BaseEntity {
     @Column(name = "executor_cost_not_applicable")
     private Boolean executorCostNotApplicable;
 
+    /**
+     * 内部执行成本是否已经被成功保存过至少一次（2026-07 新增，供"二次修改需审核"判定用）——
+     * 不管那一次保存的是具体金额还是"不涉及执行人员"，只要真正保存成功过一次，这个标记就会
+     * 置 true 且以后不会再变回 false。之后任何一次改动（含把"不涉及执行人员"改回有金额）都
+     * 算"非首次"，非该记录项目负责人本人操作时必须走审核，见
+     * CollaborationTrackingService.setExecutorCost()。用包装类型 Boolean 的原因跟
+     * executorCostNotApplicable 一致：ddl-auto=update 给老数据补这一列时是数据库层 NULL。
+     */
+    @Column(name = "executor_cost_ever_set")
+    private Boolean executorCostEverSet;
+
     /** 项目毛利（美金，自动计算）。仅 FULL（ADMIN/管理层/财务）可见 */
     @Column(name = "gross_profit", precision = 15, scale = 2)
     private java.math.BigDecimal grossProfit;
@@ -311,4 +322,11 @@ public class CollaborationTracking extends BaseEntity {
      */
     @Transient
     private Boolean hasExecutorPayRateConfigured;
+
+    /**
+     * 当前是否有一条"待审核"的内部执行成本修改申请（2026-07 新增，有的话前端"设置执行成本"
+     * 入口要提示"修改审核中"）。瞬态字段，不落库，由 Controller 批量查出来再赋值。
+     */
+    @Transient
+    private Boolean hasPendingExecutorCostModifyRequest;
 }
