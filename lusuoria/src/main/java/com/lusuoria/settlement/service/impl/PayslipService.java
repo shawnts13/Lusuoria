@@ -54,6 +54,9 @@ public class PayslipService {
 
     private static final int SCALE = 2;
     private static final Set<String> FIXED_SALARY_ROLES = new HashSet<>(Arrays.asList("财务", "IT后勤"));
+    /** 工资单列表默认展示顺序（2026-07 新增）：按角色分组展示，不然混排看着乱；角色内部再按姓名排序 */
+    private static final List<String> ROLE_DISPLAY_ORDER =
+            Arrays.asList("项目负责人", "执行人员", "财务", "IT后勤", "法务");
 
     @Autowired private PayslipRepository payslipRepo;
     @Autowired private EmployeeRepository employeeRepo;
@@ -96,6 +99,10 @@ public class PayslipService {
                 .filter(e -> e.getResignDate() == null)
                 .filter(e -> !"管理层".equals(e.getRole()))
                 .filter(e -> roleFilter == null || roleFilter.trim().isEmpty() || matchesRoleFilter(e.getRole(), roleFilter))
+                .sorted(Comparator.comparingInt((Employee e) -> {
+                    int idx = ROLE_DISPLAY_ORDER.indexOf(e.getRole());
+                    return idx < 0 ? ROLE_DISPLAY_ORDER.size() : idx;
+                }).thenComparing(Employee::getName))
                 .collect(Collectors.toList());
 
         List<Employee> commissionRoleEmployees = employees.stream()
