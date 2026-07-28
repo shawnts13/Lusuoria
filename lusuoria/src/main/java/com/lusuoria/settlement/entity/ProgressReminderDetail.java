@@ -134,6 +134,15 @@ public class ProgressReminderDetail extends BaseEntity {
     private String executorName;
 
     /**
+     * 红人结款进度中文标签快照（2026-07 新增，COLLAB_PAYMENT_DUE 专用，供前端按"红人结款进度"
+     * 筛选用）。这一类提醒已经过滤掉了"已纳入结款批次"的记录（见 runCollabPaymentDue），所以
+     * 实际出现的值只会是 待红人发送invoice/红人已提供invoice/待结款（不涉及invoice）或 null
+     * （还没设置）。其余类别不设置这个字段。
+     */
+    @Column(name = "payment_progress_label")
+    private String paymentProgressLabel;
+
+    /**
      * 当前登录人是否已经"标记已处理"过这一行（2026-07 新增，不落库，只在
      * ProgressReminderService.listDetails() 返回前临时算好）。之前的做法是把标记已处理的行
      * 直接从返回列表里过滤掉，会导致主卡片标题的笔数（跑批时算的，不受标记影响）跟点进详情

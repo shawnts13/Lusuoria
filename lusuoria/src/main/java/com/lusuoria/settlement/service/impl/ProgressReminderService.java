@@ -349,6 +349,9 @@ public class ProgressReminderService {
             detail.setPublishDate(t.getPublishDate());
             detail.setCycleDays(cycleDays);
             detail.setDeadlineDate(toDate(deadlineLocalDate));
+            detail.setOverdueDays((int) Math.max(0, -daysRemaining));
+            detail.setPaymentProgressLabel(t.getInfluencerPaymentProgress() != null
+                    ? t.getInfluencerPaymentProgress().getLabel() : null);
 
             byUrgency.computeIfAbsent(urgency, k -> new ArrayList<>()).add(detail);
         }
@@ -529,10 +532,11 @@ public class ProgressReminderService {
         return names.isEmpty() ? null : String.join("、", names);
     }
 
-    /** "yyyyMM" -> "结算月份：2026年07月"，供明细展示用 */
+    /** "yyyyMM" -> "2026年07月"，供明细展示用（2026-07-28 起去掉"结算月份："前缀，前端表格
+     * 本身已有"结算月份"这一列标题，行内容再重复一遍前缀是多余的） */
     private String formatSettlementMonthLabel(String yyyyMM) {
         if (yyyyMM == null || yyyyMM.length() != 6) return null;
-        return "结算月份：" + yyyyMM.substring(0, 4) + "年" + yyyyMM.substring(4) + "月";
+        return yyyyMM.substring(0, 4) + "年" + yyyyMM.substring(4) + "月";
     }
 
     /**

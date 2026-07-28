@@ -800,12 +800,11 @@ public class PayslipService {
     }
 
     /**
-     * 2026-07-28 起排序改成：视频类型（分组用，不变）→ 梯度档位（按 ExecutorPayRateTier 配置的
-     * minCount 升序，即梯度1/2/3...）→ 视频数倒序 → 品牌方/团队（仅剩的兜底，保证同一档位内
-     * 视频数也相同时排序稳定）。之前是按"品牌方→团队→视频数倒序"，Shawn 反馈同一视频类型下
-     * 不同梯度档位的行会混在一起不好看，改成梯度档位优先分组、组内按视频数倒序（同一档位配置
-     * 只有0/1档，即"每条固定价"或没配置梯度的视频类型，走 tierRankForUnitPrice 兜底逻辑，
-     * 效果等同于不分档、直接按视频数倒序，行为不变）。
+     * 2026-07-28 排序：视频类型分组按该类型本月视频总数倒序排列（Shawn 反馈：不应该按枚举声明
+     * 顺序固定分组先后，而是视频数量多的类型分组排前面）→ 组内按梯度档位（按 ExecutorPayRateTier
+     * 配置的 minCount 升序，即梯度1/2/3...）→ 视频数倒序 → 品牌方/团队（仅剩的兜底，保证同一档位内
+     * 视频数也相同时排序稳定）。同一档位配置只有0/1档，即"每条固定价"或没配置梯度的视频类型，走
+     * tierRankForUnitPrice 兜底逻辑，效果等同于不分档、组内直接按视频数倒序。
      */
     private void sortExecutorRowsByTier(Long managerId, Long executorId, List<PayslipDimensionRow> rows) {
         Set<String> videoTypeKeys = new LinkedHashSet<>();
@@ -827,7 +826,14 @@ public class PayslipService {
             List<ExecutorPayRateTier> tiers = tiersByType.getOrDefault(r.getVideoType(), Collections.emptyList());
             tierRankByRow.put(r, tierRankForUnitPrice(tiers, r.getUnitPrice()));
         }
+        Map<String, Long> totalCountByType = new HashMap<>();
+        for (PayslipDimensionRow r : rows) {
+            totalCountByType.merge(r.getVideoType(), r.getVideoCount() != null ? r.getVideoCount() : 0L, Long::sum);
+        }
         rows.sort((a, b) -> {
+            long groupCmp = totalCountByType.getOrDefault(b.getVideoType(), 0L)
+                    - totalCountByType.getOrDefault(a.getVideoType(), 0L);
+            if (groupCmp != 0) return groupCmp > 0 ? 1 : -1;
             int ta = videoTypeOrdinal(a.getVideoType());
             int tb = videoTypeOrdinal(b.getVideoType());
             if (ta != tb) return Integer.compare(ta, tb);
@@ -1281,6 +1287,13 @@ public class PayslipService {
      * 动作之后调用：(a) confirm()/unconfirm()（管理层点自己那部分）(b) confirmExecutorWages()/
      * unconfirmExecutorWages()（会同时影响一个执行人员和一个项目负责人两个人的最终版判定，
      * 调用方要对两边都各调一次）。没有 Payslip 记录（管理层压根还没点过确认）时直接跳过。
+     *
+     * 2026-07-28 起：已经是最终版的，一旦因为下游（执行人员工资/手下执行人员工资）确认被撤销
+     * 而不再满足"最终版"条件，连同 confirmed（本人自己点过的"确认"动作）一起回退，不再只降级
+     * finalConfirmed——Shawn 反馈：不希望停留在"自己已确认、但要等别人"这种中间态（那样主工资单
+     * 按钮显示"取消确认"，但状态文案又说要等别人，自相矛盾），应该整体退回"预计（等待管理层
+     * 确认）"、重新显示"确认"按钮，需要本人重新点一次确认。跟 unconfirm() 手动取消确认时
+     * 同时清 confirmed+finalConfirmed 的行为保持一致。
      */
     private void recomputeFinality(Employee emp, String yearMonth, BigDecimal rate) {
         Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(emp.getId(), yearMonth).orElse(null);
@@ -1305,6 +1318,7 @@ public class PayslipService {
             payslipRepo.save(p);
         } else if (!shouldBeFinal && Boolean.TRUE.equals(p.getFinalConfirmed())) {
             p.setFinalConfirmed(false);
+            p.setConfirmed(false);
             payslipRepo.save(p);
         }
     }
