@@ -277,10 +277,11 @@ public class CollaborationTrackingController {
     public ApiResponse<InfluencerCollaborationPageResponse> listByInfluencer(
             @RequestParam Long influencerId,
             @RequestParam String category,
+            @RequestParam(required = false) Long brandId,
+            @RequestParam(required = false) Long teamId,
             @RequestParam(required = false) String platform,
             @RequestParam(required = false) VideoType videoType,
             @RequestParam(required = false) CollaborationProgress progress,
-            @RequestParam(required = false) InfluencerPaymentProgress influencerPaymentProgress,
             @RequestParam(required = false) Long projectManagerId,
             @RequestParam(required = false) String videoMonth,
             @RequestParam(defaultValue = "0") int page,
@@ -290,7 +291,7 @@ public class CollaborationTrackingController {
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "id"));
         Page<CollaborationTracking> result = trackingRepo.findByInfluencerAndCompletionStatus(
-                influencerId, completed, platform, videoType, progress, influencerPaymentProgress,
+                influencerId, completed, brandId, teamId, platform, videoType, progress,
                 projectManagerId, videoMonthParam, pageable);
 
         ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
@@ -300,7 +301,7 @@ public class CollaborationTrackingController {
         }
 
         List<Object[]> sumRows = trackingRepo.sumByInfluencerAndCompletionStatus(
-                influencerId, completed, platform, videoType, progress, influencerPaymentProgress,
+                influencerId, completed, brandId, teamId, platform, videoType, progress,
                 projectManagerId, videoMonthParam);
         Object[] sums = !sumRows.isEmpty() ? sumRows.get(0)
                 : new Object[]{0L, java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO};

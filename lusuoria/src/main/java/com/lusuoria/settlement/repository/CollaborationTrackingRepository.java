@@ -249,13 +249,14 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      * 已结算"，completed=false 看"不是客户已结算也不是折损"的进行中记录）分页查询。
      * EntityGraph 预先带上展示需要的关联，避免弹窗表格逐行触发懒加载 N+1。
      *
-     * 2026-07 新增几个可选筛选（都是"传了就筛，不传不影响"，可以同时生效）：platform/videoType/
-     * projectManagerId 两个类别通用；progress/influencerPaymentProgress 主要给"合作中项目"用
-     * （"已完结项目"本身已经锁定 progress=已结算，这两个筛选传了也不会报错，只是没什么实际
-     * 意义，前端只在"合作中项目"弹窗展示这两个筛选项）；videoMonth（发布月份）主要给"已完结
+     * 2026-07 新增几个可选筛选（都是"传了就筛，不传不影响"，可以同时生效）：brandId/teamId/
+     * platform/videoType/projectManagerId 两个类别通用；progress 主要给"合作中项目"用
+     * （"已完结项目"本身已经锁定 progress=已结算，这个筛选传了也不会报错，只是没什么实际
+     * 意义，前端只在"合作中项目"弹窗展示这一项）；videoMonth（发布月份）主要给"已完结
      * 项目"用。videoMonth 用 to_char 转字符串比较，原因跟 CollaborationTrackingRepository.
      * findByFilters 的 videoMonth 注释一致（Date 类型参数在这类动态筛选查询里在 Supabase 连接池
-     * 下会报"could not determine data type of parameter"）。
+     * 下会报"could not determine data type of parameter"）。influencerPaymentProgress 这个筛选
+     * 2026-07 加上后很快又被 Shawn 要求去掉（"合作中项目"弹窗不需要），已整个删除，不要再加回来。
      */
     @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"brand", "team", "influencer", "projectManager", "executor"})
     @Query("SELECT c FROM CollaborationTracking c WHERE c.isDeleted = false AND c.influencerId = :influencerId AND (" +
@@ -263,17 +264,18 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "  OR (:completed = false AND (c.progress IS NULL OR c.progress NOT IN (" +
            "        com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
            "        com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)))) " +
+           "AND (:brandId IS NULL OR c.brandId = :brandId) " +
+           "AND (:teamId IS NULL OR c.teamId = :teamId) " +
            "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
            "AND (:videoType IS NULL OR c.videoType = :videoType) " +
            "AND (:progress IS NULL OR c.progress = :progress) " +
-           "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress = :influencerPaymentProgress) " +
            "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId) " +
            "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth)")
     Page<CollaborationTracking> findByInfluencerAndCompletionStatus(
             @Param("influencerId") Long influencerId, @Param("completed") boolean completed,
+            @Param("brandId") Long brandId, @Param("teamId") Long teamId,
             @Param("platform") String platform, @Param("videoType") VideoType videoType,
             @Param("progress") CollaborationProgress progress,
-            @Param("influencerPaymentProgress") InfluencerPaymentProgress influencerPaymentProgress,
             @Param("projectManagerId") Long projectManagerId, @Param("videoMonth") String videoMonth,
             Pageable pageable);
 
@@ -294,17 +296,18 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "  OR (:completed = false AND (c.progress IS NULL OR c.progress NOT IN (" +
            "        com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
            "        com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)))) " +
+           "AND (:brandId IS NULL OR c.brandId = :brandId) " +
+           "AND (:teamId IS NULL OR c.teamId = :teamId) " +
            "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
            "AND (:videoType IS NULL OR c.videoType = :videoType) " +
            "AND (:progress IS NULL OR c.progress = :progress) " +
-           "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress = :influencerPaymentProgress) " +
            "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId) " +
            "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth)")
     List<Object[]> sumByInfluencerAndCompletionStatus(
             @Param("influencerId") Long influencerId, @Param("completed") boolean completed,
+            @Param("brandId") Long brandId, @Param("teamId") Long teamId,
             @Param("platform") String platform, @Param("videoType") VideoType videoType,
             @Param("progress") CollaborationProgress progress,
-            @Param("influencerPaymentProgress") InfluencerPaymentProgress influencerPaymentProgress,
             @Param("projectManagerId") Long projectManagerId, @Param("videoMonth") String videoMonth);
 
     // ===== 以下方法 2026-07 从 ProjectOrderRepository 迁移过来（"项目订单"模块已废弃），
