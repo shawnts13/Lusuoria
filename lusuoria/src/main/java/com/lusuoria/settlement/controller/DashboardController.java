@@ -142,4 +142,16 @@ public class DashboardController {
         }
         return ApiResponse.success(dashboardStatsService.drilldownCommission(startMonth, endMonth, currency));
     }
+
+    /** 下钻：奖金（Payslip.extraBonusAmount），按员工拆分（2026-07 新增） */
+    @GetMapping("/drilldown/extra-bonus")
+    public ApiResponse<DashboardDrilldownResponse> drilldownExtraBonus(
+            @RequestParam String startMonth,
+            @RequestParam String endMonth,
+            @RequestParam(defaultValue = "USD") String currency) {
+        if (!RoleUtil.canViewSensitiveFields()) {
+            return ApiResponse.error(403, "无权限查看财务数据");
+        }
+        return ApiResponse.success(dashboardStatsService.drilldownExtraBonus(startMonth, endMonth, currency));
+    }
 }

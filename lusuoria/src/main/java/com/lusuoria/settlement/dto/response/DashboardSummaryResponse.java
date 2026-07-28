@@ -38,11 +38,25 @@ public class DashboardSummaryResponse {
     /** 其他外部成本合计 */
     private BigDecimal totalOtherExternalCost;
 
-    /** 内部执行人力成本合计 */
+    /** 内部执行人力成本合计（展示用总数，不区分是不是影响公司利润——所有已填的执行成本原始值） */
     private BigDecimal totalInternalExecutionCost;
+
+    /**
+     * 2026-07 新增：真正参与"公司利润"公式计算的那部分内部执行人力成本（只有项目负责人是
+     * "管理层"的记录才计入，口径跟工资单模块一致）。公式展示要用这个字段，不要用上面
+     * totalInternalExecutionCost 那个未筛选的总数——之前公式展示用错了字段，导致公式里几项
+     * 加减对不上（虽然 totalCompanyProfit 本身算的是对的）。
+     */
+    private BigDecimal totalInternalExecutionCostForProfit;
 
     /** 内部其他员工成本合计（财务、IT后勤这些角色的固定月薪，法务角色薪资方案还没设计，暂不计入） */
     private BigDecimal totalOtherStaffCost;
+
+    /**
+     * 奖金合计（Payslip.extraBonusAmount，2026-07 新增，任何角色都可能被设置）。当月没有任何
+     * 人设置奖金时为 0，前端据此决定要不要显示这张卡片（不为 0 才显示）。
+     */
+    private BigDecimal totalExtraBonus;
 
     /** 项目毛利合计 = 客户合作价格 - 红人成本 - 其他外部成本 */
     private BigDecimal totalGrossProfit;
@@ -53,7 +67,10 @@ public class DashboardSummaryResponse {
     /** 负责人提成合计 */
     private BigDecimal totalCommissionAmount;
 
-    /** 公司利润 = 客户合作价格 - 红人成本 - 其他外部成本 - 内部执行成本 - 负责人提成 - 内部其他员工成本 */
+    /**
+     * 公司利润 = 项目毛利 - 内部执行人力成本（仅计入公司利润的那部分，见
+     * totalInternalExecutionCostForProfit） - 负责人提成合计 - 内部其他员工成本 - 奖金
+     */
     private BigDecimal totalCompanyProfit;
 
     /** 当前展示币种：USD 或 RMB */

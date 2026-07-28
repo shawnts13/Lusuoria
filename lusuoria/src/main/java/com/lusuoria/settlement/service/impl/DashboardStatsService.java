@@ -81,6 +81,7 @@ public class DashboardStatsService {
         BigDecimal totalInfluencerCost = BigDecimal.ZERO;
         BigDecimal totalOtherCost = BigDecimal.ZERO;
         BigDecimal totalExecCost = BigDecimal.ZERO;
+        BigDecimal totalExecCostForProfitUsd = BigDecimal.ZERO;
         BigDecimal totalGrossProfit = BigDecimal.ZERO;
         BigDecimal totalDistributable = BigDecimal.ZERO;
         BigDecimal totalCommission = BigDecimal.ZERO;
@@ -92,6 +93,7 @@ public class DashboardStatsService {
             totalInfluencerCost = totalInfluencerCost.add(c.influencerCost);
             totalOtherCost      = totalOtherCost.add(c.otherExternalCost);
             totalExecCost       = totalExecCost.add(c.internalExecutionCost);
+            totalExecCostForProfitUsd = totalExecCostForProfitUsd.add(c.internalExecutionCostForProfitUsd);
             totalGrossProfit    = totalGrossProfit.add(c.grossProfit);
             totalDistributable  = totalDistributable.add(c.distributableProfit);
             totalCommission     = totalCommission.add(c.commissionAmount);
@@ -106,6 +108,13 @@ public class DashboardStatsService {
                 ? totalOtherStaffCostRmb.divide(rate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
         totalCompanyProfit = totalCompanyProfit.subtract(totalOtherStaffCostUsd);
 
+        // 奖金（Payslip.extraBonusAmount，任何角色都可能设置，2026-07 新增计入公司利润扣减）：
+        // 跟"内部其他员工成本"是两回事，也要从公司利润里扣掉——工资单模块（PayslipService.
+        // computeManagement）早就是这么算的，看板这里之前漏了，导致看板"公司利润"比工资单里
+        // 实际的公司利润偏高
+        BigDecimal totalExtraBonusUsd = extraBonusTotalUsd(yearMonth, rate);
+        totalCompanyProfit = totalCompanyProfit.subtract(totalExtraBonusUsd);
+
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
         return DashboardSummaryResponse.builder()
                 .videoProjectCount(videoCount)
@@ -114,7 +123,9 @@ public class DashboardStatsService {
                 .totalInfluencerCost(convert(totalInfluencerCost, rate, toRmb))
                 .totalOtherExternalCost(convertFromRmb(totalOtherCost, rate, toRmb))
                 .totalInternalExecutionCost(convertFromRmb(totalExecCost, rate, toRmb))
+                .totalInternalExecutionCostForProfit(convert(totalExecCostForProfitUsd, rate, toRmb))
                 .totalOtherStaffCost(convertFromRmb(totalOtherStaffCostRmb, rate, toRmb))
+                .totalExtraBonus(convert(totalExtraBonusUsd, rate, toRmb))
                 .totalGrossProfit(convert(totalGrossProfit, rate, toRmb))
                 .totalDistributableProfit(convert(totalDistributable, rate, toRmb))
                 .totalCommissionAmount(convert(totalCommission, rate, toRmb))
@@ -122,6 +133,28 @@ public class DashboardStatsService {
                 .currency(toRmb ? "RMB" : "USD")
                 .exchangeRateInfo(rateInfo)
                 .build();
+    }
+
+    /**
+     * 当月所有员工"奖金"（Payslip.extraBonusAmount）合计，换算成美金——跟 PayslipService 里
+     * 汇总"其他员工已确认的奖金"用的是同一套换算口径（RMB 按当月汇率换算成美金，汇率无效时
+     * 保守按 0 算，不是任何角色专属，管理层给谁设置了都算）。这里不要求 Payslip 已确认/
+     * 已是最终版——看板是"预计"性质的数字，只要设置了就算，不像 PayslipService 那边要等
+     * 所有相关方都确认完才把这个人算进"其他人已确认"的合计。
+     */
+    private BigDecimal extraBonusTotalUsd(String yearMonth, BigDecimal rate) {
+        BigDecimal sum = BigDecimal.ZERO;
+        for (Payslip p : payslipRepo.findByYearMonthAndIsDeletedFalse(yearMonth)) {
+            if (p.getExtraBonusAmount() == null) continue;
+            boolean isRmb = "RMB".equals(p.getExtraBonusCurrency());
+            BigDecimal usd = isRmb
+                    ? (rate != null && rate.compareTo(BigDecimal.ZERO) > 0
+                        ? p.getExtraBonusAmount().divide(rate, SCALE, RoundingMode.HALF_UP)
+                        : BigDecimal.ZERO)
+                    : p.getExtraBonusAmount();
+            sum = sum.add(usd);
+        }
+        return sum;
     }
 
     /**
@@ -227,17 +260,29 @@ public class DashboardStatsService {
                     .amount(convertFromRmb(amountRmb, rate, toRmb))
                     .build());
         }
-        for (Map.Entry<Long, BigDecimal> entry : legalStaffCostRmbByEmployee(startMonth, endMonth).entrySet()) {
-            if (entry.getValue().compareTo(BigDecimal.ZERO) == 0) continue;
-            Employee e = employeeCache.findById(entry.getKey());
+        // 2026-07 起：法务全员都要展示（不管这个月/这段范围管理层有没有在"工资单"模块设置过
+        // 工资），之前只遍历 legalStaffCostRmbByEmployee 的返回结果——那个 map 只包含"至少有
+        // 一个月被设置过"的法务，从没被设置过的法务会整行消失，容易让人误以为"这个法务这个月
+        // 没有成本"而不是"管理层还没录入"。amount=null 配合 dimensionType=legal_unset，
+        // 前端据此显示"待管理层在工资单模块设置法务当月工资"这句提示，而不是金额
+        Map<Long, BigDecimal> legalTotalsRmb = legalStaffCostRmbByEmployee(startMonth, endMonth);
+        for (Employee e : employeeCache.getAll()) {
+            if (!"法务".equals(e.getRole())) continue;
+            BigDecimal totalRmb = legalTotalsRmb.get(e.getId());
+            boolean hasAmount = totalRmb != null && totalRmb.compareTo(BigDecimal.ZERO) > 0;
             rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
-                    .dimensionLabel("法务 - " + (e != null ? e.getName() : "未知法务"))
-                    .dimensionType("role_name")
+                    .dimensionLabel("法务 - " + e.getName())
+                    .dimensionType(hasAmount ? "role_name" : "legal_unset")
                     .videoCount(1L)
-                    .amount(convertFromRmb(entry.getValue(), rate, toRmb))
+                    .amount(hasAmount ? convertFromRmb(totalRmb, rate, toRmb) : null)
                     .build());
         }
-        rows.sort((a, b) -> b.getAmount().compareTo(a.getAmount()));
+        rows.sort((a, b) -> {
+            if (a.getAmount() == null && b.getAmount() == null) return 0;
+            if (a.getAmount() == null) return 1;
+            if (b.getAmount() == null) return -1;
+            return b.getAmount().compareTo(a.getAmount());
+        });
 
         return DashboardDrilldownResponse.builder()
                 .currency(toRmb ? "RMB" : "USD")
@@ -256,7 +301,13 @@ public class DashboardStatsService {
         Map<String, Long> grouped = new LinkedHashMap<>();
         String dimensionType;
 
-        if ("publish_month".equals(dimension)) {
+        if ("brand".equals(dimension)) {
+            // 按品牌方分组（2026-07 新增，不带团队维度，比默认的 brand_team 更粗一档）
+            dimensionType = "brand";
+            for (CollaborationTracking o : orders) {
+                grouped.merge(brandNameOf(o.getBrandId()), 1L, Long::sum);
+            }
+        } else if ("publish_month".equals(dimension)) {
             // 按"发布时间"所在月份分组
             dimensionType = "publish_month";
             java.text.SimpleDateFormat monthFmt = new java.text.SimpleDateFormat("yyyy-MM");
@@ -355,19 +406,24 @@ public class DashboardStatsService {
 
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
         Map<String, Long> counted = new LinkedHashMap<>();
+        // "按项目负责人/品牌方/红人团队"这一档要求同一个负责人的行排在一起（见下面排序），
+        // 光靠拼好的 key 字符串排不出"先按负责人分组"的效果（字符串本身混着品牌/团队），
+        // 单独记一份 key -> 负责人姓名，排序时用
+        Map<String, String> managerNameByKey = new LinkedHashMap<>();
         for (CollaborationTracking o : orders) {
             BigDecimal execCostRmb = safe(o.getInternalExecutionCost());
+            String managerName = managerNameOf(o.getProjectManagerId());
             String key;
             switch (dimension) {
                 case "manager_brand_team":
-                    key = managerNameOf(o.getProjectManagerId()) + " - " + brandNameOf(o.getBrandId())
+                    key = managerName + " - " + brandNameOf(o.getBrandId())
                             + " - " + teamNameOf(o.getTeam());
                     break;
                 case "manager_executor":
-                    key = managerNameOf(o.getProjectManagerId()) + " - " + executorNameOf(o.getExecutorId());
+                    key = managerName + " - " + executorNameOf(o.getExecutorId());
                     break;
                 default: // manager
-                    key = managerNameOf(o.getProjectManagerId());
+                    key = managerName;
             }
             // 项目负责人不是"管理层"时，这部分执行成本不影响公司利润（见 ProfitCalculator.
             // isManagementOrder），维度标签上加个后缀提醒查看的人不要误以为这些钱扣了公司利润
@@ -375,6 +431,7 @@ public class DashboardStatsService {
                 key = key + "（不影响公司利润）";
             }
             grouped.merge(key, execCostRmb, BigDecimal::add);
+            managerNameByKey.putIfAbsent(key, managerName);
             // 笔数只统计实际填了内部执行成本的记录，跟金额是不是0保持同一个口径
             if (execCostRmb.compareTo(BigDecimal.ZERO) > 0) counted.merge(key, 1L, Long::sum);
         }
@@ -389,8 +446,17 @@ public class DashboardStatsService {
                         .videoCount(counted.get(e.getKey()))
                         .amount(convertFromRmb(e.getValue(), rate, toRmb))
                         .build())
-                .sorted((a, b) -> b.getAmount().compareTo(a.getAmount()))
                 .collect(Collectors.toList());
+        // "按项目负责人/品牌方/红人团队"：同一负责人的行分在一起（按负责人姓名排），组内再按
+        // 金额倒序；其余维度维持原来的纯金额倒序不变
+        if ("manager_brand_team".equals(dimension)) {
+            rows.sort(Comparator
+                    .<DashboardDrilldownResponse.DrilldownRow, String>comparing(
+                            r -> managerNameByKey.getOrDefault(r.getDimensionLabel(), ""))
+                    .thenComparing(Comparator.comparing(DashboardDrilldownResponse.DrilldownRow::getAmount).reversed()));
+        } else {
+            rows.sort((a, b) -> b.getAmount().compareTo(a.getAmount()));
+        }
 
         return DashboardDrilldownResponse.builder()
                 .currency(toRmb ? "RMB" : "USD")
@@ -431,7 +497,12 @@ public class DashboardStatsService {
             if (manager != null && "管理层".equals(manager.getRole())) continue;
 
             BigDecimal commissionUsd = e.getValue();
-            BigDecimal bonusUsd = commissionBonusService.computeBonus(manager, commissionUsd, rate);
+            // 2026-07 新增：这个负责人压根没在"员工管理"配置 bonus 阶梯规则时，bonus 列显示"-"
+            // （前端 fmtAmount 对 null 就是显示"—"），跟"配置了规则但没达标/规则算出来正好是0"
+            // 区分开——后者应该老老实实显示 0.00，不能也显示"-"
+            boolean hasBonusRule = commissionBonusService.hasBonusTierConfigured(manager);
+            BigDecimal bonusUsd = hasBonusRule ? commissionBonusService.computeBonus(manager, commissionUsd, rate) : null;
+            BigDecimal totalUsd = commissionUsd.add(bonusUsd != null ? bonusUsd : BigDecimal.ZERO);
             String label = managerId.equals(NO_MANAGER_KEY) ? "未指定负责人"
                     : (manager != null ? manager.getName() : "未知负责人");
             rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
@@ -439,11 +510,56 @@ public class DashboardStatsService {
                     .dimensionType("manager")
                     .videoCount(counted.get(managerId))
                     .amount(convert(commissionUsd, rate, toRmb))
-                    .bonusAmount(convert(bonusUsd, rate, toRmb))
-                    .totalAmount(convert(commissionUsd.add(bonusUsd), rate, toRmb))
+                    .bonusAmount(bonusUsd != null ? convert(bonusUsd, rate, toRmb) : null)
+                    .totalAmount(convert(totalUsd, rate, toRmb))
                     .build());
         }
         rows.sort((a, b) -> b.getTotalAmount().compareTo(a.getTotalAmount()));
+
+        return DashboardDrilldownResponse.builder()
+                .currency(toRmb ? "RMB" : "USD")
+                .exchangeRateInfo(exchangeRateService.getRateForMonth(endMonth))
+                .rows(rows)
+                .build();
+    }
+
+    // ============ 下钻：奖金（Payslip.extraBonusAmount，按员工，2026-07 新增） ============
+    // 只有"顶部汇总"总数 > 0 时前端才会显示这张卡片/允许点进来，逐月查 Payslip 表——
+    // 每个月单独换算成美金再相加（每月汇率可能不同，不能先把不同月份的原始值直接相加
+    // 再统一换算，那样汇率是错的），逻辑跟 legalStaffCostRmbByEmployee 是同一个思路，
+    // 只是这里换算方向是"转成美金"而不是保留人民币原值。
+
+    public DashboardDrilldownResponse drilldownExtraBonus(String startMonth, String endMonth, String currency) {
+        BigDecimal rate = rateForRange(endMonth);
+        boolean toRmb = "RMB".equalsIgnoreCase(currency);
+
+        Map<Long, BigDecimal> totalUsdByEmployee = new LinkedHashMap<>();
+        for (String month : monthsBetween(startMonth, endMonth)) {
+            BigDecimal monthRate = exchangeRateService.getRateForMonth(month).getUsdToCny();
+            for (Payslip p : payslipRepo.findByYearMonthAndIsDeletedFalse(month)) {
+                if (p.getExtraBonusAmount() == null) continue;
+                boolean isRmb = "RMB".equals(p.getExtraBonusCurrency());
+                BigDecimal usd = isRmb
+                        ? (monthRate != null && monthRate.compareTo(BigDecimal.ZERO) > 0
+                            ? p.getExtraBonusAmount().divide(monthRate, SCALE, RoundingMode.HALF_UP)
+                            : BigDecimal.ZERO)
+                        : p.getExtraBonusAmount();
+                totalUsdByEmployee.merge(p.getEmployeeId(), usd, BigDecimal::add);
+            }
+        }
+
+        List<DashboardDrilldownResponse.DrilldownRow> rows = new ArrayList<>();
+        for (Map.Entry<Long, BigDecimal> e : totalUsdByEmployee.entrySet()) {
+            if (e.getValue().compareTo(BigDecimal.ZERO) == 0) continue;
+            Employee emp = employeeCache.findById(e.getKey());
+            rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
+                    .dimensionLabel(emp != null ? emp.getName() : ("员工#" + e.getKey()))
+                    .dimensionType("employee")
+                    .videoCount(1L)
+                    .amount(convert(e.getValue(), rate, toRmb))
+                    .build());
+        }
+        rows.sort((a, b) -> b.getAmount().compareTo(a.getAmount()));
 
         return DashboardDrilldownResponse.builder()
                 .currency(toRmb ? "RMB" : "USD")
@@ -552,6 +668,7 @@ public class DashboardStatsService {
         c.influencerCost = influencerCost;
         c.otherExternalCost = otherCostRmb;
         c.internalExecutionCost = execCostRmb;
+        c.internalExecutionCostForProfitUsd = execCostUsd;
         c.grossProfit = grossProfit;
         c.distributableProfit = distributable;
         c.commissionAmount = commission;
@@ -563,7 +680,16 @@ public class DashboardStatsService {
         BigDecimal clientPrice;
         BigDecimal influencerCost;
         BigDecimal otherExternalCost;
+        /** "内部执行人力成本"展示用总数——不区分是不是影响公司利润，所有已填的执行成本原始值（人民币） */
         BigDecimal internalExecutionCost;
+        /**
+         * 2026-07 新增：真正参与"公司利润"公式计算的那部分执行成本（美金，只有项目负责人是
+         * "管理层"的记录才非零，见 ProfitCalculator.isManagementOrder）。之前"公司利润"公式
+         * 展示时错误地复用了上面 internalExecutionCost 那个未筛选的总数，导致公式里几项加减
+         * 对不上（虽然 companyProfit 本身算出来是对的）——公式展示要用这个字段，不是
+         * internalExecutionCost。工资单模块（PayslipService）算公司利润时用的就是这个口径。
+         */
+        BigDecimal internalExecutionCostForProfitUsd;
         BigDecimal grossProfit;
         BigDecimal distributableProfit;
         BigDecimal commissionAmount;
