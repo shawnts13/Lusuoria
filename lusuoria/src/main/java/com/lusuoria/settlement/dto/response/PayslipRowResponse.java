@@ -77,4 +77,14 @@ public class PayslipRowResponse {
      * 之一），但还没有先在"管理层手下执行人员工资"确认过，主表格"确认"按钮暂不可点。 */
     private String blockedReason;
 
+    /**
+     * 仅执行人员角色有意义（2026-07-28 新增）：这个月涉及的所有项目负责人（含管理层自己
+     * 作为相关项目负责人之一时的那份）是否都已经在各自的"手下执行人员工资"确认过了。跟
+     * {@link #confirmed}（是否最终版，还要求 ownActionConfirmed 一起成立）不是一回事——这个
+     * 字段单独只看"项目负责人那一侧"的进度，用来在管理层自己都还没点确认（预计）的阶段，
+     * 进一步区分是"还要等项目负责人"还是"项目负责人那边都好了，就差管理层自己点一下"。
+     * pmIds 为空（这个月不涉及任何项目负责人，只有奖金）时视为 true。
+     */
+    private Boolean executorAllWagesConfirmed;
+
 }

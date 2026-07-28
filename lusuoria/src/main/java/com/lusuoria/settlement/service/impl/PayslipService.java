@@ -1116,10 +1116,13 @@ public class PayslipService {
         }
         Boolean legalSalarySet = "法务".equals(emp.getRole()) ? (payslip != null && payslip.getLegalSalaryRmb() != null) : null;
         String blockedReason;
+        Boolean executorAllWagesConfirmed = null;
         if ("管理层".equals(emp.getRole())) {
             blockedReason = managementBlockReason(yearMonth, emp.getId(), liveRateInfo.getUsdToCny());
         } else if ("执行人员".equals(emp.getRole())) {
-            blockedReason = resolveExecutorPmConfirmStatus(emp.getId(), yearMonth).getBlockedReason();
+            ExecutorPmConfirmStatus status = resolveExecutorPmConfirmStatus(emp.getId(), yearMonth);
+            blockedReason = status.getBlockedReason();
+            executorAllWagesConfirmed = status.isAllConfirmed();
         } else {
             blockedReason = null;
         }
@@ -1127,6 +1130,7 @@ public class PayslipService {
                 .employeeId(emp.getId()).employeeName(emp.getName()).employeeRole(emp.getRole())
                 .confirmed(d.getConfirmed())
                 .ownActionConfirmed(d.getOwnActionConfirmed())
+                .executorAllWagesConfirmed(executorAllWagesConfirmed)
                 .videoCount(videoCount)
                 .baseAmount(d.getBaseAmount())
                 .tierBonusAmount(d.getTierBonusAmount())
