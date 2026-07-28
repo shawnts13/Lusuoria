@@ -111,6 +111,18 @@ public class CollaborationTrackingController {
                         "com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
                         "com.lusuoria.settlement.enums.CollaborationProgress.DELAYED) " +
                         "THEN 0 ELSE 1 END")
+                // 2026-07 新增：默认（不管上面两级"我的优先"逻辑有没有命中）未完成的项目排在
+                // 前面（口径跟上面 onlyMyResponsibility 那一档一致：progress 不在
+                // SETTLED/DELAYED 之列），其次是还没加入任何结款批次的（influencerPaymentId
+                // 为空）——两档都用同一套 JpaSort.unsafe CASE WHEN 写法，不新增查询/不影响
+                // 上面已经在用的两级优先排序，只是在它们之后、用户自己选的列排序之前再插两档
+                .andUnsafe(Sort.Direction.ASC,
+                        "CASE WHEN c.progress NOT IN (" +
+                        "com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+                        "com.lusuoria.settlement.enums.CollaborationProgress.DELAYED) " +
+                        "THEN 0 ELSE 1 END")
+                .andUnsafe(Sort.Direction.ASC,
+                        "CASE WHEN c.influencerPaymentId IS NULL THEN 0 ELSE 1 END")
                 .and(Sort.by(userSortDirection, sortProperty));
         PageRequest pageable = PageRequest.of(page, size, sort);
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();

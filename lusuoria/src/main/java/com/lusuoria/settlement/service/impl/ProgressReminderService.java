@@ -1123,7 +1123,7 @@ public class ProgressReminderService {
         List<ProgressReminderDetail> details = detailRepo.findByReminderIdOrderByDeadlineDateAsc(reminderId);
         if (!hasFullVisibilityFor(reminder.getCategory())) {
             if (ACKNOWLEDGEABLE_CATEGORIES.contains(reminder.getCategory())) {
-                details = filterAcknowledged(reminder.getCategory(), details);
+                markAcknowledged(reminder.getCategory(), details);
             }
             if (isViewingAsInvolvedExecutor(reminder)) {
                 details = filterToMyExecutorRecords(reminder.getCategory(), details);
@@ -1233,38 +1233,35 @@ public class ProgressReminderService {
     }
 
     /**
-     * 过滤掉当前登录人已经标记"已处理"、且标记之后业务记录时间戳没有变化（说明情况还没变，
-     * 应该继续隐藏）的明细行；标记之后时间戳变了（真的推进了）的，标记自动失效，正常展示。
+     * 给当前登录人已经标记"已处理"、且标记之后业务记录时间戳没有变化（说明情况还没变，标记
+     * 仍然有效）的明细行打上 acknowledged=true（不再从列表里移除——2026-07 起改成"仍然展示，
+     * 前端变灰 + 标'已标记为已处理'"，原因是过滤掉会导致主卡片标题的笔数（跑批时固定算好的，
+     * 不受标记影响）跟点进详情看到的笔数对不上）。标记之后时间戳真的往前走了（说明情况已经
+     * 变了）的，标记自动失效，acknowledged 保持 null/false，正常展示不变灰。
      */
-    private List<ProgressReminderDetail> filterAcknowledged(ReminderCategory category, List<ProgressReminderDetail> details) {
+    private void markAcknowledged(ReminderCategory category, List<ProgressReminderDetail> details) {
         Long employeeId = employeeRoleUtil.getCurrentEmployeeId();
-        if (employeeId == null || details.isEmpty()) return details;
+        if (employeeId == null || details.isEmpty()) return;
 
         boolean requirementBased = isRequirementBasedCategory(category);
         List<Long> targetIds = details.stream()
                 .map(d -> requirementBased ? d.getRequirementId() : d.getTrackingId())
                 .filter(Objects::nonNull).distinct().collect(Collectors.toList());
-        if (targetIds.isEmpty()) return details;
+        if (targetIds.isEmpty()) return;
 
         Map<Long, Date> snapshotByTarget = ackRepo.findByCategoryAndEmployeeIdAndTargetIdIn(category, employeeId, targetIds)
                 .stream().collect(Collectors.toMap(ReminderAcknowledgement::getTargetId, ReminderAcknowledgement::getSnapshotChangedAt));
-        if (snapshotByTarget.isEmpty()) return details;
+        if (snapshotByTarget.isEmpty()) return;
 
-        List<ProgressReminderDetail> result = new ArrayList<>();
         for (ProgressReminderDetail d : details) {
             Long targetId = requirementBased ? d.getRequirementId() : d.getTrackingId();
             Date snapshot = snapshotByTarget.get(targetId);
-            if (snapshot == null) {
-                result.add(d);
-                continue;
-            }
+            if (snapshot == null) continue;
             Date currentChangedAt = resolveCurrentChangedAt(category, targetId);
-            // 标记之后业务记录的时间戳真的往前走了，说明标记已经失效，恢复展示；否则继续隐藏
-            if (currentChangedAt != null && currentChangedAt.after(snapshot)) {
-                result.add(d);
-            }
+            // 标记之后业务记录的时间戳真的往前走了，说明标记已经失效，不算已处理；否则仍然算已处理
+            boolean stillAcknowledged = !(currentChangedAt != null && currentChangedAt.after(snapshot));
+            if (stillAcknowledged) d.setAcknowledged(true);
         }
-        return result;
     }
 
     private boolean canViewReminder(ProgressReminder r) {

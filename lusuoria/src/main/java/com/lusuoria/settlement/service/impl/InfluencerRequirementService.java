@@ -359,6 +359,56 @@ public class InfluencerRequirementService {
         return new org.springframework.data.domain.PageImpl<>(pageContent, pageable, total);
     }
 
+    /**
+     * 需求列表页默认排序（2026-07 新增）：不筛选（"全部需求"视角，不是"查看未完成的需求"那个
+     * 开关），但未完成的排在已完成的前面——只在前端处于"默认排序"（按 id）时触发，用户主动点了
+     * 别的列头排序时不做这层重排（尊重用户的显式排序选择）。"未完成"口径跟 pageIncomplete 完全
+     * 一致（total<=0 或 completed<total 都算未完成），稳定分桶排序：未完成的桶内部、已完成的桶
+     * 内部，各自仍按请求的排序（这里是 id 倒序）保持相对顺序不变。做法照抄 pageIncomplete——
+     * 先轻量投影全量查出来分桶算 id 顺序，完整实体只对"当前页"这一小撮 id 才去查。
+     */
+    @Transactional(readOnly = true)
+    public org.springframework.data.domain.Page<InfluencerRequirement> listIncompleteFirst(
+            Long brandId, Long teamId, String accountName, String requirementMonth,
+            String internalRequirementNo, org.springframework.data.domain.Pageable pageable) {
+        List<Object[]> liteRows = requirementRepo.findLiteProjectionByFilters(
+                brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable.getSort());
+        List<String> nos = liteRows.stream().map(row -> (String) row[1]).collect(Collectors.toList());
+        Map<String, Integer> completedByNo = completedCountByNos(nos);
+
+        List<Long> incompleteIds = new ArrayList<>();
+        List<Long> completeIds = new ArrayList<>();
+        for (Object[] row : liteRows) {
+            Long id = ((Number) row[0]).longValue();
+            String no = (String) row[1];
+            Integer totalItemCount = (Integer) row[2];
+            int completed = completedByNo.getOrDefault(no, 0);
+            int total = totalItemCount != null ? totalItemCount : 0;
+            boolean isComplete = total > 0 && completed >= total;
+            (isComplete ? completeIds : incompleteIds).add(id);
+        }
+        List<Long> orderedIds = new ArrayList<>(incompleteIds);
+        orderedIds.addAll(completeIds);
+
+        int total = orderedIds.size();
+        int start = Math.min((int) pageable.getOffset(), total);
+        int end = Math.min(start + pageable.getPageSize(), total);
+        List<Long> pageIds = orderedIds.subList(start, end);
+
+        Map<Long, InfluencerRequirement> byId = requirementRepo.findAllById(pageIds).stream()
+                .collect(Collectors.toMap(InfluencerRequirement::getId, r -> r));
+        Map<String, Integer> establishedByNo = establishedCountByNos(nos);
+        List<InfluencerRequirement> pageContent = new ArrayList<>();
+        for (Long id : pageIds) {
+            InfluencerRequirement r = byId.get(id);
+            if (r == null) continue;
+            r.setCompletedCount(completedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
+            r.setEstablishedCount(establishedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
+            pageContent.add(r);
+        }
+        return new org.springframework.data.domain.PageImpl<>(pageContent, pageable, total);
+    }
+
     /** 需求列表页用：按 internalRequirementNo 批量算"需求完成进度"分子，避免逐条查库 */
     @Transactional(readOnly = true)
     public Map<String, Integer> completedCountByNos(List<String> nos) {

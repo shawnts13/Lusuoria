@@ -63,6 +63,13 @@ public class InfluencerRequirementController {
                     brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable));
         }
 
+        // "全部需求"视角下的默认排序（前端没有点过别的列头，还是初始的按 id）：未完成的排在
+        // 已完成的前面，见 listIncompleteFirst 的注释。用户主动点了别的列头排序时不做这层重排。
+        if ("id".equals(sortBy)) {
+            return ApiResponse.success(requirementService.listIncompleteFirst(
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable));
+        }
+
         Page<InfluencerRequirement> result = requirementRepo.findByFilters(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable);
 

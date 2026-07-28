@@ -132,4 +132,14 @@ public class ProgressReminderDetail extends BaseEntity {
     /** 内部执行人员姓名快照（PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL 专用） */
     @Column(name = "executor_name")
     private String executorName;
+
+    /**
+     * 当前登录人是否已经"标记已处理"过这一行（2026-07 新增，不落库，只在
+     * ProgressReminderService.listDetails() 返回前临时算好）。之前的做法是把标记已处理的行
+     * 直接从返回列表里过滤掉，会导致主卡片标题的笔数（跑批时算的，不受标记影响）跟点进详情
+     * 看到的笔数对不上，容易让人以为数据丢了；现在改成不过滤，保留这一行，只是标一下
+     * acknowledged=true，前端据此把这一行变灰、操作列换成"已标记为已处理"文案。
+     */
+    @Transient
+    private Boolean acknowledged;
 }
