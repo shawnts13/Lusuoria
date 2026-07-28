@@ -306,7 +306,7 @@ public class PayslipService {
                 .getOrDefault(managerId, Collections.emptyMap())
                 .getOrDefault(executorId, Collections.emptyList());
         List<PayslipDimensionRow> rows = buildDimensionRowsForOrders(ordersForPair);
-        rows.sort(this::compareExecutorRows);
+        sortExecutorRowsByTier(managerId, executorId, rows);
         for (PayslipDimensionRow r : rows) {
             r.setExecutorId(executorId);
             r.setExecutorName(employeeNameOf(executorId));
@@ -712,7 +712,7 @@ public class PayslipService {
                 groupRows = readExecutorWageSnapshotRows(confirmation);
             } else {
                 groupRows = buildDimensionRowsForOrders(execOrdersUnderPm.get(execId));
-                groupRows.sort(this::compareExecutorRows);
+                sortExecutorRowsByTier(managerId, execId, groupRows);
                 for (PayslipDimensionRow r : groupRows) {
                     r.setExecutorId(execId);
                     r.setExecutorName(execName);
@@ -765,7 +765,7 @@ public class PayslipService {
             } else {
                 List<CollaborationTracking> ordersForPair = byPmThenExec.get(pmId).get(execId);
                 groupRows = buildDimensionRowsForOrders(ordersForPair);
-                groupRows.sort(this::compareExecutorRows);
+                sortExecutorRowsByTier(pmId, execId, groupRows);
                 groupRows = withTierSummaries(pmId, execId, groupRows);
             }
             for (PayslipDimensionRow r : groupRows) r.setProjectManagerName(pmName);
@@ -800,19 +800,55 @@ public class PayslipService {
     }
 
     /**
-     * 2026-07 起排序改成：视频类型（分组用，不变）→ 品牌方 → 团队 → 视频数倒序。
-     * 之前只按"视频数倒序"排，现在同一个视频类型下可能因为单价拆分出好几行，按品牌方/团队
-     * 排在一起更方便项目负责人核对同一个客户下的记录，视频数倒序还是排在同一品牌/团队内部。
+     * 2026-07-28 起排序改成：视频类型（分组用，不变）→ 梯度档位（按 ExecutorPayRateTier 配置的
+     * minCount 升序，即梯度1/2/3...）→ 视频数倒序 → 品牌方/团队（仅剩的兜底，保证同一档位内
+     * 视频数也相同时排序稳定）。之前是按"品牌方→团队→视频数倒序"，Shawn 反馈同一视频类型下
+     * 不同梯度档位的行会混在一起不好看，改成梯度档位优先分组、组内按视频数倒序（同一档位配置
+     * 只有0/1档，即"每条固定价"或没配置梯度的视频类型，走 tierRankForUnitPrice 兜底逻辑，
+     * 效果等同于不分档、直接按视频数倒序，行为不变）。
      */
-    private int compareExecutorRows(PayslipDimensionRow a, PayslipDimensionRow b) {
-        int ta = videoTypeOrdinal(a.getVideoType());
-        int tb = videoTypeOrdinal(b.getVideoType());
-        if (ta != tb) return Integer.compare(ta, tb);
-        int brandCmp = safeCompare(a.getBrandName(), b.getBrandName());
-        if (brandCmp != 0) return brandCmp;
-        int teamCmp = safeCompare(a.getTeamName(), b.getTeamName());
-        if (teamCmp != 0) return teamCmp;
-        return b.getVideoCount().compareTo(a.getVideoCount());
+    private void sortExecutorRowsByTier(Long managerId, Long executorId, List<PayslipDimensionRow> rows) {
+        Set<String> videoTypeKeys = new LinkedHashSet<>();
+        for (PayslipDimensionRow r : rows) {
+            if (r.getVideoType() != null) videoTypeKeys.add(r.getVideoType());
+        }
+        Map<String, List<ExecutorPayRateTier>> tiersByType = new HashMap<>();
+        for (String key : videoTypeKeys) {
+            try {
+                VideoType vt = VideoType.valueOf(key);
+                tiersByType.put(key, executorPayRateTierRepo
+                        .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(managerId, executorId, vt));
+            } catch (IllegalArgumentException e) {
+                tiersByType.put(key, Collections.emptyList());
+            }
+        }
+        Map<PayslipDimensionRow, Integer> tierRankByRow = new IdentityHashMap<>();
+        for (PayslipDimensionRow r : rows) {
+            List<ExecutorPayRateTier> tiers = tiersByType.getOrDefault(r.getVideoType(), Collections.emptyList());
+            tierRankByRow.put(r, tierRankForUnitPrice(tiers, r.getUnitPrice()));
+        }
+        rows.sort((a, b) -> {
+            int ta = videoTypeOrdinal(a.getVideoType());
+            int tb = videoTypeOrdinal(b.getVideoType());
+            if (ta != tb) return Integer.compare(ta, tb);
+            int rankCmp = Integer.compare(tierRankByRow.get(a), tierRankByRow.get(b));
+            if (rankCmp != 0) return rankCmp;
+            int countCmp = b.getVideoCount().compareTo(a.getVideoCount());
+            if (countCmp != 0) return countCmp;
+            int brandCmp = safeCompare(a.getBrandName(), b.getBrandName());
+            if (brandCmp != 0) return brandCmp;
+            return safeCompare(a.getTeamName(), b.getTeamName());
+        });
+    }
+
+    /** 这一行的单价属于第几档梯度（0=梯度1，1=梯度2...），没匹配上任何配置档位（临时改价/历史
+     * 数据/没配置梯度）时排在已知档位后面，效果上等同于跟其他没匹配上的行放在同一"档"里 */
+    private int tierRankForUnitPrice(List<ExecutorPayRateTier> tiers, BigDecimal unitPrice) {
+        if (unitPrice == null) return tiers.size();
+        for (int i = 0; i < tiers.size(); i++) {
+            if (tiers.get(i).getRate().compareTo(unitPrice) == 0) return i;
+        }
+        return tiers.size();
     }
 
     /** null 安全的字符串比较（品牌方/团队名可能为空，比如红人没关联团队） */
@@ -828,7 +864,7 @@ public class PayslipService {
      * 只有这个视频类型配置了2档以上真正意义上的梯度（不是"每条固定价"那种单档）才插入，
      * 每一档配了多少条按这一段明细行里"单价等于这一档单价"的行数求和——这批明细行已经是
      * 按 accumulateExecutorRow 的单价分组拆开的，同一档的所有明细行单价必然一致，加总不会
-     * 漏掉也不会重复。传入的 rows 必须已经按 compareExecutorRows 排过序（同一视频类型的行
+     * 漏掉也不会重复。传入的 rows 必须已经按 sortExecutorRowsByTier 排过序（同一视频类型的行
      * 是连续的一段），否则这里按"视频类型变化"切分段落的逻辑会不对。
      */
     private List<PayslipDimensionRow> withTierSummaries(Long managerId, Long executorId, List<PayslipDimensionRow> sortedRows) {
