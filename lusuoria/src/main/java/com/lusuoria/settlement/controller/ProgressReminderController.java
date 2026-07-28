@@ -78,6 +78,13 @@ public class ProgressReminderController {
         return ApiResponse.success();
     }
 
+    /** 取消"标记已处理"（2026-07 新增）：防止误点，标记错了可以撤回 */
+    @PostMapping("/unacknowledge")
+    public ApiResponse<Void> unacknowledge(@RequestBody AcknowledgeRequest req) {
+        progressReminderService.unacknowledge(req.getCategory(), req.getTargetId());
+        return ApiResponse.success();
+    }
+
     @lombok.Data
     public static class AcknowledgeRequest {
         private ReminderCategory category;

@@ -1224,6 +1224,22 @@ public class ProgressReminderService {
         ackRepo.save(ack);
     }
 
+    /**
+     * 取消"标记已处理"（2026-07 新增，防误点）：直接把这条标记硬删除（这张表的既有约定就是
+     * 硬删除，见 cleanupAcknowledgements 用的也是 deleteAllByIdInBatch，不是软删），下次
+     * listDetails() 就不会再把这一行标成 acknowledged。找不到对应标记时静默忽略（没什么好
+     * 取消的，不算错误）。
+     */
+    @Transactional
+    public void unacknowledge(ReminderCategory category, Long targetId) {
+        Long employeeId = employeeRoleUtil.getCurrentEmployeeId();
+        if (employeeId == null) {
+            throw new RuntimeException("当前账号未关联员工，无法取消标记");
+        }
+        ackRepo.findByCategoryAndTargetIdAndEmployeeId(category, targetId, employeeId)
+                .ifPresent(ack -> ackRepo.deleteById(ack.getId()));
+    }
+
     /** REQUIREMENT_INVOICE_OVERDUE/REQUIREMENT_CONTRACT_OVERDUE 用 completedAt，其余（trackingId 定位）用 progressChangedAt */
     private Date resolveCurrentChangedAt(ReminderCategory category, Long targetId) {
         if (isRequirementBasedCategory(category)) {

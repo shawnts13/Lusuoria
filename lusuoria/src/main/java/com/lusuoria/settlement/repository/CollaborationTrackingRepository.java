@@ -248,19 +248,38 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      * 红人管理"合作中项目/已完结项目"下钻弹窗用：某个红人 + 类别（completed=true 只看"客户
      * 已结算"，completed=false 看"不是客户已结算也不是折损"的进行中记录）分页查询。
      * EntityGraph 预先带上展示需要的关联，避免弹窗表格逐行触发懒加载 N+1。
+     *
+     * 2026-07 新增几个可选筛选（都是"传了就筛，不传不影响"，可以同时生效）：platform/videoType/
+     * projectManagerId 两个类别通用；progress/influencerPaymentProgress 主要给"合作中项目"用
+     * （"已完结项目"本身已经锁定 progress=已结算，这两个筛选传了也不会报错，只是没什么实际
+     * 意义，前端只在"合作中项目"弹窗展示这两个筛选项）；videoMonth（发布月份）主要给"已完结
+     * 项目"用。videoMonth 用 to_char 转字符串比较，原因跟 CollaborationTrackingRepository.
+     * findByFilters 的 videoMonth 注释一致（Date 类型参数在这类动态筛选查询里在 Supabase 连接池
+     * 下会报"could not determine data type of parameter"）。
      */
     @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"brand", "team", "influencer", "projectManager", "executor"})
     @Query("SELECT c FROM CollaborationTracking c WHERE c.isDeleted = false AND c.influencerId = :influencerId AND (" +
            "  (:completed = true AND c.progress = com.lusuoria.settlement.enums.CollaborationProgress.SETTLED) " +
            "  OR (:completed = false AND (c.progress IS NULL OR c.progress NOT IN (" +
            "        com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
-           "        com.lusuoria.settlement.enums.CollaborationProgress.DELAYED))))")
+           "        com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)))) " +
+           "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
+           "AND (:videoType IS NULL OR c.videoType = :videoType) " +
+           "AND (:progress IS NULL OR c.progress = :progress) " +
+           "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress = :influencerPaymentProgress) " +
+           "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId) " +
+           "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth)")
     Page<CollaborationTracking> findByInfluencerAndCompletionStatus(
-            @Param("influencerId") Long influencerId, @Param("completed") boolean completed, Pageable pageable);
+            @Param("influencerId") Long influencerId, @Param("completed") boolean completed,
+            @Param("platform") String platform, @Param("videoType") VideoType videoType,
+            @Param("progress") CollaborationProgress progress,
+            @Param("influencerPaymentProgress") InfluencerPaymentProgress influencerPaymentProgress,
+            @Param("projectManagerId") Long projectManagerId, @Param("videoMonth") String videoMonth,
+            Pageable pageable);
 
     /**
-     * 同上筛选条件，取"红人视频制作与发布成本"+"客户合作价格"合计（供弹窗汇总行用，
-     * 汇总要覆盖全部命中记录，不能只按当前这一页现算）。
+     * 同上筛选条件（含2026-07新增的这几个可选筛选），取"红人视频制作与发布成本"+"客户合作
+     * 价格"合计（供弹窗汇总行用，汇总要覆盖全部命中记录，不能只按当前这一页现算）。
      *
      * 返回类型必须是 List<Object[]>，不能直接声明成 Object[]：这是之前踩过的坑——
      * Spring Data JPA 对着一条"多列 SELECT、无 GROUP BY"的聚合查询，返回值实际上是
@@ -274,9 +293,19 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "  (:completed = true AND c.progress = com.lusuoria.settlement.enums.CollaborationProgress.SETTLED) " +
            "  OR (:completed = false AND (c.progress IS NULL OR c.progress NOT IN (" +
            "        com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
-           "        com.lusuoria.settlement.enums.CollaborationProgress.DELAYED))))")
+           "        com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)))) " +
+           "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
+           "AND (:videoType IS NULL OR c.videoType = :videoType) " +
+           "AND (:progress IS NULL OR c.progress = :progress) " +
+           "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress = :influencerPaymentProgress) " +
+           "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId) " +
+           "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth)")
     List<Object[]> sumByInfluencerAndCompletionStatus(
-            @Param("influencerId") Long influencerId, @Param("completed") boolean completed);
+            @Param("influencerId") Long influencerId, @Param("completed") boolean completed,
+            @Param("platform") String platform, @Param("videoType") VideoType videoType,
+            @Param("progress") CollaborationProgress progress,
+            @Param("influencerPaymentProgress") InfluencerPaymentProgress influencerPaymentProgress,
+            @Param("projectManagerId") Long projectManagerId, @Param("videoMonth") String videoMonth);
 
     // ===== 以下方法 2026-07 从 ProjectOrderRepository 迁移过来（"项目订单"模块已废弃），
     // 月份口径统一改成按"发布时间"（原来 ProjectOrder 还有个"项目建立月份"，已废弃不再使用）=====

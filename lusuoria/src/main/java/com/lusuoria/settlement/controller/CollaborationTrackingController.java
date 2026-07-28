@@ -277,12 +277,21 @@ public class CollaborationTrackingController {
     public ApiResponse<InfluencerCollaborationPageResponse> listByInfluencer(
             @RequestParam Long influencerId,
             @RequestParam String category,
+            @RequestParam(required = false) String platform,
+            @RequestParam(required = false) VideoType videoType,
+            @RequestParam(required = false) CollaborationProgress progress,
+            @RequestParam(required = false) InfluencerPaymentProgress influencerPaymentProgress,
+            @RequestParam(required = false) Long projectManagerId,
+            @RequestParam(required = false) String videoMonth,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
         size = Math.max(1, Math.min(size, 200));
         boolean completed = "COMPLETED".equalsIgnoreCase(category);
+        String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "id"));
-        Page<CollaborationTracking> result = trackingRepo.findByInfluencerAndCompletionStatus(influencerId, completed, pageable);
+        Page<CollaborationTracking> result = trackingRepo.findByInfluencerAndCompletionStatus(
+                influencerId, completed, platform, videoType, progress, influencerPaymentProgress,
+                projectManagerId, videoMonthParam, pageable);
 
         ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
         boolean canSeeBaseline = ctx.tier != ProjectFieldVisibility.Tier.GUEST;
@@ -290,7 +299,9 @@ public class CollaborationTrackingController {
             result = result.map(t -> applyFieldVisibility(t, ctx));
         }
 
-        List<Object[]> sumRows = trackingRepo.sumByInfluencerAndCompletionStatus(influencerId, completed);
+        List<Object[]> sumRows = trackingRepo.sumByInfluencerAndCompletionStatus(
+                influencerId, completed, platform, videoType, progress, influencerPaymentProgress,
+                projectManagerId, videoMonthParam);
         Object[] sums = !sumRows.isEmpty() ? sumRows.get(0)
                 : new Object[]{0L, java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO};
         InfluencerCollaborationPageResponse resp = new InfluencerCollaborationPageResponse();
