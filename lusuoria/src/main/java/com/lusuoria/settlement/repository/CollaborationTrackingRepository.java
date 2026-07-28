@@ -6,6 +6,7 @@ import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.VideoType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -153,6 +154,68 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("onlyMyResponsibility") Boolean onlyMyResponsibility,
             @Param("onlyIncomplete") Boolean onlyIncomplete,
             Pageable pageable);
+
+    /**
+     * 跟 findByFilters 完全同一套筛选条件（WHERE 子句逐字保持一致，改了记得两边一起改），
+     * 只取"默认排序（未完成优先/未加入结款批次优先）"需要的3个轻量字段（id/progress/
+     * influencerPaymentId），不加载完整实体。2026-07 新增，配合 CollaborationTrackingController
+     * 里的 Java 内存分桶重排——原本想跟 priorityEmployeeId 那两级一样直接拼两个
+     * JpaSort.unsafe CASE WHEN 塞进 ORDER BY，上线后在这个 Hibernate 版本下触发了
+     * QuerySyntaxException（把其中一个 CASE WHEN 表达式误当成安全属性路径，拼出
+     * "c.CASE WHEN ..." 这种非法 HQL——本地没有数据库环境，没法在改动前先验证这类多级
+     * unsafe 链式调用的实际行为，只能线上出问题后再回退），改成在 Java 里做，规避这个坑，
+     * 也避免继续往那条已经很脆弱的 ORDER BY 链上叠加更多 unsafe CASE WHEN。
+     * sort 参数传跟 findByFilters 同一份 Pageable 的 Sort（保留 priorityEmployeeId 那两级
+     * 已经在正常工作的排序 + 用户选的列排序），这里只按这个顺序取 id 列表，再在 Java 里
+     * 按"是否未完成"/"是否未加入结款批次"做稳定分桶（组内相对顺序不变）。
+     */
+    @Query("SELECT c.id, c.progress, c.influencerPaymentId FROM CollaborationTracking c " +
+           "WHERE c.isDeleted = false " +
+           "AND (:brandId IS NULL OR c.brandId = :brandId) " +
+           "AND (:teamId IS NULL OR c.teamId = :teamId) " +
+           "AND (:countryMarket IS NULL OR c.countryMarket = :countryMarket) " +
+           "AND (:accountName IS NULL OR c.influencer.accountName LIKE %:accountName%) " +
+           "AND (:influencerId IS NULL OR c.influencerId = :influencerId) " +
+           "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
+           "AND (:progress IS NULL OR c.progress = :progress) " +
+           "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress = :influencerPaymentProgress) " +
+           "AND (:videoType IS NULL OR c.videoType = :videoType) " +
+           "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth) " +
+           "AND (:internalProjectNo IS NULL OR c.internalProjectNo LIKE %:internalProjectNo%) " +
+           "AND (:internalRequirementNo IS NULL OR c.internalRequirementNo LIKE %:internalRequirementNo%) " +
+           "AND (:clientOrderId IS NULL OR c.clientOrderId LIKE %:clientOrderId%) " +
+           "AND (:clientPaymentBatch IS NULL OR c.clientPaymentBatch LIKE %:clientPaymentBatch%) " +
+           "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId) " +
+           "AND (:onlyMyResponsibility = false " +
+           "     OR (:priorityEmployeeId IS NOT NULL AND (c.projectManagerId = :priorityEmployeeId OR c.executorId = :priorityEmployeeId)) " +
+           "     OR (:prioritizeFinance = true AND c.progress IN (" +
+           "           com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
+           "           com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST))) " +
+           "AND (:onlyIncomplete = false OR c.progress IS NULL OR c.progress NOT IN (" +
+           "     com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+           "     com.lusuoria.settlement.enums.CollaborationProgress.DELAYED))")
+    List<Object[]> findLitePriorityProjectionByFilters(
+            @Param("brandId") Long brandId,
+            @Param("teamId") Long teamId,
+            @Param("countryMarket") String countryMarket,
+            @Param("accountName") String accountName,
+            @Param("influencerId") Long influencerId,
+            @Param("platform") String platform,
+            @Param("progress") CollaborationProgress progress,
+            @Param("influencerPaymentProgress") InfluencerPaymentProgress influencerPaymentProgress,
+            @Param("videoType") VideoType videoType,
+            @Param("videoMonth") String videoMonth,
+            @Param("internalProjectNo") String internalProjectNo,
+            @Param("internalRequirementNo") String internalRequirementNo,
+            @Param("clientOrderId") String clientOrderId,
+            @Param("clientPaymentBatch") String clientPaymentBatch,
+            @Param("projectManagerId") Long projectManagerId,
+            @Param("priorityEmployeeId") Long priorityEmployeeId,
+            @Param("prioritizeFinance") Boolean prioritizeFinance,
+            @Param("onlyMyResponsibility") Boolean onlyMyResponsibility,
+            @Param("onlyIncomplete") Boolean onlyIncomplete,
+            Sort sort);
+
 
     /**
      * 数据看板用：取出全部未删除记录，月份归属（发布月份，若无则归创建月份）

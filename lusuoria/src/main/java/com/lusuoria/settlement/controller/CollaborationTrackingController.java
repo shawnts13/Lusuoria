@@ -29,6 +29,7 @@ import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.JpaSort;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -38,9 +39,12 @@ import org.springframework.web.multipart.MultipartFile;
 import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 红人合作跟踪
@@ -114,11 +118,21 @@ public class CollaborationTrackingController {
                 .and(Sort.by(userSortDirection, sortProperty));
         PageRequest pageable = PageRequest.of(page, size, sort);
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
-        Page<CollaborationTracking> result = trackingRepo.findByFilters(
-                brandId, teamId, countryMarket, accountName, influencerId, platform,
-                progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
-                clientOrderId, clientPaymentBatch, projectManagerId,
-                priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, pageable);
+        // 默认（不点列头排序，仍是按 id）：未完成的项目排在前面，其次是还没加入结款批次的。
+        // 这两档改在 Java 内存里做（见 buildIncompleteAndUnbatchedFirstPage 的注释——本来想跟
+        // priorityEmployeeId 那两级一样直接拼 JpaSort.unsafe CASE WHEN，上线后触发了
+        // Hibernate 的 QuerySyntaxException，回退后改成这个写法），不影响其他排序方式。
+        Page<CollaborationTracking> result = "id".equals(sortBy)
+                ? buildIncompleteAndUnbatchedFirstPage(
+                        brandId, teamId, countryMarket, accountName, influencerId, platform,
+                        progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
+                        clientOrderId, clientPaymentBatch, projectManagerId,
+                        priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, sort, pageable)
+                : trackingRepo.findByFilters(
+                        brandId, teamId, countryMarket, accountName, influencerId, platform,
+                        progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
+                        clientOrderId, clientPaymentBatch, projectManagerId,
+                        priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, pageable);
 
         // 批量标记"当前是否有待审核的删除申请 / 进度倒退申请"，避免逐行查库
         Set<Long> pendingDeleteIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(
@@ -158,6 +172,68 @@ public class CollaborationTrackingController {
             return ApiResponse.success(result.map(t -> applyFieldVisibility(t, ctx)));
         }
         return ApiResponse.success(result);
+    }
+
+    /**
+     * 默认排序（sortBy=id）下的"未完成的项目排前面，其次是未加入结款批次的"——2026-07 新增，
+     * 2026-07 同日修正：本来直接拼两级 JpaSort.unsafe CASE WHEN 加进 ORDER BY（跟已有的
+     * priorityEmployeeId 那两级一样），上线后触发 Hibernate QuerySyntaxException（把其中一个
+     * CASE WHEN 表达式误当成安全属性路径，拼出非法 HQL "c.CASE WHEN ..."）——本地没有数据库
+     * 环境，没法在改动前验证这类多级 unsafe 链式调用在这个 Hibernate 版本下到底安不安全，只能
+     * 线上出问题后再回退，索性改成风险更低的做法：先用轻量投影（只取 id/progress/
+     * influencerPaymentId 三列，不查完整实体）把所有命中记录按"已经在正常工作的排序"
+     * （priorityEmployeeId 那两级 + 用户选的列排序，这里固定是 id）取出来，在 Java 里按
+     * (是否未完成, 是否未加入结款批次) 做稳定分桶（桶内相对顺序不变），再手动分页，只对
+     * "当前页"这一小撮 id 才去查完整实体——跟 InfluencerRequirementService.listIncompleteFirst
+     * 是同一套思路（那边也是因为同样的顾虑，从一开始就没有尝试往 SQL ORDER BY 里加这层逻辑）。
+     */
+    private Page<CollaborationTracking> buildIncompleteAndUnbatchedFirstPage(
+            Long brandId, Long teamId, String countryMarket, String accountName, Long influencerId, String platform,
+            CollaborationProgress progress, InfluencerPaymentProgress influencerPaymentProgress, VideoType videoType,
+            String videoMonthParam, String internalProjectNo, String internalRequirementNo,
+            String clientOrderId, String clientPaymentBatch, Long projectManagerId,
+            Long priorityEmployeeId, boolean prioritizeFinance, boolean onlyMyResponsibility, boolean onlyIncomplete,
+            Sort sort, Pageable pageable) {
+        List<Object[]> liteRows = trackingRepo.findLitePriorityProjectionByFilters(
+                brandId, teamId, countryMarket, accountName, influencerId, platform,
+                progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
+                clientOrderId, clientPaymentBatch, projectManagerId,
+                priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, sort);
+
+        List<Long> bucket0 = new ArrayList<>(); // 未完成 + 未加入结款批次
+        List<Long> bucket1 = new ArrayList<>(); // 未完成 + 已加入结款批次
+        List<Long> bucket2 = new ArrayList<>(); // 已完成 + 未加入结款批次
+        List<Long> bucket3 = new ArrayList<>(); // 已完成 + 已加入结款批次
+        for (Object[] row : liteRows) {
+            Long id = ((Number) row[0]).longValue();
+            CollaborationProgress p = (CollaborationProgress) row[1];
+            Long paymentId = row[2] != null ? ((Number) row[2]).longValue() : null;
+            boolean incomplete = p == null || (p != CollaborationProgress.SETTLED && p != CollaborationProgress.DELAYED);
+            boolean unbatched = paymentId == null;
+            if (incomplete && unbatched) bucket0.add(id);
+            else if (incomplete) bucket1.add(id);
+            else if (unbatched) bucket2.add(id);
+            else bucket3.add(id);
+        }
+        List<Long> orderedIds = new ArrayList<>(liteRows.size());
+        orderedIds.addAll(bucket0);
+        orderedIds.addAll(bucket1);
+        orderedIds.addAll(bucket2);
+        orderedIds.addAll(bucket3);
+
+        int total = orderedIds.size();
+        int start = Math.min((int) pageable.getOffset(), total);
+        int end = Math.min(start + pageable.getPageSize(), total);
+        List<Long> pageIds = orderedIds.subList(start, end);
+
+        Map<Long, CollaborationTracking> byId = trackingRepo.findAllById(pageIds).stream()
+                .collect(Collectors.toMap(CollaborationTracking::getId, t -> t));
+        List<CollaborationTracking> pageContent = new ArrayList<>();
+        for (Long id : pageIds) {
+            CollaborationTracking t = byId.get(id);
+            if (t != null) pageContent.add(t);
+        }
+        return new org.springframework.data.domain.PageImpl<>(pageContent, pageable, total);
     }
 
     /**
