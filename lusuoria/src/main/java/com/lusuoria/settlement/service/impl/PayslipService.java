@@ -149,7 +149,7 @@ public class PayslipService {
         Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(employeeId, yearMonth).orElse(null);
         boolean isNew = p == null;
         if (isNew) {
-            p = Payslip.builder().employeeId(employeeId).yearMonth(yearMonth).confirmed(false).build();
+            p = Payslip.builder().employeeId(employeeId).yearMonth(yearMonth).confirmed(false).finalConfirmed(false).build();
         } else {
             // 执行人员现在也有整体确认状态了（2026-07 新增管理层最终确认），奖金冻结规则
             // 统一跟其他角色一致：确认后要改奖金必须先取消确认
@@ -258,17 +258,31 @@ public class PayslipService {
             if (status.getBlockedReason() != null) throw new RuntimeException(status.getBlockedReason());
         }
         Payslip p = getOrCreateForWrite(employeeId, yearMonth);
-        applyConfirmedSnapshot(emp, yearMonth, p, employeeRoleUtil.getCurrentEmployeeId(), rate);
-        payslipRepo.save(p);
+        // 项目负责人/执行人员：这里只是"管理层自己那部分"确认，是否到达最终版（连带冻结快照）
+        // 交给 recomputeFinality 另外判定，不在这里无条件冻结——否则相关的执行人员工资确认还没
+        // 全部到位时就提前把数据锁死了。其余角色没有这层下游依赖，点确认即最终版，照旧走
+        // applyConfirmedSnapshot 立即冻结。
+        if ("项目负责人".equals(emp.getRole()) || "执行人员".equals(emp.getRole())) {
+            p.setEmployeeRole(emp.getRole());
+            p.setConfirmed(true);
+            p.setConfirmedAt(new Date());
+            p.setConfirmedByEmployeeId(employeeRoleUtil.getCurrentEmployeeId());
+            payslipRepo.save(p);
+            recomputeFinality(emp, yearMonth, rate);
+        } else {
+            applyConfirmedSnapshot(emp, yearMonth, p, employeeRoleUtil.getCurrentEmployeeId(), rate);
+            payslipRepo.save(p);
+        }
     }
 
     @Transactional
     public void unconfirm(Long employeeId, String yearMonth) {
-        Employee emp = employeeRepo.findByIdAndIsDeletedFalse(employeeId)
-                .orElseThrow(() -> new RuntimeException("员工不存在"));
         Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(employeeId, yearMonth)
                 .orElseThrow(() -> new RuntimeException("该月工资单还没有确认过，无需取消确认"));
         p.setConfirmed(false);
+        // 取消确认连带清掉最终版标记（跟 detailJson 一样"只翻标志不清空"的约定不适用于这个
+        // 布尔字段本身——它就是"是否最终版"这件事的当前状态，下次重新确认会重新判定）
+        p.setFinalConfirmed(false);
         payslipRepo.save(p);
     }
 
@@ -278,13 +292,14 @@ public class PayslipService {
      * （{@link Payslip}）的确认/取消确认完全独立，互不阻塞、互不影响。2026-07 起改成按
      * 执行人员单独确认（不再是这个项目负责人当月名下所有执行人员一次性打包确认），
      * get-or-create 一行 (managerId, executorId, yearMonth) 记录，写入当前实时数据的
-     * 快照后置 confirmed=true。
+     * 快照后置 confirmed=true。这个动作同时影响这个执行人员、这个项目负责人两个人各自的
+     * "是否最终版"判定（见 recomputeFinality），所以最后要对两边都重新判定一次。
      */
     @Transactional
     public void confirmExecutorWages(Long managerId, Long executorId, String yearMonth) {
-        employeeRepo.findByIdAndIsDeletedFalse(managerId)
+        Employee manager = employeeRepo.findByIdAndIsDeletedFalse(managerId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
-        employeeRepo.findByIdAndIsDeletedFalse(executorId)
+        Employee executor = employeeRepo.findByIdAndIsDeletedFalse(executorId)
                 .orElseThrow(() -> new RuntimeException("执行人员不存在"));
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         List<CollaborationTracking> ordersForPair = groupByManagerThenExecutor(orders)
@@ -306,9 +321,16 @@ public class PayslipService {
         confirmation.setConfirmed(true);
         confirmation.setConfirmedAt(new Date());
         wageConfirmationRepo.save(confirmation);
+
+        BigDecimal rate = exchangeRateService.getRateForMonth(yearMonth).getUsdToCny();
+        recomputeFinality(executor, yearMonth, rate);
+        recomputeFinality(manager, yearMonth, rate);
     }
 
-    /** 取消确认只翻 confirmed 标志，detailJson 保留不清空——下次重新确认会覆盖，跟 Payslip 同一套约定 */
+    /**
+     * 取消确认只翻 confirmed 标志，detailJson 保留不清空——下次重新确认会覆盖，跟 Payslip 同一套
+     * 约定。同样要对这个执行人员、这个项目负责人两边重新判定"是否最终版"（多半会从最终版退回去）。
+     */
     @Transactional
     public void unconfirmExecutorWages(Long managerId, Long executorId, String yearMonth) {
         ExecutorWageConfirmation confirmation = wageConfirmationRepo
@@ -316,6 +338,12 @@ public class PayslipService {
                 .orElseThrow(() -> new RuntimeException("该月这个执行人员的工资还没有确认过，无需取消确认"));
         confirmation.setConfirmed(false);
         wageConfirmationRepo.save(confirmation);
+
+        Employee manager = employeeRepo.findByIdAndIsDeletedFalse(managerId).orElse(null);
+        Employee executor = employeeRepo.findByIdAndIsDeletedFalse(executorId).orElse(null);
+        BigDecimal rate = exchangeRateService.getRateForMonth(yearMonth).getUsdToCny();
+        if (executor != null) recomputeFinality(executor, yearMonth, rate);
+        if (manager != null) recomputeFinality(manager, yearMonth, rate);
     }
 
     private String writeExecutorWageSnapshot(List<PayslipDimensionRow> rows) {
@@ -434,7 +462,7 @@ public class PayslipService {
         // 当月所有"已确认"的其他员工：阶梯Bonus + 奖金，都要从公司利润里再扣一层
         // （上面这套公式本身只扣了内部执行成本/负责人提成/内部其他员工成本，没扣这两项）
         List<Payslip> othersConfirmed = payslipRepo
-                .findByYearMonthAndConfirmedTrueAndIsDeletedFalseAndEmployeeIdNot(yearMonth, mgmt.getId());
+                .findByYearMonthAndFinalConfirmedTrueAndIsDeletedFalseAndEmployeeIdNot(yearMonth, mgmt.getId());
         BigDecimal tierBonusTotalUsd = BigDecimal.ZERO;
         BigDecimal extraBonusTotalUsd = BigDecimal.ZERO;
         for (Payslip other : othersConfirmed) {
@@ -954,11 +982,11 @@ public class PayslipService {
                                                   PayslipDetailResponse precomputedLive, Payslip p,
                                                   ExchangeRateInfo liveRateInfo) {
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
-        // 执行人员（2026-07 新增）走跟其他角色一样的整体 Payslip.confirmed 快照——management
-        // 最终确认前，各项目负责人分组各自独立判断"预计/已确认"（见 computeExecutor/
-        // buildExecutorCrossManagerDetail，那部分逻辑不受这里影响）；最终确认之后，整份
-        // （所有分组+奖金）冻结成一份快照，展示逻辑统一。
-        if (p != null && Boolean.TRUE.equals(p.getConfirmed())) {
+        // 2026-07-28 起：是否使用冻结快照看 finalConfirmed，不是 confirmed——项目负责人/执行人员
+        // 这两个角色，管理层点了"确认"（confirmed=true）之后，只要相关的执行人员工资确认还没
+        // 全部到位（finalConfirmed 仍是 false），这里依然展示实时数据，不提前冻结（见
+        // recomputeFinality）。其余角色 confirmed/finalConfirmed 恒等，行为不变。
+        if (p != null && Boolean.TRUE.equals(p.getFinalConfirmed())) {
             BigDecimal snapshotRate = p.getExchangeRateSnapshot();
             ExchangeRateInfo snapshotRateInfo = ExchangeRateInfo.builder()
                     .yearMonth(yearMonth).usdToCny(snapshotRate).isMissing(snapshotRate == null).build();
@@ -1028,6 +1056,7 @@ public class PayslipService {
                 .otherStaffCost(otherStaffCost).extraBonusPayoutTotal(extraBonusPayoutTotal)
                 .companyProfit(companyProfit)
                 .currency(toRmb ? "RMB" : "USD").confirmed(confirmed)
+                .ownActionConfirmed(draft != null && Boolean.TRUE.equals(draft.getConfirmed()))
                 .exchangeRateInfo(rateInfo)
                 .build();
     }
@@ -1087,26 +1116,17 @@ public class PayslipService {
         }
         Boolean legalSalarySet = "法务".equals(emp.getRole()) ? (payslip != null && payslip.getLegalSalaryRmb() != null) : null;
         String blockedReason;
-        Boolean awaitingOtherManagers = null;
-        Boolean executorAllPmConfirmed = null;
         if ("管理层".equals(emp.getRole())) {
             blockedReason = managementBlockReason(yearMonth, emp.getId(), liveRateInfo.getUsdToCny());
         } else if ("执行人员".equals(emp.getRole())) {
-            // 状态标签（是否所有涉及的项目负责人都确认了）跟"确认"按钮能不能点（管理层自己
-            // 那部分薪酬有没有先在"管理层手下执行人员工资"确认过）是两件独立的事，所以这里
-            // 必须始终计算——哪怕这一行 Payslip.confirmed 已经是 true，状态标签依然要如实
-            // 反映"是否所有项目负责人都确认了"
-            ExecutorPmConfirmStatus status = resolveExecutorPmConfirmStatus(emp.getId(), yearMonth);
-            blockedReason = status.getBlockedReason();
-            awaitingOtherManagers = status.isSelfConfirmed() && !status.isAllConfirmed();
-            executorAllPmConfirmed = status.isAllConfirmed();
+            blockedReason = resolveExecutorPmConfirmStatus(emp.getId(), yearMonth).getBlockedReason();
         } else {
             blockedReason = null;
         }
-
         return PayslipRowResponse.builder()
                 .employeeId(emp.getId()).employeeName(emp.getName()).employeeRole(emp.getRole())
                 .confirmed(d.getConfirmed())
+                .ownActionConfirmed(d.getOwnActionConfirmed())
                 .videoCount(videoCount)
                 .baseAmount(d.getBaseAmount())
                 .tierBonusAmount(d.getTierBonusAmount())
@@ -1125,17 +1145,19 @@ public class PayslipService {
                 .executorWageConfirmed(d.getExecutorWageConfirmed())
                 .hasExecutorWageWork("项目负责人".equals(emp.getRole())
                         && d.getExecutorWageRows() != null && !d.getExecutorWageRows().isEmpty())
-                .awaitingOtherManagers(awaitingOtherManagers)
-                .executorAllPmConfirmed(executorAllPmConfirmed)
                 .build();
     }
 
     /**
-     * 管理层确认前置校验：当月所有在职、非管理层的员工都必须已确认，否则返回拦截文案。
-     * 财务/IT后勤当月还没有工资单记录的，先在这里自动确认一下再判断——不然如果这个检查
-     * 在"工资单列表"那次自动确认之前先跑到（两个请求并发时可能发生），会误判成"还没确认"。
-     * 当月工资单确认状态只查一次（不按员工循环查），只在"管理层这一行"触发，请求量本身
-     * 就是 O(1)，不受员工数量影响。
+     * 管理层确认前置校验：当月所有在职、非管理层的员工都必须已经是"最终版"（finalConfirmed，
+     * 不只是 confirmed），否则返回拦截文案。原因：管理层自己的"公司利润"计算要扣掉当月所有
+     * 其他员工已确认的阶梯Bonus+奖金（见 computeManagement 里 othersConfirmed 那段），而
+     * 项目负责人/执行人员的阶梯Bonus 是从冻结快照里读的——只有 finalConfirmed=true 时快照才
+     * 是有效数据，如果只要求 confirmed 就放行，公司利润会在别人还没到最终版时被提前锁死成
+     * 一个不完整的数字。财务/IT后勤当月还没有工资单记录的，先在这里自动确认一下再判断——
+     * 不然如果这个检查在"工资单列表"那次自动确认之前先跑到（两个请求并发时可能发生），会
+     * 误判成"还没确认"。当月工资单确认状态只查一次（不按员工循环查），只在"管理层这一行"
+     * 触发，请求量本身就是 O(1)，不受员工数量影响。
      */
     private String managementBlockReason(String yearMonth, Long managementEmployeeId, BigDecimal rate) {
         List<Employee> activeOthers = employeeRepo.findByIsDeletedFalseOrderByNameAsc().stream()
@@ -1152,7 +1174,7 @@ public class PayslipService {
             if (p == null) {
                 p = autoConfirmFixedSalaryIfMissing(e, yearMonth, null, rate);
             }
-            if (p == null || !Boolean.TRUE.equals(p.getConfirmed())) {
+            if (p == null || !Boolean.TRUE.equals(p.getFinalConfirmed())) {
                 return "请先确认其他员工的工资单后再确认管理层工资单";
             }
         }
@@ -1170,7 +1192,7 @@ public class PayslipService {
     private Payslip getOrCreateForWrite(Long employeeId, String yearMonth) {
         return payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(employeeId, yearMonth)
                 .orElseGet(() -> payslipRepo.save(Payslip.builder()
-                        .employeeId(employeeId).yearMonth(yearMonth).confirmed(false).build()));
+                        .employeeId(employeeId).yearMonth(yearMonth).confirmed(false).finalConfirmed(false).build()));
     }
 
     /**
@@ -1182,20 +1204,96 @@ public class PayslipService {
      */
     private Payslip autoConfirmFixedSalaryIfMissing(Employee emp, String yearMonth, Payslip existing, BigDecimal rate) {
         if (existing != null || !FIXED_SALARY_ROLES.contains(emp.getRole())) return existing;
-        Payslip p = Payslip.builder().employeeId(emp.getId()).yearMonth(yearMonth).confirmed(false).build();
+        Payslip p = Payslip.builder().employeeId(emp.getId()).yearMonth(yearMonth).confirmed(false).finalConfirmed(false).build();
         applyConfirmedSnapshot(emp, yearMonth, p, null, rate);
         return payslipRepo.save(p);
     }
 
-    /** 计算当前实时数据、写入确认快照并把 confirmed 置 true，不负责 save（调用方决定何时落库） */
+    /**
+     * 计算当前实时数据、写入确认快照并把 confirmed/finalConfirmed 置 true，不负责 save（调用方
+     * 决定何时落库）。只用于没有"下游执行人员工资"依赖的角色（财务/IT后勤/法务/管理层自己），
+     * 这些角色点确认即最终版；项目负责人/执行人员走 confirm() + recomputeFinality()，不调用
+     * 这个方法（避免在还没到最终版之前就提前冻结快照）。
+     */
     private void applyConfirmedSnapshot(Employee emp, String yearMonth, Payslip p, Long confirmedByEmployeeId, BigDecimal rate) {
         PayslipDetailResponse live = computeLive(emp, yearMonth, p, rate);
         p.setEmployeeRole(emp.getRole());
         p.setDetailJson(writeSnapshot(live));
         p.setExchangeRateSnapshot(rate);
         p.setConfirmed(true);
+        p.setFinalConfirmed(true);
         p.setConfirmedAt(new Date());
         p.setConfirmedByEmployeeId(confirmedByEmployeeId);
+    }
+
+    /**
+     * 计算当前实时数据、写入"最终版"快照并把 finalConfirmed 置 true，不动 confirmed/confirmedAt/
+     * confirmedByEmployeeId（那些是管理层自己确认动作的时间戳，不该被这里的自动结算覆盖），
+     * 不负责 save。仅用于项目负责人/执行人员这两个角色，在 confirm()/confirmExecutorWages()/
+     * unconfirmExecutorWages() 之后由 recomputeFinality() 调用。
+     */
+    private void applyFinalSnapshot(Employee emp, String yearMonth, Payslip p, BigDecimal rate) {
+        PayslipDetailResponse live = computeLive(emp, yearMonth, p, rate);
+        p.setEmployeeRole(emp.getRole());
+        p.setDetailJson(writeSnapshot(live));
+        p.setExchangeRateSnapshot(rate);
+        p.setFinalConfirmed(true);
+    }
+
+    /**
+     * 项目负责人/执行人员专属：某个员工的"是否到达最终版"重新判定——在这两类会触发这个判定的
+     * 动作之后调用：(a) confirm()/unconfirm()（管理层点自己那部分）(b) confirmExecutorWages()/
+     * unconfirmExecutorWages()（会同时影响一个执行人员和一个项目负责人两个人的最终版判定，
+     * 调用方要对两边都各调一次）。没有 Payslip 记录（管理层压根还没点过确认）时直接跳过。
+     */
+    private void recomputeFinality(Employee emp, String yearMonth, BigDecimal rate) {
+        Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(emp.getId(), yearMonth).orElse(null);
+        if (p == null) return;
+        if (!Boolean.TRUE.equals(p.getConfirmed())) {
+            if (Boolean.TRUE.equals(p.getFinalConfirmed())) {
+                p.setFinalConfirmed(false);
+                payslipRepo.save(p);
+            }
+            return;
+        }
+        boolean shouldBeFinal;
+        if ("执行人员".equals(emp.getRole())) {
+            shouldBeFinal = resolveExecutorPmConfirmStatus(emp.getId(), yearMonth).isAllConfirmed();
+        } else if ("项目负责人".equals(emp.getRole())) {
+            shouldBeFinal = allOwnExecutorWagesConfirmed(emp.getId(), yearMonth);
+        } else {
+            shouldBeFinal = true;
+        }
+        if (shouldBeFinal && !Boolean.TRUE.equals(p.getFinalConfirmed())) {
+            applyFinalSnapshot(emp, yearMonth, p, rate);
+            payslipRepo.save(p);
+        } else if (!shouldBeFinal && Boolean.TRUE.equals(p.getFinalConfirmed())) {
+            p.setFinalConfirmed(false);
+            payslipRepo.save(p);
+        }
+    }
+
+    /**
+     * 这个项目负责人当月名下所有执行人员的"手下执行人员工资"确认是否都已完成（
+     * ExecutorWageConfirmation(managerId=这个PM, executorId=*, yearMonth)）。名下这个月压根
+     * 没有执行人员记录时，视为"没有下游义务"，返回 true。
+     */
+    private boolean allOwnExecutorWagesConfirmed(Long managerId, String yearMonth) {
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
+        Set<Long> execIds = new LinkedHashSet<>();
+        for (CollaborationTracking o : orders) {
+            if (managerId.equals(o.getProjectManagerId()) && o.getExecutorId() != null) {
+                execIds.add(o.getExecutorId());
+            }
+        }
+        if (execIds.isEmpty()) return true;
+        Map<Long, ExecutorWageConfirmation> confirmationsForThisManager =
+                fetchWageConfirmations(yearMonth).getOrDefault(managerId, Collections.emptyMap());
+        for (Long execId : execIds) {
+            ExecutorWageConfirmation c = confirmationsForThisManager.get(execId);
+            if (c == null || !Boolean.TRUE.equals(c.getConfirmed())) return false;
+        }
+        return true;
     }
 
     private String writeSnapshot(PayslipDetailResponse detail) {

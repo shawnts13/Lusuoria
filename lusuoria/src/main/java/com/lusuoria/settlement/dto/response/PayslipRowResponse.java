@@ -16,7 +16,23 @@ public class PayslipRowResponse {
     private Long employeeId;
     private String employeeName;
     private String employeeRole;
+
+    /**
+     * 是否"最终版"（2026-07-28 起语义变化）：不再等同于"管理层是否点过主表格确认按钮"，而是
+     * Payslip.finalConfirmed 的直接映射——项目负责人/执行人员这两个角色，还需要相关的
+     * "执行人员工资"确认（ExecutorWageConfirmation）全部到位才会变 true；其余角色跟
+     * {@link #ownActionConfirmed} 恒等（点确认即最终版，没有下游依赖）。驱动"已确认"（绿色）
+     * 标签、以及是否展示冻结快照 vs 实时数据。
+     */
     private Boolean confirmed;
+
+    /**
+     * 管理层自己是否已经点过这一行的主表格"确认"按钮（即 Payslip.confirmed 原始值，2026-07-28
+     * 新增，用于跟上面 {@link #confirmed} 区分开）。驱动前端"确认/取消确认"按钮切换——按钮
+     * 反映的是管理层自己有没有点过，不是有没有到达最终版，哪怕还没到最终版，管理层点过之后
+     * 也要能"取消确认"。
+     */
+    private Boolean ownActionConfirmed;
 
     /** 项目负责人/执行人员才有，其余角色为 null（前端据此不做"可点击"处理） */
     private Long videoCount;
@@ -61,21 +77,4 @@ public class PayslipRowResponse {
      * 之一），但还没有先在"管理层手下执行人员工资"确认过，主表格"确认"按钮暂不可点。 */
     private String blockedReason;
 
-    /**
-     * 仅执行人员角色有意义（2026-07-28 新增）：管理层自己那部分（若管理层这个月确实是这个
-     * 执行人员的相关项目负责人之一）已经确认过了，但这个月涉及的其他项目负责人还没有全部
-     * 确认——驱动状态标签展示"待其他项目负责人确认"这个中间态，跟"自己还没确认"的"预计"、
-     * "全部都确认了"的"已确认"区分开。管理层这个月压根不是这个执行人员的相关项目负责人时
-     * 恒为 false（没有"自己那份"，不会出现这个中间态）。
-     */
-    private Boolean awaitingOtherManagers;
-
-    /**
-     * 仅执行人员角色有意义（2026-07-28 新增）：这个月涉及的所有项目负责人是不是都确认过了
-     * ——驱动状态标签是否显示"已确认"（绿色），跟 {@link #confirmed}（管理层是否点过主表格
-     * 的"确认"按钮）不是一回事：哪怕 confirmed 已经是 true，只要还有项目负责人没确认，这里
-     * 依然是 false，标签依然显示"预计"或"待其他项目负责人确认"，不会因为管理层点过确认就
-     * 提前显示"已确认"。
-     */
-    private Boolean executorAllPmConfirmed;
 }

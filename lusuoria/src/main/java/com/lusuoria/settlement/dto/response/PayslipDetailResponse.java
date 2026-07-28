@@ -75,6 +75,14 @@ public class PayslipDetailResponse {
 
     // ===== 读取时补上的展示上下文，不参与快照存储 =====
     private String currency;
+    /**
+     * 2026-07-28 起语义变化：不再等同于 Payslip.confirmed（管理层是否点过确认），而是
+     * Payslip.finalConfirmed 的映射——项目负责人/执行人员还需要相关的执行人员工资确认全部
+     * 到位才为 true；其余角色跟 Payslip.confirmed 恒等。true 时使用冻结快照，false 时实时计算。
+     */
     private Boolean confirmed;
+    /** 管理层自己是否已经点过这份工资单的"确认"（Payslip.confirmed 原始值，2026-07-28 新增，
+     * 跟上面 confirmed 现在代表的"是否最终版"区分开，见 PayslipRowResponse.ownActionConfirmed） */
+    private Boolean ownActionConfirmed;
     private ExchangeRateInfo exchangeRateInfo;
 }

@@ -15,9 +15,9 @@ import java.util.Date;
  * 不受 confirmed 状态影响是否被"使用"，只受 confirmed 状态影响能不能编辑
  * （confirmed=true 时必须先取消确认才能改，见 PayslipService）。
  *
- * confirmed=true 时，上述快照字段是"确认"那一刻算出来并冻结的，之后不会再变，即使
- * 后续合作跟踪数据被修改；取消确认（confirmed 改回 false）不会清空这些快照字段，
- * 只是不再被使用，下次重新确认会覆盖。
+ * finalConfirmed=true 时（见该字段注释），上述快照字段是最后一次判定"最终版"那一刻算出来并
+ * 冻结的，之后不会再变，即使后续合作跟踪数据被修改；取消确认（confirmed 改回 false）会连带把
+ * finalConfirmed 也改回 false，但不清空这些快照字段，只是不再被使用，下次重新到达最终版会覆盖。
  *
  * (employeeId, yearMonth) 唯一性由 PayslipService 在 service 层"先查（含软删）后插/复用"
  * 保证，不建数据库唯一约束（跟 DomainCache.getOrCreate 的既有套路一致）。
@@ -42,8 +42,28 @@ public class Payslip extends BaseEntity {
     @Column(name = "employee_role")
     private String employeeRole;
 
+    /** 管理层是否已经点过这份工资单的"确认"（自己那部分：奖金/提成，含冻结前的编辑锁）*/
     @Column(name = "confirmed", nullable = false)
     private Boolean confirmed;
+
+    /**
+     * 是否"最终版"（2026-07-28 新增）：项目负责人/执行人员这两个角色，除了 {@link #confirmed}
+     * 之外，还需要相关的 ExecutorWageConfirmation（"手下执行人员工资"/"执行人员工资"）全部
+     * 确认到位，才会变 true；其余角色（财务/IT后勤/法务/管理层自己）没有这层下游依赖，
+     * 恒等于 confirmed。只有 finalConfirmed=true 时，detailJson/exchangeRateSnapshot 才是真正
+     * 冻结、之后不再变化的快照——confirmed=true 但 finalConfirmed=false 期间，展示的仍是实时
+     * 计算的数据（见 PayslipService.recomputeFinality/resolveDisplay）。
+     *
+     * 故意不加 nullable=false：这是新增到已有数据的表上的列，ddl-auto=update 生成的
+     * ADD COLUMN 语句没有 DEFAULT，如果标 NOT NULL，Postgres 会因为已有行而报错拒绝这次自动
+     * 建表变更。全部读取都经过 Boolean.TRUE.equals(...)，不会因为 null 报错——但历史行的
+     * finalConfirmed 会是 null（=按 false 处理），已经"确认"过的历史月份工资单会在这次上线后
+     * 短暂显示成"预计/待确认"而不是"已确认"，直到下次被摸到（确认/取消确认等动作）才会重新
+     * 判定。需要部署后手动跑一次性回填（见 Shawn 沟通记录里给的 SQL），把历史行的
+     * final_confirmed 直接对齐 confirmed，避免历史数据在 UI 上倒退。
+     */
+    @Column(name = "final_confirmed")
+    private Boolean finalConfirmed;
 
     @Temporal(TemporalType.TIMESTAMP)
     @Column(name = "confirmed_at")

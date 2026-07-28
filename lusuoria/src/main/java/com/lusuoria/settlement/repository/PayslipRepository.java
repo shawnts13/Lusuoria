@@ -17,8 +17,12 @@ public interface PayslipRepository extends JpaRepository<Payslip, Long> {
      */
     Optional<Payslip> findByEmployeeIdAndYearMonthAndIsDeletedFalse(Long employeeId, String yearMonth);
 
-    /** 管理层计算"公司利润"时，要扣掉当月所有其他已确认员工的阶梯Bonus+奖金 */
-    List<Payslip> findByYearMonthAndConfirmedTrueAndIsDeletedFalseAndEmployeeIdNot(String yearMonth, Long employeeId);
+    /**
+     * 管理层计算"公司利润"时，要扣掉当月所有其他已到最终版员工的阶梯Bonus+奖金——必须是
+     * finalConfirmed（不是 confirmed），因为要读 detailJson 快照，项目负责人/执行人员这两个
+     * 角色 confirmed=true 但还没到最终版时快照还没写入。
+     */
+    List<Payslip> findByYearMonthAndFinalConfirmedTrueAndIsDeletedFalseAndEmployeeIdNot(String yearMonth, Long employeeId);
 
     /**
      * 整月所有工资单行（含未确认的草稿）。列表页/管理层确认前置校验用这一个查询批量拿到
