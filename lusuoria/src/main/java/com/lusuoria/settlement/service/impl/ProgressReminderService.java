@@ -123,6 +123,7 @@ public class ProgressReminderService {
     @Autowired private EmployeeCache employeeCache;
     @Autowired private SysUserRepository sysUserRepo;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
+    @Autowired private com.lusuoria.settlement.config.ReminderThresholdCache thresholdCache;
 
     // ============ 跑批 ============
 
@@ -323,6 +324,8 @@ public class ProgressReminderService {
             }
         }
 
+        int nearMaxDays = thresholdCache.getInt(ReminderCategory.COLLAB_PAYMENT_DUE, "TIER_NEAR_MAX_DAYS", 3);
+        int windowMaxDays = thresholdCache.getInt(ReminderCategory.COLLAB_PAYMENT_DUE, "TIER_WINDOW_MAX_DAYS", 7);
         Map<ReminderUrgency, List<ProgressReminderDetail>> byUrgency = new EnumMap<>(ReminderUrgency.class);
         for (CollaborationTracking t : candidates) {
             Brand brand = qualifyingBrands.get(t.getBrandId());
@@ -332,8 +335,8 @@ public class ProgressReminderService {
             LocalDate publishLocalDate = toLocalDate(t.getPublishDate());
             LocalDate deadlineLocalDate = publishLocalDate.plusDays(cycleDays);
             long daysRemaining = ChronoUnit.DAYS.between(today, deadlineLocalDate);
-            ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining);
-            if (urgency == null) continue; // 超过7天，暂时不用提醒
+            ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining, nearMaxDays, windowMaxDays);
+            if (urgency == null) continue; // 超过窗口天数，暂时不用提醒
 
             ProgressReminderDetail detail = new ProgressReminderDetail();
             detail.setIsDeleted(false);
@@ -396,6 +399,8 @@ public class ProgressReminderService {
 
         DateTimeFormatter monthFmt = DateTimeFormatter.ofPattern("yyyyMM");
         List<ProgressReminder> toSave = new ArrayList<>();
+        int nearMaxDays = thresholdCache.getInt(ReminderCategory.BRAND_MONTH_END_PAYMENT_DUE, "TIER_NEAR_MAX_DAYS", 3);
+        int windowMaxDays = thresholdCache.getInt(ReminderCategory.BRAND_MONTH_END_PAYMENT_DUE, "TIER_WINDOW_MAX_DAYS", 7);
 
         for (Brand brand : qualifyingBrands) {
             YearMonth candidate = YearMonth.from(today).minusMonths(1); // 最近一个已完整结束的月份
@@ -413,7 +418,7 @@ public class ProgressReminderService {
                 LocalDate monthEnd = candidate.atEndOfMonth();
                 LocalDate deadlineLocalDate = monthEnd.plusDays(brand.getDaysAfterMonthEnd());
                 long daysRemaining = ChronoUnit.DAYS.between(today, deadlineLocalDate);
-                ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining);
+                ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining, nearMaxDays, windowMaxDays);
                 if (urgency != null) {
                     BigDecimal roundedCost = totalCost.setScale(2, RoundingMode.HALF_UP);
                     ProgressReminder reminder = new ProgressReminder();
@@ -473,11 +478,13 @@ public class ProgressReminderService {
         if (candidates.isEmpty()) return;
         influencerPaymentService.attachTeamIds(candidates); // 补上瞬态字段 teamIds，供拼团队名用
 
+        int nearMaxDays = thresholdCache.getInt(ReminderCategory.INFLUENCER_PAYMENT_DUE, "TIER_NEAR_MAX_DAYS", 3);
+        int windowMaxDays = thresholdCache.getInt(ReminderCategory.INFLUENCER_PAYMENT_DUE, "TIER_WINDOW_MAX_DAYS", 7);
         Map<ReminderUrgency, List<ProgressReminderDetail>> byUrgency = new EnumMap<>(ReminderUrgency.class);
         for (InfluencerPayment p : candidates) {
             LocalDate deadlineLocalDate = toLocalDate(p.getExpectedPaymentDate());
             long daysRemaining = ChronoUnit.DAYS.between(today, deadlineLocalDate);
-            ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining);
+            ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining, nearMaxDays, windowMaxDays);
             if (urgency == null) continue; // 超过7天，暂时不用提醒
 
             List<CollaborationTracking> linked = trackingRepo.findByInfluencerPaymentIdAndIsDeletedFalse(p.getId());
@@ -556,6 +563,9 @@ public class ProgressReminderService {
         List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
         Map<Long, String> accountNameById = buildAccountNameIndex(all);
 
+        int mildMaxDays = thresholdCache.getInt(ReminderCategory.PM_EXECUTOR_PROGRESS_STALL, "TIER_MILD_MAX_DAYS", 3);
+        int moderateMaxDays = thresholdCache.getInt(ReminderCategory.PM_EXECUTOR_PROGRESS_STALL, "TIER_MODERATE_MAX_DAYS", 7);
+
         Map<String, List<ProgressReminderDetail>> byKey = new LinkedHashMap<>();
         Map<String, Long> pmIdByKey = new HashMap<>();
         Map<String, OverdueUrgency> urgencyByKey = new HashMap<>();
@@ -566,7 +576,7 @@ public class ProgressReminderService {
             if (threshold == null || t.getProgressChangedAt() == null || t.getProjectManagerId() == null) continue;
             int workdays = WorkdayUtil.countWeekdaysInclusive(toLocalDate(t.getProgressChangedAt()), today);
             int overdueDays = workdays - threshold;
-            OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays);
+            OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays, mildMaxDays, moderateMaxDays);
             if (urgency == null) continue;
 
             Set<Long> involvedExecutor = (t.getExecutorId() != null && !t.getExecutorId().equals(t.getProjectManagerId()))
@@ -598,10 +608,15 @@ public class ProgressReminderService {
         }
     }
 
-    /** INFLUENCER_ORDERED（红人已下单）=5工作日；6个中间状态=3工作日；其余（含终态）不生成提醒 */
+    /** INFLUENCER_ORDERED（红人已下单）单独一档阈值；6个中间状态另一档阈值；其余（含终态）
+     * 不生成提醒。两档阈值都可在"进度提醒阈值维护"里改，默认值分别是5/3工作日 */
     private Integer stallThreshold(CollaborationProgress progress) {
-        if (progress == CollaborationProgress.INFLUENCER_ORDERED) return 5;
-        if (progress != null && PM_EXECUTOR_3DAY_STATES.contains(progress)) return 3;
+        if (progress == CollaborationProgress.INFLUENCER_ORDERED) {
+            return thresholdCache.getInt(ReminderCategory.PM_EXECUTOR_PROGRESS_STALL, "STALL_THRESHOLD_ORDERED", 5);
+        }
+        if (progress != null && PM_EXECUTOR_3DAY_STATES.contains(progress)) {
+            return thresholdCache.getInt(ReminderCategory.PM_EXECUTOR_PROGRESS_STALL, "STALL_THRESHOLD_MID", 3);
+        }
         return null;
     }
 
@@ -629,19 +644,23 @@ public class ProgressReminderService {
         List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
         Map<Long, String> accountNameById = buildAccountNameIndex(all);
 
+        int stallThreshold = thresholdCache.getInt(ReminderCategory.FINANCE_PROGRESS_STALL, "STALL_THRESHOLD", 14);
+        int nearMaxDays = thresholdCache.getInt(ReminderCategory.FINANCE_PROGRESS_STALL, "TIER_NEAR_MAX_DAYS", 3);
+        int windowMaxDays = thresholdCache.getInt(ReminderCategory.FINANCE_PROGRESS_STALL, "TIER_WINDOW_MAX_DAYS", 7);
+
         Map<CollaborationProgress, Map<ReminderUrgency, List<ProgressReminderDetail>>> byProgressAndUrgency
                 = new EnumMap<>(CollaborationProgress.class);
         for (CollaborationTracking t : all) {
             if (!isFinanceStallCandidate(t.getProgress()) || t.getProgressChangedAt() == null) continue;
             int workdays = WorkdayUtil.countWeekdaysInclusive(toLocalDate(t.getProgressChangedAt()), today);
-            int daysRemaining = 14 - workdays; // 正数=离阈值还有几天，0或负数=已到/超过阈值
-            ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining);
+            int daysRemaining = stallThreshold - workdays; // 正数=离阈值还有几天，0或负数=已到/超过阈值
+            ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining, nearMaxDays, windowMaxDays);
             if (urgency == null) continue;
             int overdueDays = Math.max(0, -daysRemaining); // 明细"超出天数"列用，还没到阈值时是0
             byProgressAndUrgency
                     .computeIfAbsent(t.getProgress(), k -> new EnumMap<>(ReminderUrgency.class))
                     .computeIfAbsent(urgency, k -> new ArrayList<>())
-                    .add(buildStallDetail(t, accountNameById, overdueDays, 14));
+                    .add(buildStallDetail(t, accountNameById, overdueDays, stallThreshold));
         }
 
         for (Map.Entry<CollaborationProgress, Map<ReminderUrgency, List<ProgressReminderDetail>>> progressEntry
@@ -695,12 +714,16 @@ public class ProgressReminderService {
         Map<String, OverdueUrgency> urgencyByKey = new HashMap<>();
         Map<String, Set<Long>> involvedByKey = new HashMap<>();
 
+        int overdueThreshold = thresholdCache.getInt(ReminderCategory.REQUIREMENT_INVOICE_OVERDUE, "OVERDUE_THRESHOLD", 5);
+        int mildMaxDays = thresholdCache.getInt(ReminderCategory.REQUIREMENT_INVOICE_OVERDUE, "TIER_MILD_MAX_DAYS", 3);
+        int moderateMaxDays = thresholdCache.getInt(ReminderCategory.REQUIREMENT_INVOICE_OVERDUE, "TIER_MODERATE_MAX_DAYS", 7);
+
         for (InfluencerRequirement r : candidates) {
             Brand brand = r.getBrandId() != null ? brandCache.findById(r.getBrandId()) : null;
             if (brand != null && !brand.requiresInvoiceUpload()) continue; // 不涉及invoice的品牌方不提醒
             int workdays = WorkdayUtil.countWeekdaysInclusive(toLocalDate(r.getCompletedAt()), today);
-            int overdueDays = workdays - 5;
-            OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays);
+            int overdueDays = workdays - overdueThreshold;
+            OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays, mildMaxDays, moderateMaxDays);
             if (urgency == null) continue;
 
             List<CollaborationTracking> linked =
@@ -751,13 +774,17 @@ public class ProgressReminderService {
         Map<String, OverdueUrgency> urgencyByKey = new HashMap<>();
         Map<String, Set<Long>> involvedByKey = new HashMap<>();
 
+        int overdueThreshold = thresholdCache.getInt(ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE, "OVERDUE_THRESHOLD", 14);
+        int mildMaxDays = thresholdCache.getInt(ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE, "TIER_MILD_MAX_DAYS", 3);
+        int moderateMaxDays = thresholdCache.getInt(ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE, "TIER_MODERATE_MAX_DAYS", 7);
+
         for (InfluencerRequirement r : candidates) {
             Brand brand = r.getBrandId() != null ? brandCache.findById(r.getBrandId()) : null;
             InfluencerTeam team = r.getTeamId() != null ? teamCache.findById(r.getTeamId()) : null;
             if (!InfluencerTeam.isPerRequirementContract(brand, team)) continue; // 一年签一次合同不在这提醒
             int workdays = WorkdayUtil.countWeekdaysInclusive(toLocalDate(r.getCompletedAt()), today);
-            int overdueDays = workdays - 14;
-            OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays);
+            int overdueDays = workdays - overdueThreshold;
+            OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays, mildMaxDays, moderateMaxDays);
             if (urgency == null) continue;
 
             List<CollaborationTracking> linked =
@@ -842,6 +869,9 @@ public class ProgressReminderService {
         Map<String, ReminderUrgency> urgencyByKey = new HashMap<>();
         Map<String, Set<Long>> involvedByKey = new HashMap<>();
 
+        int expiryWindowDays = thresholdCache.getInt(ReminderCategory.CONTRACT_EXPIRING_SOON, "EXPIRY_WINDOW_DAYS", CONTRACT_EXPIRY_WINDOW_DAYS);
+        int nearMaxDays = thresholdCache.getInt(ReminderCategory.CONTRACT_EXPIRING_SOON, "TIER_NEAR_MAX_DAYS", 14);
+
         for (Map.Entry<String, List<CollaborationTracking>> tripleEntry : byTriple.entrySet()) {
             List<CollaborationTracking> group = tripleEntry.getValue();
             CollaborationTracking sample = group.get(0);
@@ -863,7 +893,7 @@ public class ProgressReminderService {
             }
 
             long daysRemaining = ChronoUnit.DAYS.between(today, toLocalDate(endDate));
-            ReminderUrgency urgency = contractExpiryUrgency(daysRemaining);
+            ReminderUrgency urgency = contractExpiryUrgency(daysRemaining, expiryWindowDays, nearMaxDays);
             if (urgency == null) continue;
 
             Map<Long, Set<Long>> executorsByPm = new LinkedHashMap<>();
@@ -882,7 +912,7 @@ public class ProgressReminderService {
                 detail.setTeamName(team != null ? team.getName() : null);
                 detail.setAccountName(accountNameById.get(sample.getInfluencerId()));
                 detail.setDemandContent(sourceLabel);
-                detail.setCycleDays(CONTRACT_EXPIRY_WINDOW_DAYS);
+                detail.setCycleDays(expiryWindowDays);
                 detail.setDeadlineDate(endDate);
                 detail.setOverdueDays((int) Math.max(0, -daysRemaining));
                 // requirementId 这一列这类没有对应的"需求"，借用来存红人 id，供前端"查看详情"
@@ -907,12 +937,14 @@ public class ProgressReminderService {
         }
     }
 
-    /** 到期前30天开始提醒：0天或已过期=OVERDUE，1-14天=NEAR，15-30天=UPCOMING（借用
-     * ReminderUrgency 类型，语义/窗口不是原来的0/3/7天，前端按类别单独映射颜色/文案） */
-    private ReminderUrgency contractExpiryUrgency(long daysRemaining) {
-        if (daysRemaining > CONTRACT_EXPIRY_WINDOW_DAYS) return null;
+    /** 到期前 windowDays 天开始提醒：0天或已过期=OVERDUE，1~nearMaxDays天=NEAR，
+     * nearMaxDays+1~windowDays天=UPCOMING（借用 ReminderUrgency 类型，语义/窗口不是原来的
+     * 0/3/7天，前端按类别单独映射颜色/文案）。windowDays/nearMaxDays 默认30/14，
+     * 可在"进度提醒阈值维护"里改 */
+    private ReminderUrgency contractExpiryUrgency(long daysRemaining, int windowDays, int nearMaxDays) {
+        if (daysRemaining > windowDays) return null;
         if (daysRemaining <= 0) return ReminderUrgency.OVERDUE;
-        if (daysRemaining <= 14) return ReminderUrgency.NEAR;
+        if (daysRemaining <= nearMaxDays) return ReminderUrgency.NEAR;
         return ReminderUrgency.UPCOMING;
     }
 

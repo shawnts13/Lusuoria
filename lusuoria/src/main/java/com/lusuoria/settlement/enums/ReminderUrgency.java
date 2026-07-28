@@ -27,11 +27,23 @@ public enum ReminderUrgency {
         return color;
     }
 
-    /** 根据剩余天数（可为负，负数/0表示已超期）判定档位；超过7天不需要提醒，返回 null */
+    /** 根据剩余天数（可为负，负数/0表示已超期）判定档位；超过7天不需要提醒，返回 null。
+     * 2026-07-28 起边界改成可配置（见 {@link #fromDaysRemaining(long, int, int)}），这个
+     * 无参数版本固定用 3/7 的老默认值，只在没有具体提醒类型上下文时兜底调用。 */
     public static ReminderUrgency fromDaysRemaining(long daysRemaining) {
+        return fromDaysRemaining(daysRemaining, 3, 7);
+    }
+
+    /**
+     * 2026-07-28 新增：边界可配置版本，供 ProgressReminderService 按提醒类型从
+     * {@link com.lusuoria.settlement.config.ReminderThresholdCache} 读到的 nearMaxDays/
+     * windowMaxDays 传进来——不同提醒类型的"临近"/"预告"边界现在可以各自独立配置，不再是
+     * 全部共用同一套写死的 3/7。
+     */
+    public static ReminderUrgency fromDaysRemaining(long daysRemaining, int nearMaxDays, int windowMaxDays) {
         if (daysRemaining <= 0) return OVERDUE;
-        if (daysRemaining <= 3) return NEAR;
-        if (daysRemaining <= 7) return UPCOMING;
+        if (daysRemaining <= nearMaxDays) return NEAR;
+        if (daysRemaining <= windowMaxDays) return UPCOMING;
         return null;
     }
 }

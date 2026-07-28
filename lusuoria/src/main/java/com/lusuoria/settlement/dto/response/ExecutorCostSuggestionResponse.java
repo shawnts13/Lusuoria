@@ -29,4 +29,13 @@ public class ExecutorCostSuggestionResponse {
      * true 时 breakdown 里带的是红字提示文案，前端应该标红展示。
      */
     private boolean noRateConfigured;
+
+    /**
+     * 2026-07-28 新增：这条记录本身已经设置过内部执行成本（重新打开"设置内部执行成本"弹窗
+     * 编辑一条老记录）。true 时 suggestedAmount 是这条记录当前实际保存的金额（不是重新按梯度
+     * 推算的建议值——梯度配置事后可能变过，重新推算的数字不一定等于当初实际保存的），
+     * breakdown 文案也相应改成"目前已设置成 ¥X"而不是"建议金额"的措辞，rateBasedSuggestion
+     * 这时候恒为 false，前端不应该再展示"这是自动算出的建议金额"那句提示。
+     */
+    private boolean alreadySet;
 }

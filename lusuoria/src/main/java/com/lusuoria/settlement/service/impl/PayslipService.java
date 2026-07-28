@@ -653,9 +653,16 @@ public class PayslipService {
         rows.add(buildSummaryRow(rows));
 
         // tiers 为空=没配置阶梯=不展示该行（null）；配置了但没达标，computeBonusFromTiers 返回0，正常展示
-        BigDecimal tierBonus = (emp.getBonusTierCurrency() != null && !tiers.isEmpty())
+        boolean bonusTierConfigured = emp.getBonusTierCurrency() != null && !tiers.isEmpty();
+        BigDecimal tierBonus = bonusTierConfigured
                 ? commissionBonusService.computeBonusFromTiers(emp, tiers, totalCommission, rate)
                 : null;
+        // 命中档位的 bonus 比例，跟"提成比例"并排展示（2026-07-28 新增）；没命中任何档位
+        // （提成总额落在配置区间之外）时为 null，此时 tierBonus 恒为0，不需要展示比例
+        CommissionBonusTier matchedTier = bonusTierConfigured
+                ? commissionBonusService.findMatchedTier(emp, tiers, totalCommission, rate)
+                : null;
+        BigDecimal tierBonusRate = matchedTier != null ? matchedTier.getBonusRate() : null;
 
         // ===== 应发给自己名下执行人员的工资：2026-07 起按执行人员单独确认——每个执行人员
         // 独立判断"这个人confirm过了没"，confirm过的那个人用冻结快照，没confirm的那个人按
@@ -678,6 +685,7 @@ public class PayslipService {
                 .commissionRate(emp.getDefaultCommissionRate())
                 .baseAmount(totalCommission.setScale(SCALE, RoundingMode.HALF_UP))
                 .tierBonusAmount(tierBonus)
+                .tierBonusRate(tierBonusRate)
                 .executorWageRows(wageDetail.rows)
                 .executorWageTotal(wageDetail.total.setScale(SCALE, RoundingMode.HALF_UP))
                 .executorWageConfirmed(allExecutorsConfirmed)
@@ -1085,7 +1093,8 @@ public class PayslipService {
         return PayslipDetailResponse.builder()
                 .type(type).rows(convertedRows)
                 .commissionRate(src.getCommissionRate())
-                .baseAmount(baseAmount).tierBonusAmount(tierBonus).extraBonusAmount(extraBonus)
+                .baseAmount(baseAmount).tierBonusAmount(tierBonus).tierBonusRate(src.getTierBonusRate())
+                .extraBonusAmount(extraBonus)
                 .extraBonusAmountNative(draft != null ? draft.getExtraBonusAmount() : null)
                 .extraBonusCurrencyNative(draft != null ? draft.getExtraBonusCurrency() : null)
                 .totalAmount(total)

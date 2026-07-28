@@ -57,8 +57,20 @@ public class CommissionBonusService {
      */
     public BigDecimal computeBonusFromTiers(Employee manager, List<CommissionBonusTier> tiers,
                                              BigDecimal commissionTotalUsd, BigDecimal monthRate) {
+        CommissionBonusTier matched = findMatchedTier(manager, tiers, commissionTotalUsd, monthRate);
+        if (matched == null) return BigDecimal.ZERO;
+        return commissionTotalUsd.multiply(matched.getBonusRate()).setScale(SCALE, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 判档逻辑跟 {@link #computeBonusFromTiers} 完全一样，但只返回命中的那一档（不算金额），
+     * 供工资单详情页展示"bonus比例"用（2026-07-28 新增，跟"提成比例"并排展示）——判档逻辑
+     * 必须共用同一份，不要各写一份，否则以后改判档规则容易漏改一处。
+     */
+    public CommissionBonusTier findMatchedTier(Employee manager, List<CommissionBonusTier> tiers,
+                                                BigDecimal commissionTotalUsd, BigDecimal monthRate) {
         if (manager == null || manager.getBonusTierCurrency() == null || tiers == null || tiers.isEmpty()) {
-            return BigDecimal.ZERO;
+            return null;
         }
         BigDecimal amountInChosenCurrency = "RMB".equals(manager.getBonusTierCurrency()) && monthRate != null
                 ? commissionTotalUsd.multiply(monthRate) : commissionTotalUsd;
@@ -66,10 +78,8 @@ public class CommissionBonusService {
             boolean aboveMin = amountInChosenCurrency.compareTo(tier.getMinAmount()) >= 0;
             boolean withinMax = tier.getMaxAmount() == null
                     || amountInChosenCurrency.compareTo(tier.getMaxAmount()) <= 0;
-            if (aboveMin && withinMax) {
-                return commissionTotalUsd.multiply(tier.getBonusRate()).setScale(SCALE, RoundingMode.HALF_UP);
-            }
+            if (aboveMin && withinMax) return tier;
         }
-        return BigDecimal.ZERO;
+        return null;
     }
 }

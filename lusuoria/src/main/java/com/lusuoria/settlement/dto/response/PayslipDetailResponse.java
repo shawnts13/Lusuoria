@@ -37,6 +37,13 @@ public class PayslipDetailResponse {
     /** 阶梯Bonus（仅项目负责人配置了阶梯时非空，美金；未配置=null=不展示该行；已配置未达标=0） */
     private BigDecimal tierBonusAmount;
 
+    /**
+     * 2026-07-28 新增：命中的那一档 bonus 比例（跟 commissionRate 一样是原始小数比例，不随币种
+     * 换算），供前端跟"提成比例"并排展示。tierBonusAmount 非空但没有命中任何档位（提成总额
+     * 落在配置的档位区间之外）时为 null——此时 tierBonusAmount 恒为0，前端不需要展示比例。
+     */
+    private BigDecimal tierBonusRate;
+
     /** "奖金"：管理层手动设置的月度额外奖励，任何角色通用，未设置=null=不展示该行（已按请求币种换算） */
     private BigDecimal extraBonusAmount;
 

@@ -895,13 +895,25 @@ public class CollaborationTrackingService {
         int position = countSoFar + 1;
         ExecutorPayRateTier matched = findMatchingTier(tiers, position);
 
-        resp.setRateBasedSuggestion(true);
-        if (matched == null) {
+        // 这条记录本身已经设置过内部执行成本（重新打开弹窗编辑老记录）：展示的应该是"当前实际
+        // 保存的金额"，不是重新按梯度推算的建议值——梯度配置事后可能变过，重新推算的数字不一定
+        // 等于当初实际保存的，用推算值反而会误导（Shawn 反馈：位次本身已经修好了，但文案
+        // 应该说明"目前已设置成"而不是当成一个新的"建议"来措辞）
+        boolean alreadySet = t.getInternalExecutionCost() != null;
+        if (alreadySet) {
+            resp.setRateBasedSuggestion(false);
+            resp.setAlreadySet(true);
+            resp.setSuggestedAmount(t.getInternalExecutionCost());
+            resp.setBreakdown(monthLabel + "该执行人员已经处理了" + countSoFar + "笔" + videoType.getLabel()
+                    + "记录，该笔(第" + position + "笔)：目前已设置成 ¥" + fmtAmount(t.getInternalExecutionCost()));
+        } else if (matched == null) {
             // 配置了梯度，但档位没有覆盖到"这个月第几条"这个数字（比如只配了1-50条，这已经是第51条）
+            resp.setRateBasedSuggestion(true);
             resp.setSuggestedAmount(null);
             resp.setBreakdown(monthLabel + "该执行人员已经处理了" + countSoFar + "笔" + videoType.getLabel()
                     + "记录，该笔(第" + position + "笔)超出了当前配置的梯度覆盖范围，请手动填写金额");
         } else {
+            resp.setRateBasedSuggestion(true);
             java.math.BigDecimal rate = capAdjustedRate(matched, costedSameType);
             String rangeLabel = tiers.size() > 1 ? "(" + tierRangeLabel(matched) + ")" : "";
             resp.setSuggestedAmount(rate);
