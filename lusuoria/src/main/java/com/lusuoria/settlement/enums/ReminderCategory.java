@@ -6,6 +6,8 @@ package com.lusuoria.settlement.enums;
  *
  *   COLLAB_PAYMENT_DUE          - 红人合作跟踪临近结款提醒（品牌方付款周期=按红人成本阈值分档）
  *   BRAND_MONTH_END_PAYMENT_DUE - 品牌方月结临近结款提醒（品牌方付款周期=月底对账日后N天结款）
+ *   INFLUENCER_PAYMENT_DUE      - 红人结款临近付款日提醒（"红人结款"状态=待付款，按预计付款日
+ *                                 距今天数分档，档位口径完全同 COLLAB_PAYMENT_DUE）
  *   PM_EXECUTOR_PROGRESS_STALL  - 项目负责人/执行人员视角：视频项目进度长时间未流转
  *   FINANCE_PROGRESS_STALL      - 财务视角：视频项目进度长时间未流转（已发布未结算/已加入客户
  *                                 未结算列表迟迟没到客户已结算）
@@ -17,6 +19,7 @@ package com.lusuoria.settlement.enums;
 public enum ReminderCategory {
     COLLAB_PAYMENT_DUE("红人合作跟踪临近结款"),
     BRAND_MONTH_END_PAYMENT_DUE("品牌方月结临近结款"),
+    INFLUENCER_PAYMENT_DUE("红人结款临近付款日"),
     PM_EXECUTOR_PROGRESS_STALL("进度滞留-项目"),
     FINANCE_PROGRESS_STALL("进度滞留-财务"),
     REQUIREMENT_INVOICE_OVERDUE("Invoice逾期"),

@@ -34,7 +34,8 @@ public interface InfluencerPaymentRepository extends JpaRepository<InfluencerPay
            "AND (:brandId IS NULL OR ip.brandId = :brandId) " +
            "AND (:filterByTeam = false OR ip.id IN :matchingIds) " +
            "AND (:filterByReqNo = false OR ip.id IN :reqMatchingIds) " +
-           "AND (:paymentStatus IS NULL OR ip.paymentStatus = :paymentStatus)")
+           "AND (:paymentStatus IS NULL OR ip.paymentStatus = :paymentStatus) " +
+           "AND (:paymentNo IS NULL OR ip.paymentNo = :paymentNo)")
     Page<InfluencerPayment> findByFilters(
             @Param("settlementMonth") String settlementMonth,
             @Param("brandId") Long brandId,
@@ -43,6 +44,7 @@ public interface InfluencerPaymentRepository extends JpaRepository<InfluencerPay
             @Param("filterByReqNo") boolean filterByReqNo,
             @Param("reqMatchingIds") List<Long> reqMatchingIds,
             @Param("paymentStatus") InfluencerPaymentStatus paymentStatus,
+            @Param("paymentNo") String paymentNo,
             Pageable pageable);
 
     @EntityGraph(attributePaths = {"brand"})

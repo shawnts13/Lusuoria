@@ -8,6 +8,7 @@ import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.InfluencerContract;
+import com.lusuoria.settlement.entity.InfluencerPayment;
 import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.entity.ProgressReminder;
@@ -16,12 +17,14 @@ import com.lusuoria.settlement.entity.ReminderAcknowledgement;
 import com.lusuoria.settlement.entity.SysUser;
 import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
+import com.lusuoria.settlement.enums.InfluencerPaymentStatus;
 import com.lusuoria.settlement.enums.OverdueUrgency;
 import com.lusuoria.settlement.enums.PaymentCycleType;
 import com.lusuoria.settlement.enums.ReminderCategory;
 import com.lusuoria.settlement.enums.ReminderUrgency;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerContractRepository;
+import com.lusuoria.settlement.repository.InfluencerPaymentRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
 import com.lusuoria.settlement.repository.ProgressReminderDetailRepository;
@@ -91,7 +94,8 @@ public class ProgressReminderService {
 
     /** "结款后更新提示内容"手动触发范围 */
     private static final Set<ReminderCategory> PAYMENT_CATEGORIES = EnumSet.of(
-            ReminderCategory.COLLAB_PAYMENT_DUE, ReminderCategory.BRAND_MONTH_END_PAYMENT_DUE);
+            ReminderCategory.COLLAB_PAYMENT_DUE, ReminderCategory.BRAND_MONTH_END_PAYMENT_DUE,
+            ReminderCategory.INFLUENCER_PAYMENT_DUE);
     /** "项目流转后更新提示内容"手动触发范围（2026-07 新增，不含 CONTRACT_EXPIRING_SOON——
      * 那一类是按日历/合同到期日驱动的，不是按"进度流转"驱动的，只在每天3点主批次里跑） */
     private static final Set<ReminderCategory> PROJECT_FLOW_CATEGORIES = EnumSet.of(
@@ -111,6 +115,8 @@ public class ProgressReminderService {
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private InfluencerContractRepository influencerContractRepo;
     @Autowired private InfluencerRequirementRepository requirementRepo;
+    @Autowired private InfluencerPaymentRepository influencerPaymentRepo;
+    @Autowired private InfluencerPaymentService influencerPaymentService;
     @Autowired private ReminderAcknowledgementRepository ackRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private InfluencerTeamCache teamCache;
@@ -132,6 +138,7 @@ public class ProgressReminderService {
 
             runCollabPaymentDue(today, batchDate);
             runBrandMonthEndPaymentDue(today, batchDate);
+            runInfluencerPaymentDue(today, batchDate);
             runPmExecutorProgressStall(today, batchDate);
             runFinanceProgressStall(today, batchDate);
             runRequirementInvoiceOverdue(today, batchDate);
@@ -230,9 +237,10 @@ public class ProgressReminderService {
     }
 
     /**
-     * "结款后更新提示内容"手动触发（2026-07 起改成只重算 COLLAB_PAYMENT_DUE/
-     * BRAND_MONTH_END_PAYMENT_DUE 这两类，不影响 PM_EXECUTOR_PROGRESS_STALL/
-     * FINANCE_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE 当天已经算好的数据）。
+     * "结款后更新提示内容"手动触发（2026-07 起只重算 COLLAB_PAYMENT_DUE/
+     * BRAND_MONTH_END_PAYMENT_DUE 这两类，2026-07 再新增 INFLUENCER_PAYMENT_DUE，不影响
+     * PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE 当天
+     * 已经算好的数据）。
      */
     @Transactional
     public void runPaymentBatches() {
@@ -242,6 +250,7 @@ public class ProgressReminderService {
             Date batchDate = toDate(today);
             runCollabPaymentDue(today, batchDate);
             runBrandMonthEndPaymentDue(today, batchDate);
+            runInfluencerPaymentDue(today, batchDate);
         } catch (RuntimeException e) {
             log.error("进度提醒（结款类）手动重算失败：{}", e.toString(), e);
             throw e;
@@ -435,6 +444,95 @@ public class ProgressReminderService {
                 : "已超期" + Math.abs(daysRemaining) + "天";
         return "距离" + brandName + "，" + monthValue + "月底对账后（金额共"
                 + totalCost.toPlainString() + "美元）最迟结款日（" + deadlineStr + "），" + remainingPart;
+    }
+
+    /**
+     * Part B2（2026-07 新增）：红人结款临近付款日——跟 Part A（COLLAB_PAYMENT_DUE）是完全不同
+     * 的两件事，不要混淆：Part A 是"红人合作跟踪"记录还没被纳入任何结款批次时，按品牌方付款
+     * 周期算出的"应该在哪天之前发起结款"；这里是已经发起的"红人结款"记录（跨多个红人合作跟踪
+     * 记录的一个批次）本身还没实际付款，按这条结款记录自己的"预计付款日"算是否临近。
+     *
+     * 候选：paymentStatus=PENDING（待付款）且 expectedPaymentDate 有值（没填预计付款日的没法
+     * 判断，跳过）。分档口径完全复用 ReminderUrgency.fromDaysRemaining（跟 Part A 同一套
+     * 3-7天/1-3天/0天或已超期），超过7天不提醒。受众固定"管理层"，跟 Part A 一致。
+     *
+     * 明细字段复用 ProgressReminderDetail 已有列（见该实体类各字段注释里 INFLUENCER_PAYMENT_DUE
+     * 的说明），不新增数据库列：trackingId 占位取这条结款记录下第一条关联的红人合作跟踪记录 id
+     * （这条结款记录必然至少关联一条，否则不可能有合作数量/应付金额）；requirementId/
+     * internalRequirementNo 复用存这条结款记录自己的 id/结款单号，供前端"查看详情"跳转到
+     * "红人结款"模块按结款单号定位。
+     */
+    private void runInfluencerPaymentDue(LocalDate today, Date batchDate) {
+        List<InfluencerPayment> candidates = influencerPaymentRepo.findByIsDeletedFalse().stream()
+                .filter(p -> p.getPaymentStatus() == InfluencerPaymentStatus.PENDING)
+                .filter(p -> p.getExpectedPaymentDate() != null)
+                .collect(Collectors.toList());
+        if (candidates.isEmpty()) return;
+        influencerPaymentService.attachTeamIds(candidates); // 补上瞬态字段 teamIds，供拼团队名用
+
+        Map<ReminderUrgency, List<ProgressReminderDetail>> byUrgency = new EnumMap<>(ReminderUrgency.class);
+        for (InfluencerPayment p : candidates) {
+            LocalDate deadlineLocalDate = toLocalDate(p.getExpectedPaymentDate());
+            long daysRemaining = ChronoUnit.DAYS.between(today, deadlineLocalDate);
+            ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining);
+            if (urgency == null) continue; // 超过7天，暂时不用提醒
+
+            List<CollaborationTracking> linked = trackingRepo.findByInfluencerPaymentIdAndIsDeletedFalse(p.getId());
+            if (linked.isEmpty()) continue; // 理论上不会发生（有合作数量/应付金额说明必然关联了记录），防御性跳过
+
+            ProgressReminderDetail detail = new ProgressReminderDetail();
+            detail.setIsDeleted(false);
+            detail.setTrackingId(linked.get(0).getId());
+            detail.setBrandName(p.getBrand() != null ? p.getBrand().getName() : null);
+            detail.setTeamName(joinTeamNames(p.getTeamIds()));
+            detail.setDemandContent(formatSettlementMonthLabel(p.getSettlementMonth()));
+            detail.setInfluencerCost(p.getPayableAmount());
+            detail.setProgressLabel(p.getPaymentStatus().getLabel());
+            detail.setPublishDate(p.getReconcileDate());
+            detail.setCycleDays(p.getCooperationQuantity() != null ? p.getCooperationQuantity() : 0);
+            detail.setDeadlineDate(p.getExpectedPaymentDate());
+            detail.setOverdueDays((int) Math.max(0, -daysRemaining));
+            detail.setRequirementId(p.getId());
+            detail.setInternalRequirementNo(p.getPaymentNo());
+
+            byUrgency.computeIfAbsent(urgency, k -> new ArrayList<>()).add(detail);
+        }
+
+        for (ReminderUrgency urgency : ReminderUrgency.values()) {
+            List<ProgressReminderDetail> details = byUrgency.get(urgency);
+            if (details == null || details.isEmpty()) continue;
+
+            ProgressReminder reminder = new ProgressReminder();
+            reminder.setIsDeleted(false);
+            reminder.setBatchDate(batchDate);
+            reminder.setCategory(ReminderCategory.INFLUENCER_PAYMENT_DUE);
+            reminder.setUrgency(urgency);
+            reminder.setAudienceEmployeeRole(MANAGEMENT_ROLE);
+            reminder.setCount(details.size());
+            reminder.setTitle(details.size() + "笔临近付款日的红人结款记录");
+            reminder = reminderRepo.save(reminder);
+
+            for (ProgressReminderDetail d : details) d.setReminderId(reminder.getId());
+            detailRepo.saveAll(details);
+        }
+    }
+
+    /** 结款记录涉及的团队名拼接展示（"、"分隔），null 代表"不涉及团队"跳过不显示；全部为空时返回 null */
+    private String joinTeamNames(List<Long> teamIds) {
+        if (teamIds == null || teamIds.isEmpty()) return null;
+        List<String> names = new ArrayList<>();
+        for (Long id : teamIds) {
+            if (id == null) continue;
+            InfluencerTeam team = teamCache.findById(id);
+            if (team != null) names.add(team.getName());
+        }
+        return names.isEmpty() ? null : String.join("、", names);
+    }
+
+    /** "yyyyMM" -> "结算月份：2026年07月"，供明细展示用 */
+    private String formatSettlementMonthLabel(String yyyyMM) {
+        if (yyyyMM == null || yyyyMM.length() != 6) return null;
+        return "结算月份：" + yyyyMM.substring(0, 4) + "年" + yyyyMM.substring(4) + "月";
     }
 
     /**

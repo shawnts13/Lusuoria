@@ -49,6 +49,7 @@ public class InfluencerPaymentController {
             @RequestParam(required = false) Long teamId,
             @RequestParam(required = false) String internalRequirementNo,
             @RequestParam(required = false) InfluencerPaymentStatus paymentStatus,
+            @RequestParam(required = false) String paymentNo,
             @RequestParam(defaultValue = "settlementMonth") String sortBy,
             @RequestParam(defaultValue = "desc") String sortDir,
             @RequestParam(defaultValue = "0")  int page,
@@ -74,7 +75,8 @@ public class InfluencerPaymentController {
                 : Sort.by(direction, sortBy);
         PageRequest pageable = PageRequest.of(page, size, sort);
         Page<InfluencerPayment> result = paymentRepo.findByFilters(
-                settlementMonth, brandId, filterByTeam, matchingIds, filterByReqNo, reqMatchingIds, paymentStatus, pageable);
+                settlementMonth, brandId, filterByTeam, matchingIds, filterByReqNo, reqMatchingIds, paymentStatus,
+                paymentNo != null && !paymentNo.trim().isEmpty() ? paymentNo.trim() : null, pageable);
         paymentService.attachTeamIds(result.getContent());
         return ApiResponse.success(result);
     }

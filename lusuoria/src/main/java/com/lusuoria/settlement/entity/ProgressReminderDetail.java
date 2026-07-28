@@ -8,11 +8,13 @@ import java.math.BigDecimal;
 import java.util.Date;
 
 /**
- * 进度提醒明细行（2026-07 新增），仅 category=COLLAB_PAYMENT_DUE 的 ProgressReminder 才有明细。
+ * 进度提醒明细行（2026-07 新增），BRAND_MONTH_END_PAYMENT_DUE 类别没有明细（本身就是一句
+ * 完整文案），其余类别都有。
  *
- * 每行对应一条命中的红人合作跟踪记录，在跑批当时把展示要用的字段整体快照下来（而不是
- * 存一个 trackingId 现查现拼），这样当天不管看多少次"待处理-进度提醒"或者弹窗，看到的
- * 数字和明细列表都严格对得上，不会因为白天有人改了红人合作跟踪的数据而对不上。
+ * 每行对应一条命中的记录（大多数类别是红人合作跟踪记录，REQUIREMENT_INVOICE_OVERDUE/
+ * REQUIREMENT_CONTRACT_OVERDUE 是需求，INFLUENCER_PAYMENT_DUE 是结款记录），在跑批当时把
+ * 展示要用的字段整体快照下来（而不是存一个 id 现查现拼），这样当天不管看多少次"待处理-进度
+ * 提醒"或者弹窗，看到的数字和明细列表都严格对得上，不会因为白天有人改了底层数据而对不上。
  */
 @Entity
 @Table(name = "progress_reminder_details")
@@ -46,16 +48,24 @@ public class ProgressReminderDetail extends BaseEntity {
     /**
      * 红人视频制作与发布成本（美金）快照。语义按类别重新解释：PM_EXECUTOR_PROGRESS_STALL/
      * FINANCE_PROGRESS_STALL 是单条红人合作跟踪记录的成本；REQUIREMENT_INVOICE_OVERDUE
-     * 是整个需求的红人视频制作与发布总成本。
+     * 是整个需求的红人视频制作与发布总成本；INFLUENCER_PAYMENT_DUE 是这条结款记录的
+     * 应付金额（美金）。
      */
     @Column(name = "influencer_cost", precision = 15, scale = 2)
     private BigDecimal influencerCost;
 
-    /** 视频项目进度中文标签快照（不存枚举，因为跑批之后这条记录的进度可能会变） */
+    /**
+     * 视频项目进度中文标签快照（不存枚举，因为跑批之后这条记录的进度可能会变）。
+     * INFLUENCER_PAYMENT_DUE 复用成这条结款记录的付款状态标签（固定是"待付款"，
+     * 只有待付款的记录才会生成这类提醒）。
+     */
     @Column(name = "progress_label")
     private String progressLabel;
 
-    /** 视频发布时间快照 */
+    /**
+     * 视频发布时间快照。INFLUENCER_PAYMENT_DUE 复用成这条结款记录的对账日期
+     * （可能为空——对账日期本身是可选字段）。
+     */
     @Temporal(TemporalType.DATE)
     @Column(name = "publish_date")
     private Date publishDate;
@@ -66,11 +76,15 @@ public class ProgressReminderDetail extends BaseEntity {
      *   - PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL："提醒阈值（工作日）"——
      *     超过多少个工作日没流转就算滞留（3/5/14）。
      *   - REQUIREMENT_INVOICE_OVERDUE："需求条目总数"（不是天数）。
+     *   - INFLUENCER_PAYMENT_DUE："合作数量"（这条结款记录勾选的红人合作跟踪条目数）。
      */
     @Column(name = "cycle_days", nullable = false)
     private Integer cycleDays;
 
-    /** 最迟结款日 = 视频发布时间 + 结款周期 */
+    /**
+     * 最迟结款日 = 视频发布时间 + 结款周期。INFLUENCER_PAYMENT_DUE 复用成这条结款记录的
+     * 预计付款日（跟这类提醒的分档依据是同一个日期）。
+     */
     @Temporal(TemporalType.DATE)
     @Column(name = "deadline_date", nullable = false)
     private Date deadlineDate;
@@ -86,7 +100,9 @@ public class ProgressReminderDetail extends BaseEntity {
      * REQUIREMENT_INVOICE_OVERDUE 专用：关联的红人需求 id/内部需求编号，供"查看详情"跳转到
      * "红人需求管理"模块（这一类的 trackingId 会填成该需求下某一条关联合作跟踪记录的 id
      * 占位——trackingId 是历史 NOT NULL 列，不能留空——但"查看详情"实际跳转按这两个字段来，
-     * 不用 trackingId）。
+     * 不用 trackingId）。INFLUENCER_PAYMENT_DUE 复用 requirementId 存这条结款记录自己的 id
+     * （不是需求 id），internalRequirementNo 复用存结款单号——"查看详情"跳转到"红人结款"
+     * 模块按结款单号定位，同样不用 trackingId。
      */
     @Column(name = "requirement_id")
     private Long requirementId;
