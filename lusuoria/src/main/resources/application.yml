@@ -42,11 +42,11 @@ jwt:
 
 # CORS 允许的前端域名
 cors:
-  allowed-origins: ${CORS_ORIGINS:http://localhost:3000,https://lusuoria-settlement.vercel.app}
+  allowed-origins: ${CORS_ORIGINS:http://localhost:3000,https://lusuoria-frontend.vercel.app}
 
 # 前端地址，Google OAuth 授权走完之后跳转回"账号管理"页面用
 app:
-  frontend-url: ${APP_FRONTEND_URL:https://lusuoria-settlement.vercel.app}
+  frontend-url: ${APP_FRONTEND_URL:https://lusuoria-frontend.vercel.app}
   # 本服务自己的公网地址，拼 Google OAuth 的 redirect_uri（必须跟 Google Cloud Console 里
   # OAuth 客户端配置的"已获授权的重定向 URI"完全一致，包括末尾这段 /api/google-drive-auth/callback）
   base-url: ${APP_BASE_URL:https://lusuoria.onrender.com}
