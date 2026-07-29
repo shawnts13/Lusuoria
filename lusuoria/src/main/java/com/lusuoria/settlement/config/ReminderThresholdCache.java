@@ -58,9 +58,10 @@ public class ReminderThresholdCache {
             {REQUIREMENT_CONTRACT_OVERDUE, "TIER_MODERATE_MAX_DAYS",
                     "中度提醒边界（超过则为重度/红色）", 7, "天", 3},
 
-            {CONTRACT_EXPIRING_SOON, "EXPIRY_WINDOW_DAYS", "合同到期提醒窗口（到期前多少天开始提醒）", 30, "天", 1},
-            {CONTRACT_EXPIRING_SOON, "TIER_OVERDUE_MAX_DAYS", "0天或已过期边界（红色，到了/超过到期日多少天内算这一档）", 0, "天", 2},
-            {CONTRACT_EXPIRING_SOON, "TIER_NEAR_MAX_DAYS", "临近提醒边界（距离到期还剩多少天内算临近/橙色）", 14, "天", 3},
+            {CONTRACT_EXPIRING_SOON, "TIER_OVERDUE_MAX_DAYS", "0天或已过期边界（红色，到了/超过到期日多少天内算这一档）", 0, "天", 1},
+            {CONTRACT_EXPIRING_SOON, "TIER_NEAR_MAX_DAYS", "临近提醒边界（距离到期还剩多少天内算临近/橙色）", 14, "天", 2},
+            {CONTRACT_EXPIRING_SOON, "EXPIRY_WINDOW_DAYS",
+                    "预告提醒边界（距离到期还剩多少天内算预告/黄色，同时也是到期前多少天开始提醒的总窗口）", 30, "天", 3},
 
             {COLLAB_PAYMENT_DUE, "TIER_OVERDUE_MAX_DAYS", "0天或已超期边界（红色，到了/超过最迟结款日多少天内算这一档）", 0, "天", 1},
             {COLLAB_PAYMENT_DUE, "TIER_NEAR_MAX_DAYS", "临近提醒边界（距离最迟结款日还剩多少天内算临近/橙色）", 3, "天", 2},
@@ -87,25 +88,37 @@ public class ReminderThresholdCache {
      * 按 (category, paramKey) 逐行补齐，不是"整张表是空的才种"——第一次上线这个功能时表是空的，
      * 会整表插入；以后 DEFAULTS 清单里新增参数（比如 2026-07-29 补的 TIER_OVERDUE_MAX_DAYS）时，
      * 表已经不是空的了，只逐行补上缺的那几条，不会因为表已经有数据就整体跳过，导致新参数永远
-     * 插不进去。已存在的行（管理层已经改过值的）不会被覆盖，只补缺失的。
+     * 插不进去。
+     *
+     * 已存在的行：paramValue（管理层可能已经手动改过）永远不覆盖；但 paramLabel/unit/sortOrder
+     * 这几个纯展示用的字段每次启动都会跟 DEFAULTS 同步一遍——这几个后续可能会继续打磨措辞/
+     * 调整分组内的展示顺序（2026-07-29 就把 CONTRACT_EXPIRING_SOON 的 EXPIRY_WINDOW_DAYS
+     * 从第1位挪到第3位、顺带把标签写清楚是"预告/黄色"边界），不应该因为这一行早就插过就永远
+     * 停留在旧文案/旧顺序。
      */
     private synchronized void seedMissingDefaults() {
-        List<ReminderThresholdConfig> toInsert = new ArrayList<>();
+        List<ReminderThresholdConfig> toSave = new ArrayList<>();
         for (Object[] row : DEFAULTS) {
             ReminderCategory category = (ReminderCategory) row[0];
             String paramKey = (String) row[1];
-            if (repo.findByCategoryAndParamKey(category, paramKey).isPresent()) continue;
-            ReminderThresholdConfig c = new ReminderThresholdConfig();
-            c.setIsDeleted(false);
-            c.setCategory(category);
-            c.setParamKey(paramKey);
-            c.setParamLabel((String) row[2]);
-            c.setParamValue((Integer) row[3]);
-            c.setUnit((String) row[4]);
-            c.setSortOrder((Integer) row[5]);
-            toInsert.add(c);
+            String label = (String) row[2];
+            Integer defaultValue = (Integer) row[3];
+            String unit = (String) row[4];
+            Integer sortOrder = (Integer) row[5];
+            ReminderThresholdConfig c = repo.findByCategoryAndParamKey(category, paramKey).orElse(null);
+            if (c == null) {
+                c = new ReminderThresholdConfig();
+                c.setIsDeleted(false);
+                c.setCategory(category);
+                c.setParamKey(paramKey);
+                c.setParamValue(defaultValue);
+            }
+            c.setParamLabel(label);
+            c.setUnit(unit);
+            c.setSortOrder(sortOrder);
+            toSave.add(c);
         }
-        if (!toInsert.isEmpty()) repo.saveAll(toInsert);
+        repo.saveAll(toSave);
     }
 
     @Scheduled(fixedDelay = 4 * 60 * 60 * 1000)

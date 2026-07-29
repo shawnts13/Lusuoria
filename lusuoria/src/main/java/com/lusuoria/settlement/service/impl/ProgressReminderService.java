@@ -747,7 +747,7 @@ public class ProgressReminderService {
             for (Map.Entry<Long, Set<Long>> pmEntry : executorsByPm.entrySet()) {
                 addToOwnerBucket(byKey, pmIdByKey, urgencyByKey, involvedByKey,
                         pmEntry.getKey(), urgency,
-                        buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays),
+                        buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays, overdueThreshold),
                         pmEntry.getValue());
             }
         }
@@ -807,7 +807,7 @@ public class ProgressReminderService {
             for (Map.Entry<Long, Set<Long>> pmEntry : executorsByPm.entrySet()) {
                 addToOwnerBucket(byKey, pmIdByKey, urgencyByKey, involvedByKey,
                         pmEntry.getKey(), urgency,
-                        buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays),
+                        buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays, overdueThreshold),
                         pmEntry.getValue());
             }
         }
@@ -1016,7 +1016,8 @@ public class ProgressReminderService {
     }
 
     private ProgressReminderDetail buildRequirementOverdueDetail(InfluencerRequirement r, Brand brand,
-                                                                    Long placeholderTrackingId, int overdueDays) {
+                                                                    Long placeholderTrackingId, int overdueDays,
+                                                                    int thresholdDays) {
         ProgressReminderDetail detail = new ProgressReminderDetail();
         detail.setIsDeleted(false);
         // trackingId 是历史 NOT NULL 列，这一类没有单一对应的合作跟踪记录，随便挑该需求下
@@ -1032,6 +1033,7 @@ public class ProgressReminderService {
         detail.setCycleDays(r.getTotalItemCount() != null ? r.getTotalItemCount() : 0);
         detail.setDeadlineDate(toDate(toLocalDate(r.getCompletedAt())));
         detail.setOverdueDays(overdueDays);
+        detail.setThresholdDays(thresholdDays);
         detail.setInfluencerCost(r.getTotalInfluencerCost());
         detail.setClientPrice(r.getTotalClientPrice());
         detail.setRequirementId(r.getId());

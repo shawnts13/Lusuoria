@@ -74,8 +74,11 @@ public class ProgressReminderDetail extends BaseEntity {
      * 历史 NOT NULL 列，含义按类别重新解释（2026-07）：
      *   - COLLAB_PAYMENT_DUE：结款周期（天数），根据品牌方配置 + 单笔红人成本算出来的。
      *   - PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL："提醒阈值（工作日）"——
-     *     超过多少个工作日没流转就算滞留（3/5/14）。
-     *   - REQUIREMENT_INVOICE_OVERDUE："需求条目总数"（不是天数）。
+     *     超过多少个工作日没流转就算滞留，跑批当时从"进度提醒阈值维护"读到的实际值。
+     *   - REQUIREMENT_INVOICE_OVERDUE/REQUIREMENT_CONTRACT_OVERDUE："需求条目总数"（不是
+     *     天数）——这两类的"提醒阈值（工作日）"改存在 {@link #thresholdDays} 里，不是这个字段。
+     *   - CONTRACT_EXPIRING_SOON：合同到期提醒窗口天数（跑批当时从"进度提醒阈值维护"读到的
+     *     EXPIRY_WINDOW_DAYS，不是固定30）。
      *   - INFLUENCER_PAYMENT_DUE："合作数量"（这条结款记录勾选的红人合作跟踪条目数）。
      */
     @Column(name = "cycle_days", nullable = false)
@@ -141,6 +144,17 @@ public class ProgressReminderDetail extends BaseEntity {
      */
     @Column(name = "payment_progress_label")
     private String paymentProgressLabel;
+
+    /**
+     * 提醒阈值天数快照（2026-07-29 新增，REQUIREMENT_INVOICE_OVERDUE/REQUIREMENT_CONTRACT_OVERDUE/
+     * CONTRACT_EXPIRING_SOON 这3类专用）——这3类的 cycleDays 字段被复用成"需求条目总数"/没有
+     * 意义，跑批当时实际用的阈值（可能已经被管理层在"进度提醒阈值维护"改过）之前是前端硬编码
+     * 显示的固定文案（5天/14天/30天），阈值可维护之后那样会显示过期的旧数字，改成从这里读
+     * 跑批当时真正用的值。其余类别不设置这个字段（PM_EXECUTOR_PROGRESS_STALL/
+     * FINANCE_PROGRESS_STALL 复用 cycleDays 本身就是阈值，不需要这个字段）。
+     */
+    @Column(name = "threshold_days")
+    private Integer thresholdDays;
 
     /**
      * 当前登录人是否已经"标记已处理"过这一行（2026-07 新增，不落库，只在
