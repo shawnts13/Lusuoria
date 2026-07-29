@@ -28,20 +28,21 @@ public enum ReminderUrgency {
     }
 
     /** 根据剩余天数（可为负，负数/0表示已超期）判定档位；超过7天不需要提醒，返回 null。
-     * 2026-07-28 起边界改成可配置（见 {@link #fromDaysRemaining(long, int, int)}），这个
-     * 无参数版本固定用 3/7 的老默认值，只在没有具体提醒类型上下文时兜底调用。 */
+     * 2026-07-28 起边界改成可配置（见 {@link #fromDaysRemaining(long, int, int, int)}），这个
+     * 无参数版本固定用 0/3/7 的老默认值，只在没有具体提醒类型上下文时兜底调用。 */
     public static ReminderUrgency fromDaysRemaining(long daysRemaining) {
-        return fromDaysRemaining(daysRemaining, 3, 7);
+        return fromDaysRemaining(daysRemaining, 0, 3, 7);
     }
 
     /**
-     * 2026-07-28 新增：边界可配置版本，供 ProgressReminderService 按提醒类型从
-     * {@link com.lusuoria.settlement.config.ReminderThresholdCache} 读到的 nearMaxDays/
-     * windowMaxDays 传进来——不同提醒类型的"临近"/"预告"边界现在可以各自独立配置，不再是
-     * 全部共用同一套写死的 3/7。
+     * 2026-07-28 新增、2026-07-29 补上 overdueMaxDays：三个边界全部可配置版本，供
+     * ProgressReminderService 按提醒类型从 {@link com.lusuoria.settlement.config.ReminderThresholdCache}
+     * 读到的 overdueMaxDays/nearMaxDays/windowMaxDays 传进来——"0天或已超期"这一档之前是写死的
+     * daysRemaining&lt;=0，现在也能按提醒类型单独调整（比如想给几天的宽限期，超期几天内还不算
+     * 最高优先级）。
      */
-    public static ReminderUrgency fromDaysRemaining(long daysRemaining, int nearMaxDays, int windowMaxDays) {
-        if (daysRemaining <= 0) return OVERDUE;
+    public static ReminderUrgency fromDaysRemaining(long daysRemaining, int overdueMaxDays, int nearMaxDays, int windowMaxDays) {
+        if (daysRemaining <= overdueMaxDays) return OVERDUE;
         if (daysRemaining <= nearMaxDays) return NEAR;
         if (daysRemaining <= windowMaxDays) return UPCOMING;
         return null;
