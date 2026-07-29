@@ -44,6 +44,23 @@ jwt:
 cors:
   allowed-origins: ${CORS_ORIGINS:http://localhost:3000,https://lusuoria-settlement.vercel.app}
 
+# 前端地址，Google OAuth 授权走完之后跳转回"账号管理"页面用
+app:
+  frontend-url: ${APP_FRONTEND_URL:https://lusuoria-settlement.vercel.app}
+  # 本服务自己的公网地址，拼 Google OAuth 的 redirect_uri（必须跟 Google Cloud Console 里
+  # OAuth 客户端配置的"已获授权的重定向 URI"完全一致，包括末尾这段 /api/google-drive-auth/callback）
+  base-url: ${APP_BASE_URL:https://lusuoria.onrender.com}
+
+# 数据库每日全量备份（2026-07-29 新增，见 DbBackupService/GoogleDriveAuthService）
+backup:
+  google-drive:
+    # 目标 Google Drive 文件夹 id（来自 https://drive.google.com/drive/folders/<这一段>）
+    folder-id: ${GOOGLE_DRIVE_BACKUP_FOLDER_ID:1KNz3r_SDDxkupki7i2b6zXgL_CDdZjAp}
+  google-oauth:
+    client-id: ${GOOGLE_OAUTH_CLIENT_ID:}
+    client-secret: ${GOOGLE_OAUTH_CLIENT_SECRET:}
+    redirect-uri: ${GOOGLE_OAUTH_REDIRECT_URI:${app.base-url}/api/google-drive-auth/callback}
+
 # Actuator（Render 健康检查）
 management:
   endpoints:

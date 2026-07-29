@@ -63,7 +63,9 @@ public class SecurityConfig {
                 .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS).and()
                 .exceptionHandling().authenticationEntryPoint(jwtAuthEntryPoint).and()
                 .authorizeRequests()
-                .antMatchers("/api/auth/**", "/actuator/health").permitAll() // 合并放行路径
+                // Google OAuth 回调（数据库备份用）：Google 直接跳转浏览器过来，不带我们系统的
+                // JWT，只能靠 state 参数一次性校验，见 GoogleDriveAuthController/GoogleDriveAuthService
+                .antMatchers("/api/auth/**", "/actuator/health", "/api/google-drive-auth/callback").permitAll()
                 .antMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .anyRequest().authenticated();
 
