@@ -5,9 +5,11 @@ import com.lusuoria.settlement.dto.request.EmployeeRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.CommissionBonusTier;
 import com.lusuoria.settlement.entity.Employee;
+import com.lusuoria.settlement.entity.ExecutorPayRateTier;
 import com.lusuoria.settlement.excel.EmployeeExcelHandler;
 import com.lusuoria.settlement.repository.CommissionBonusTierRepository;
 import com.lusuoria.settlement.repository.EmployeeRepository;
+import com.lusuoria.settlement.repository.ExecutorPayRateTierRepository;
 import com.lusuoria.settlement.util.EmployeeRoleUtil;
 import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,6 +21,7 @@ import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -35,6 +38,7 @@ public class EmployeeController {
     @Autowired private EmployeeCache employeeCache;
     @Autowired private EmployeeExcelHandler excelHandler;
     @Autowired private CommissionBonusTierRepository bonusTierRepo;
+    @Autowired private ExecutorPayRateTierRepository executorPayRateTierRepo;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
     /** 获取员工列表（完全走缓存） */
@@ -177,7 +181,27 @@ public class EmployeeController {
         List<Employee> list = (role != null && !role.isEmpty())
                 ? allEmployees.stream().filter(emp -> role.equals(emp.getRole())).collect(Collectors.toList())
                 : allEmployees;
-        excelHandler.export(list, response);
+
+        List<Long> ids = list.stream().map(Employee::getId).collect(Collectors.toList());
+        Map<Long, List<CommissionBonusTier>> bonusTiersByEmployeeId = new HashMap<>();
+        if (!ids.isEmpty()) {
+            for (CommissionBonusTier t : bonusTierRepo.findByEmployeeIdInAndIsDeletedFalseOrderByMinAmountAsc(ids)) {
+                bonusTiersByEmployeeId.computeIfAbsent(t.getEmployeeId(), k -> new ArrayList<>()).add(t);
+            }
+        }
+
+        // 执行人员薪资标准：只导出"管理层"这份配置，跟列表页"薪资信息"列展示的口径一致
+        // （见 EmployeeExcelHandler 类注释），不是把每个不同项目负责人各自配的费率都汇总进来
+        Map<Long, List<ExecutorPayRateTier>> executorRatesByExecutorId = new HashMap<>();
+        Employee management = employeeCache.findManagementEmployee();
+        if (management != null) {
+            for (ExecutorPayRateTier t : executorPayRateTierRepo
+                    .findByManagerIdAndIsDeletedFalseOrderByMinCountAsc(management.getId())) {
+                executorRatesByExecutorId.computeIfAbsent(t.getExecutorId(), k -> new ArrayList<>()).add(t);
+            }
+        }
+
+        excelHandler.export(list, bonusTiersByEmployeeId, executorRatesByExecutorId, response);
     }
 
     @DeleteMapping("/{id}")
