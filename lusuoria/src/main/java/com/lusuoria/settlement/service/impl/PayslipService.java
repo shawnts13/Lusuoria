@@ -211,17 +211,19 @@ public class PayslipService {
                 pmIds.add(o.getProjectManagerId());
             }
         }
-        if (pmIds.isEmpty()) return new ExecutorPmConfirmStatus(true, false, null);
+        if (pmIds.isEmpty()) return new ExecutorPmConfirmStatus(true, false, null, false);
         Set<Long> managementIds = employeeRepo.findByRoleAndIsDeletedFalse("管理层").stream()
                 .map(Employee::getId).collect(Collectors.toSet());
         Map<Long, Map<Long, ExecutorWageConfirmation>> confirmations = fetchWageConfirmations(yearMonth);
         boolean allConfirmed = true;
+        boolean anyConfirmed = false;
         boolean managementIsParty = false;
         boolean selfConfirmed = true;
         for (Long pmId : pmIds) {
             ExecutorWageConfirmation c = confirmations.getOrDefault(pmId, Collections.emptyMap()).get(executorId);
             boolean confirmed = c != null && Boolean.TRUE.equals(c.getConfirmed());
             if (!confirmed) allConfirmed = false;
+            if (confirmed) anyConfirmed = true;
             if (managementIds.contains(pmId)) {
                 managementIsParty = true;
                 if (!confirmed) selfConfirmed = false;
@@ -231,7 +233,7 @@ public class PayslipService {
         String blockedReason = (managementIsParty && !selfConfirmed)
                 ? "管理层还没有在\"管理层手下执行人员工资\"确认这个执行人员的薪酬，无法进行最终确认"
                 : null;
-        return new ExecutorPmConfirmStatus(allConfirmed, selfConfirmed, blockedReason);
+        return new ExecutorPmConfirmStatus(allConfirmed, selfConfirmed, blockedReason, anyConfirmed);
     }
 
     @lombok.Value
@@ -242,6 +244,11 @@ public class PayslipService {
         boolean selfConfirmed;
         /** 非空时表示主表格"确认"按钮应被禁用（仅当管理层自己有未确认的那部分时才非空） */
         String blockedReason;
+        /** 这个月涉及的项目负责人里，是否至少有一个已经确认了这个执行人员的薪酬（2026-07-29
+         * 新增）——recomputeFinality 回退 finalConfirmed 时用来判断要不要连带把执行人员自己的
+         * confirmed 也退回：只有当"一个都没确认"（回到起点）时才连带回退，只要还有任意一个
+         * 项目负责人的确认还在，就不该假装管理层完全没确认过，应该展示"待其他项目负责人确认"。 */
+        boolean anyConfirmed;
     }
 
     @Transactional
@@ -1297,12 +1304,23 @@ public class PayslipService {
      * unconfirmExecutorWages()（会同时影响一个执行人员和一个项目负责人两个人的最终版判定，
      * 调用方要对两边都各调一次）。没有 Payslip 记录（管理层压根还没点过确认）时直接跳过。
      *
-     * 2026-07-28 起：已经是最终版的，一旦因为下游（执行人员工资/手下执行人员工资）确认被撤销
-     * 而不再满足"最终版"条件，连同 confirmed（本人自己点过的"确认"动作）一起回退，不再只降级
-     * finalConfirmed——Shawn 反馈：不希望停留在"自己已确认、但要等别人"这种中间态（那样主工资单
-     * 按钮显示"取消确认"，但状态文案又说要等别人，自相矛盾），应该整体退回"预计（等待管理层
-     * 确认）"、重新显示"确认"按钮，需要本人重新点一次确认。跟 unconfirm() 手动取消确认时
-     * 同时清 confirmed+finalConfirmed 的行为保持一致。
+     * 2026-07-28 起、2026-07-29 修正：已经是最终版的，一旦因为下游（执行人员工资/手下执行
+     * 人员工资）确认被撤销而不再满足"最终版"条件，finalConfirmed 总是要降级，但 confirmed
+     * （本人自己点过的"确认"动作）要不要连带回退，两个角色不一样，不能一刀切：
+     *   - 执行人员：这个月涉及的项目负责人（含管理层自己作为负责人那份）里，只要还有任意一个
+     *     确认还在，就不该整体回退成"预计（等待管理层确认）"——那样会让人误以为管理层压根
+     *     没确认过，实际上管理层那份确认还在，只是还有"其他项目负责人"没确认，应该展示
+     *     "待其他项目负责人确认"。只有当涉及的项目负责人这个月全部都退回未确认（回到彻底
+     *     没人确认过的起点）时，才连带把 confirmed 也退回、重新显示"确认"按钮
+     *     （2026-07-28 那次 Shawn 反馈的场景就是这种：执行人员只涉及管理层一个负责人，
+     *     管理层唯一的确认被撤销后自然就是"一个都没确认"）。
+     *   - 项目负责人：confirmed 代表"管理层是否已经确认过这个项目负责人自己的提成"，
+     *     这跟"这个项目负责人有没有确认好名下执行人员的工资"是两件独立的事，任何时候都不该
+     *     被后者的变化连带回退——2026-07-29 修复：之前误把执行人员那套"连带回退"逻辑无差别
+     *     地也用到了项目负责人身上，导致项目负责人自己在"手下执行人员工资"取消确认某个
+     *     执行人员后，管理层对这个项目负责人本身提成的确认状态也被错误地清空，主表格错误地
+     *     显示"预计（等待管理层确认）"+"确认"按钮，正确的应该是"等待项目负责人确认其执行
+     *     人员工资"（confirmed 保持不变，只是 finalConfirmed 降级）。
      */
     private void recomputeFinality(Employee emp, String yearMonth, BigDecimal rate) {
         Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(emp.getId(), yearMonth).orElse(null);
@@ -1315,8 +1333,11 @@ public class PayslipService {
             return;
         }
         boolean shouldBeFinal;
+        boolean resetOwnConfirmOnRollback = false;
         if ("执行人员".equals(emp.getRole())) {
-            shouldBeFinal = resolveExecutorPmConfirmStatus(emp.getId(), yearMonth).isAllConfirmed();
+            ExecutorPmConfirmStatus status = resolveExecutorPmConfirmStatus(emp.getId(), yearMonth);
+            shouldBeFinal = status.isAllConfirmed();
+            resetOwnConfirmOnRollback = !status.isAnyConfirmed();
         } else if ("项目负责人".equals(emp.getRole())) {
             shouldBeFinal = allOwnExecutorWagesConfirmed(emp.getId(), yearMonth);
         } else {
@@ -1327,7 +1348,7 @@ public class PayslipService {
             payslipRepo.save(p);
         } else if (!shouldBeFinal && Boolean.TRUE.equals(p.getFinalConfirmed())) {
             p.setFinalConfirmed(false);
-            p.setConfirmed(false);
+            if (resetOwnConfirmOnRollback) p.setConfirmed(false);
             payslipRepo.save(p);
         }
     }
