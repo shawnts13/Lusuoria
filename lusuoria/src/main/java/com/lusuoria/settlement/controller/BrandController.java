@@ -13,7 +13,6 @@ import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import com.lusuoria.settlement.util.EmployeeRoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
 
 import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
@@ -24,8 +23,10 @@ import java.util.List;
 /**
  * 品牌方管理。查询类接口（list/getById/export/team-options）对所有登录角色开放——
  * 红人合作跟踪、红人结款等模块的下拉框/筛选都要读品牌方这份基础数据，不能锁死。
- * 新增/编辑/删除/导入这几个写操作严格按员工角色限制，只有"管理层"能做（2026-07 起，
+ * 新增/编辑/删除这几个写操作严格按员工角色限制，只有"管理层"能做（2026-07 起，
  * 不再是 ADMIN/STAFF 这种 SysUser.role 判断，参照红人结款模块 PaymentAccessUtil 的同款设计）。
+ * （2026-07-30 起去掉了 Excel 导入/下载模板功能，只保留导出——数据量不大，改成都走
+ * 页面手动新增/编辑，不再需要批量导入这条路径。）
  */
 @RestController
 @RequestMapping("/api/brands")
@@ -78,23 +79,6 @@ public class BrandController {
     @GetMapping("/export/excel")
     public void exportExcel(HttpServletResponse response) throws IOException {
         excelHandler.export(brandCache.getAll(), response);
-    }
-
-    @GetMapping("/import/template")
-    public void downloadTemplate(HttpServletResponse response) throws IOException {
-        excelHandler.downloadTemplate(response);
-    }
-
-    @PostMapping("/import/excel")
-    public ApiResponse<List<String>> importExcel(@RequestParam("file") MultipartFile file) throws IOException {
-        if (!canManage()) return ApiResponse.error(403, "无权限导入品牌方");
-        if (file.isEmpty()) return ApiResponse.error(400, "请选择要上传的文件");
-        String fn = file.getOriginalFilename();
-        if (fn == null || (!fn.endsWith(".xlsx") && !fn.endsWith(".xls")))
-            return ApiResponse.error(400, "只支持 .xlsx 或 .xls 格式");
-        List<String> result = excelHandler.importData(file);
-        brandCache.refresh();
-        return ApiResponse.success(result);
     }
 
     @PostMapping
