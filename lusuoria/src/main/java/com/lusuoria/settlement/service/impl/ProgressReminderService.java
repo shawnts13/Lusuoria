@@ -1146,6 +1146,13 @@ public class ProgressReminderService {
      * 某个类别的"全量可见"判定（2026-07 泛化）：ADMIN/管理层对所有类别都是全量可见；
      * 法务对合同相关这两类（CONTRACT_CATEGORIES）也是全量可见，不按具体项目负责人/是否
      * 涉及执行人员过滤——法务不是"顺带看到"，是这两类提醒本来就该完整给他们看。
+     *
+     * 注意：这里只控制"要不要按具体项目负责人/涉及执行人员过滤明细"，不要因为某个角色对
+     * 某个类别是"全量可见"就想当然把它加进这个方法——FINANCE_PROGRESS_STALL 对财务也是
+     * 全量可见，但它属于"按角色整体授予可见性"（跟 EMPLOYEE_OWNED_CATEGORIES 那种"按具体
+     * 项目负责人/执行人员"定向可见是两回事，见 listDetails 里 EMPLOYEE_OWNED_CATEGORIES 判断），
+     * 混进这个方法会连带跳过 markAcknowledged（"标记已处理"状态计算），导致财务这边"标记已
+     * 处理"的行永远显示不出已处理状态——2026-07-30 曾经这样改过又改回来，教训见 listDetails 注释。
      */
     private boolean hasFullVisibilityFor(ReminderCategory category) {
         if (hasFullReminderVisibility()) return true;
@@ -1156,6 +1163,14 @@ public class ProgressReminderService {
      * 某条提醒的明细，按离最迟结款日的接近程度/超期天数排序（两种排序方向巧合共用同一列）。
      * 如果当前登录人不是这条卡片的项目负责人本人（而是作为"涉及的执行人员"看到这张卡片），
      * 明细会额外按自己实际执行的那部分过滤——卡片本身不拆分，但执行人员点进去只看自己相关的。
+     *
+     * 2026-07-30 修复：按"是否涉及执行人员"过滤明细这件事，只对 EMPLOYEE_OWNED_CATEGORIES
+     * （按具体项目负责人 audienceEmployeeId 定向生成、执行人员通过 involvedEmployeeIds 顺带
+     * 可见的那几类）有意义——之前没有这个限制，财务查看 FINANCE_PROGRESS_STALL（audienceEmployeeId
+     * 恒为 null，属于"按角色整体授予可见性"，不是按人定向）时，isViewingAsInvolvedExecutor
+     * 会误判财务"不是这条卡片的负责人本人、只是顺带涉及的执行人员"，再用
+     * filterToMyExecutorRecords 按"记录的执行人员是不是我"过滤——财务永远不可能是任何一条
+     * 记录的执行人员，过滤结果永远是空列表，表现为卡片写着"44笔"、点进详情却是0条。
      */
     @Transactional(readOnly = true)
     public List<ProgressReminderDetail> listDetails(Long reminderId) {
@@ -1168,7 +1183,7 @@ public class ProgressReminderService {
             if (ACKNOWLEDGEABLE_CATEGORIES.contains(reminder.getCategory())) {
                 markAcknowledged(reminder.getCategory(), details);
             }
-            if (isViewingAsInvolvedExecutor(reminder)) {
+            if (EMPLOYEE_OWNED_CATEGORIES.contains(reminder.getCategory()) && isViewingAsInvolvedExecutor(reminder)) {
                 details = filterToMyExecutorRecords(reminder.getCategory(), details);
             }
         }
