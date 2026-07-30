@@ -19,6 +19,12 @@ import java.math.BigDecimal;
 @AllArgsConstructor
 public class DashboardSummaryResponse {
 
+    /**
+     * 所属月份（yyyyMM，2026-07 新增）。单月查询（/summary）不需要用这个字段，留空即可；
+     * 区间汇总（/range-summary）的 monthly 数组里每一项会填上对应月份，供前端月度趋势图用。
+     */
+    private String yearMonth;
+
     /** 视频项目数量（来自红人合作跟踪表，含"折损"记录——这是真实存在过的项目总数） */
     private Long videoProjectCount;
 

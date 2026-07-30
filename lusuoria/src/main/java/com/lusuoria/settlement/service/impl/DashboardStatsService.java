@@ -3,6 +3,9 @@ package com.lusuoria.settlement.service.impl;
 import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.dto.response.DashboardDrilldownResponse;
+import com.lusuoria.settlement.dto.response.DashboardManagerTrendResponse;
+import com.lusuoria.settlement.dto.response.DashboardPivotResponse;
+import com.lusuoria.settlement.dto.response.DashboardRangeSummaryResponse;
 import com.lusuoria.settlement.dto.response.DashboardSummaryResponse;
 import com.lusuoria.settlement.dto.response.ExchangeRateInfo;
 import com.lusuoria.settlement.entity.Brand;
@@ -132,6 +135,80 @@ public class DashboardStatsService {
                 .totalCompanyProfit(convert(totalCompanyProfit, rate, toRmb))
                 .currency(toRmb ? "RMB" : "USD")
                 .exchangeRateInfo(rateInfo)
+                .build();
+    }
+
+    /**
+     * 区间汇总（年度报告/同比用，2026-07 新增）：逐月调用现有单月 {@link #getSummary}
+     * 后求和——每个月各自按当月汇率换算好之后再相加，不是整段区间统一按一个汇率换算，
+     * 天然是"按月折算"的正确做法，不需要额外写汇率逻辑。
+     *
+     * @param startMonth 起始月份 yyyyMM
+     * @param endMonth   截止月份 yyyyMM（闭区间，含这个月）
+     * @param currency   USD 或 RMB
+     */
+    public DashboardRangeSummaryResponse getRangeSummary(String startMonth, String endMonth, String currency) {
+        List<String> months = monthsBetween(startMonth, endMonth);
+        List<DashboardSummaryResponse> monthly = new ArrayList<>();
+        for (String m : months) {
+            DashboardSummaryResponse s = getSummary(m, currency);
+            s.setYearMonth(m);
+            monthly.add(s);
+        }
+        DashboardSummaryResponse total = sumMonthly(monthly, endMonth);
+        boolean toRmb = "RMB".equalsIgnoreCase(currency);
+        return DashboardRangeSummaryResponse.builder()
+                .startMonth(startMonth)
+                .endMonth(endMonth)
+                .currency(toRmb ? "RMB" : "USD")
+                .monthly(monthly)
+                .total(total)
+                .build();
+    }
+
+    /** {@link #getRangeSummary} 用：把逐月已经换算好的汇总结果逐项相加 */
+    private DashboardSummaryResponse sumMonthly(List<DashboardSummaryResponse> monthly, String endMonth) {
+        long videoCount = 0;
+        long damagedCount = 0;
+        BigDecimal clientPrice = BigDecimal.ZERO, influencerCost = BigDecimal.ZERO, otherCost = BigDecimal.ZERO,
+                execCost = BigDecimal.ZERO, execCostForProfit = BigDecimal.ZERO, otherStaffCost = BigDecimal.ZERO,
+                extraBonus = BigDecimal.ZERO, grossProfit = BigDecimal.ZERO, distributable = BigDecimal.ZERO,
+                commission = BigDecimal.ZERO, companyProfit = BigDecimal.ZERO;
+        String currency = null;
+        for (DashboardSummaryResponse s : monthly) {
+            videoCount += s.getVideoProjectCount() != null ? s.getVideoProjectCount() : 0;
+            damagedCount += s.getDamagedVideoProjectCount() != null ? s.getDamagedVideoProjectCount() : 0;
+            clientPrice = clientPrice.add(safe(s.getTotalClientPrice()));
+            influencerCost = influencerCost.add(safe(s.getTotalInfluencerCost()));
+            otherCost = otherCost.add(safe(s.getTotalOtherExternalCost()));
+            execCost = execCost.add(safe(s.getTotalInternalExecutionCost()));
+            execCostForProfit = execCostForProfit.add(safe(s.getTotalInternalExecutionCostForProfit()));
+            otherStaffCost = otherStaffCost.add(safe(s.getTotalOtherStaffCost()));
+            extraBonus = extraBonus.add(safe(s.getTotalExtraBonus()));
+            grossProfit = grossProfit.add(safe(s.getTotalGrossProfit()));
+            distributable = distributable.add(safe(s.getTotalDistributableProfit()));
+            commission = commission.add(safe(s.getTotalCommissionAmount()));
+            companyProfit = companyProfit.add(safe(s.getTotalCompanyProfit()));
+            currency = s.getCurrency();
+        }
+        return DashboardSummaryResponse.builder()
+                .videoProjectCount(videoCount)
+                .damagedVideoProjectCount(damagedCount)
+                .totalClientPrice(clientPrice.setScale(SCALE, RoundingMode.HALF_UP))
+                .totalInfluencerCost(influencerCost.setScale(SCALE, RoundingMode.HALF_UP))
+                .totalOtherExternalCost(otherCost.setScale(SCALE, RoundingMode.HALF_UP))
+                .totalInternalExecutionCost(execCost.setScale(SCALE, RoundingMode.HALF_UP))
+                .totalInternalExecutionCostForProfit(execCostForProfit.setScale(SCALE, RoundingMode.HALF_UP))
+                .totalOtherStaffCost(otherStaffCost.setScale(SCALE, RoundingMode.HALF_UP))
+                .totalExtraBonus(extraBonus.setScale(SCALE, RoundingMode.HALF_UP))
+                .totalGrossProfit(grossProfit.setScale(SCALE, RoundingMode.HALF_UP))
+                .totalDistributableProfit(distributable.setScale(SCALE, RoundingMode.HALF_UP))
+                .totalCommissionAmount(commission.setScale(SCALE, RoundingMode.HALF_UP))
+                .totalCompanyProfit(companyProfit.setScale(SCALE, RoundingMode.HALF_UP))
+                .currency(currency)
+                // 合计本身没有单一汇率概念（每月已经各自折算过了），这里的汇率信息只是给前端展示
+                // "当前汇率参考"用，不参与任何计算
+                .exchangeRateInfo(exchangeRateService.getRateForMonth(endMonth))
                 .build();
     }
 
@@ -322,6 +399,29 @@ public class DashboardStatsService {
             for (CollaborationTracking o : orders) {
                 grouped.merge(managerNameOf(o.getProjectManagerId()), 1L, Long::sum);
             }
+        } else if ("executor".equals(dimension)) {
+            // 按内部执行人员分组（2026-07 新增，年度报告/双月对比的员工个人数据用）
+            dimensionType = "executor";
+            for (CollaborationTracking o : orders) {
+                grouped.merge(executorNameOf(o.getExecutorId()), 1L, Long::sum);
+            }
+        } else if ("countryMarket".equals(dimension)) {
+            // 按服务国家/市场分组（2026-07 新增，年度报告/双月对比用）
+            dimensionType = "countryMarket";
+            for (CollaborationTracking o : orders) {
+                grouped.merge(countryMarketOf(o.getCountryMarket()), 1L, Long::sum);
+            }
+        } else if ("platform".equals(dimension)) {
+            // 按合作平台分组（2026-07 新增）：一条记录可能同时涉及多个平台，各平台各自计一次，
+            // 加总可能超过实际总记录数，属于预期行为，见 splitPlatforms 的注释
+            dimensionType = "platform";
+            for (CollaborationTracking o : orders) {
+                List<String> platforms = splitPlatforms(o.getPlatform());
+                if (platforms.isEmpty()) platforms = Collections.singletonList("未指定平台");
+                for (String p : platforms) {
+                    grouped.merge(p, 1L, Long::sum);
+                }
+            }
         } else {
             // 默认：按品牌方 + 红人团队分组（没关联团队的记录，团队部分留空，展示成"品牌方 - "）
             dimensionType = "brand_team";
@@ -401,7 +501,6 @@ public class DashboardStatsService {
     public DashboardDrilldownResponse drilldownExecutionCost(String startMonth, String endMonth,
                                                               String currency, String dimension) {
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
-        BigDecimal rate = rateForRange(endMonth);
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
@@ -430,7 +529,9 @@ public class DashboardStatsService {
             if (!profitCalculator.isManagementOrder(o)) {
                 key = key + "（不影响公司利润）";
             }
-            grouped.merge(key, execCostRmb, BigDecimal::add);
+            // 按记录自己所在月份的汇率折算后再汇总（原因同 drilldownAmountByDimension）
+            BigDecimal converted = convertFromRmb(execCostRmb, monthRateOf(o), toRmb);
+            grouped.merge(key, converted, BigDecimal::add);
             managerNameByKey.putIfAbsent(key, managerName);
             // 笔数只统计实际填了内部执行成本的记录，跟金额是不是0保持同一个口径
             if (execCostRmb.compareTo(BigDecimal.ZERO) > 0) counted.merge(key, 1L, Long::sum);
@@ -444,7 +545,7 @@ public class DashboardStatsService {
                         .dimensionLabel(e.getKey())
                         .dimensionType(dimension)
                         .videoCount(counted.get(e.getKey()))
-                        .amount(convertFromRmb(e.getValue(), rate, toRmb))
+                        .amount(e.getValue().setScale(SCALE, RoundingMode.HALF_UP))
                         .build())
                 .collect(Collectors.toList());
         // "按项目负责人/品牌方/红人团队"：同一负责人的行分在一起（按负责人姓名排），组内再按
@@ -477,41 +578,47 @@ public class DashboardStatsService {
      */
     public DashboardDrilldownResponse drilldownCommission(String startMonth, String endMonth, String currency) {
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
-        BigDecimal rate = rateForRange(endMonth);
+        BigDecimal rangeRate = rateForRange(endMonth); // bonus 阶梯规则本身按区间末月汇率门槛判定，与逐条记录折算无关，保留不变
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
-        Map<Long, BigDecimal> grouped = new LinkedHashMap<>();
+        // commissionAmount（美元原值）按记录自己所在月份的汇率折算后再汇总（原因同
+        // drilldownAmountByDimension），跟 bonus 阶梯判定用的区间末月汇率是两回事，分开存
+        Map<Long, BigDecimal> groupedUsd = new LinkedHashMap<>(); // 汇总用：折算前的美元原值，供 bonus 阶梯计算
+        Map<Long, BigDecimal> groupedConverted = new LinkedHashMap<>(); // 展示用：按月折算后的结果
         Map<Long, Long> counted = new LinkedHashMap<>();
         for (CollaborationTracking o : orders) {
             Computed c = compute(o);
             Long managerId = o.getProjectManagerId() != null ? o.getProjectManagerId() : NO_MANAGER_KEY;
-            grouped.merge(managerId, c.commissionAmount, BigDecimal::add);
+            groupedUsd.merge(managerId, c.commissionAmount, BigDecimal::add);
+            groupedConverted.merge(managerId, convert(c.commissionAmount, monthRateOf(o), toRmb), BigDecimal::add);
             counted.merge(managerId, 1L, Long::sum);
         }
 
         List<DashboardDrilldownResponse.DrilldownRow> rows = new ArrayList<>();
-        for (Map.Entry<Long, BigDecimal> e : grouped.entrySet()) {
+        for (Map.Entry<Long, BigDecimal> e : groupedUsd.entrySet()) {
             Long managerId = e.getKey();
             Employee manager = managerId.equals(NO_MANAGER_KEY) ? null : employeeCache.findById(managerId);
             // 管理层这个特殊项目负责人整行剔除：他提成固定是0，不参与 bonus 阶梯
             if (manager != null && "管理层".equals(manager.getRole())) continue;
 
             BigDecimal commissionUsd = e.getValue();
+            BigDecimal commissionConverted = groupedConverted.get(managerId).setScale(SCALE, RoundingMode.HALF_UP);
             // 2026-07 新增：这个负责人压根没在"员工管理"配置 bonus 阶梯规则时，bonus 列显示"-"
             // （前端 fmtAmount 对 null 就是显示"—"），跟"配置了规则但没达标/规则算出来正好是0"
             // 区分开——后者应该老老实实显示 0.00，不能也显示"-"
             boolean hasBonusRule = commissionBonusService.hasBonusTierConfigured(manager);
-            BigDecimal bonusUsd = hasBonusRule ? commissionBonusService.computeBonus(manager, commissionUsd, rate) : null;
-            BigDecimal totalUsd = commissionUsd.add(bonusUsd != null ? bonusUsd : BigDecimal.ZERO);
+            BigDecimal bonusUsd = hasBonusRule ? commissionBonusService.computeBonus(manager, commissionUsd, rangeRate) : null;
+            BigDecimal bonusConverted = bonusUsd != null ? convert(bonusUsd, rangeRate, toRmb) : null;
+            BigDecimal totalConverted = commissionConverted.add(bonusConverted != null ? bonusConverted : BigDecimal.ZERO);
             String label = managerId.equals(NO_MANAGER_KEY) ? "未指定负责人"
                     : (manager != null ? manager.getName() : "未知负责人");
             rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
                     .dimensionLabel(label)
                     .dimensionType("manager")
                     .videoCount(counted.get(managerId))
-                    .amount(convert(commissionUsd, rate, toRmb))
-                    .bonusAmount(bonusUsd != null ? convert(bonusUsd, rate, toRmb) : null)
-                    .totalAmount(convert(totalUsd, rate, toRmb))
+                    .amount(commissionConverted)
+                    .bonusAmount(bonusConverted)
+                    .totalAmount(totalConverted)
                     .build());
         }
         rows.sort((a, b) -> b.getTotalAmount().compareTo(a.getTotalAmount()));
@@ -568,6 +675,198 @@ public class DashboardStatsService {
                 .build();
     }
 
+    // ============ 下钻：维度交叉透视（2026-07 新增，年度报告用） ============
+    // 只支持预设的几个精选组合，不做通用N维透视引擎——见 DashboardPivotResponse 类注释
+
+    private static final Set<String> ALLOWED_PIVOT_PAIRS = new HashSet<>(Arrays.asList(
+            "brand:countryMarket", "brand:platform", "team:countryMarket"));
+
+    public DashboardPivotResponse drilldownPivot(String startMonth, String endMonth, String currency,
+                                                  String rowDimension, String colDimension) {
+        String pairKey = rowDimension + ":" + colDimension;
+        if (!ALLOWED_PIVOT_PAIRS.contains(pairKey)) {
+            throw new RuntimeException("不支持的维度交叉组合: " + rowDimension + " x " + colDimension);
+        }
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
+        boolean toRmb = "RMB".equalsIgnoreCase(currency);
+
+        Map<String, BigDecimal> rowTotals = new LinkedHashMap<>();
+        Map<String, BigDecimal> colTotals = new LinkedHashMap<>();
+        Map<String, PivotAccumulator> cellMap = new LinkedHashMap<>();
+
+        for (CollaborationTracking o : orders) {
+            Computed c = compute(o);
+            BigDecimal rate = monthRateOf(o);
+            BigDecimal clientPrice = convert(c.clientPrice, rate, toRmb);
+            BigDecimal grossProfit = convert(c.grossProfit, rate, toRmb);
+            BigDecimal companyProfit = convert(c.companyProfit, rate, toRmb);
+
+            List<String> rowLabelsForRecord = resolvePivotLabels(rowDimension, o);
+            List<String> colLabelsForRecord = resolvePivotLabels(colDimension, o);
+            for (String row : rowLabelsForRecord) {
+                rowTotals.merge(row, clientPrice, BigDecimal::add);
+                // key 用控制字符分隔行列标签，避免标签本身含普通分隔符（如" - "）时拼接歧义
+                for (String col : colLabelsForRecord) {
+                    String key = row + "" + col;
+                    PivotAccumulator acc = cellMap.computeIfAbsent(key, k -> new PivotAccumulator(row, col));
+                    acc.videoCount += 1;
+                    acc.clientPrice = acc.clientPrice.add(clientPrice);
+                    acc.grossProfit = acc.grossProfit.add(grossProfit);
+                    acc.companyProfit = acc.companyProfit.add(companyProfit);
+                }
+            }
+            for (String col : colLabelsForRecord) {
+                colTotals.merge(col, clientPrice, BigDecimal::add);
+            }
+        }
+
+        List<String> rowLabels = rowTotals.entrySet().stream()
+                .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
+                .map(Map.Entry::getKey).collect(Collectors.toList());
+        List<String> colLabels = colTotals.entrySet().stream()
+                .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
+                .map(Map.Entry::getKey).collect(Collectors.toList());
+        List<DashboardPivotResponse.PivotCell> cells = cellMap.values().stream()
+                .map(acc -> DashboardPivotResponse.PivotCell.builder()
+                        .rowLabel(acc.rowLabel)
+                        .colLabel(acc.colLabel)
+                        .videoCount(acc.videoCount)
+                        .clientPrice(acc.clientPrice.setScale(SCALE, RoundingMode.HALF_UP))
+                        .grossProfit(acc.grossProfit.setScale(SCALE, RoundingMode.HALF_UP))
+                        .companyProfit(acc.companyProfit.setScale(SCALE, RoundingMode.HALF_UP))
+                        .build())
+                .collect(Collectors.toList());
+
+        return DashboardPivotResponse.builder()
+                .currency(toRmb ? "RMB" : "USD")
+                .exchangeRateInfo(exchangeRateService.getRateForMonth(endMonth))
+                .rowLabels(rowLabels)
+                .colLabels(colLabels)
+                .cells(cells)
+                .build();
+    }
+
+    /** {@link #drilldownPivot} 用：单个 (行,列) 组合的累计值 */
+    private static class PivotAccumulator {
+        final String rowLabel;
+        final String colLabel;
+        long videoCount = 0;
+        BigDecimal clientPrice = BigDecimal.ZERO;
+        BigDecimal grossProfit = BigDecimal.ZERO;
+        BigDecimal companyProfit = BigDecimal.ZERO;
+
+        PivotAccumulator(String rowLabel, String colLabel) {
+            this.rowLabel = rowLabel;
+            this.colLabel = colLabel;
+        }
+    }
+
+    /** {@link #drilldownPivot} 用：把维度值解析成标签列表（platform 是多值，可能 fan-out 到多个） */
+    private List<String> resolvePivotLabels(String dimension, CollaborationTracking o) {
+        switch (dimension) {
+            case "brand":
+                return Collections.singletonList(brandNameOf(o.getBrandId()));
+            case "team":
+                return Collections.singletonList(teamDisplayName(o.getTeam()));
+            case "countryMarket":
+                return Collections.singletonList(countryMarketOf(o.getCountryMarket()));
+            case "platform":
+                List<String> platforms = splitPlatforms(o.getPlatform());
+                return platforms.isEmpty() ? Collections.singletonList("未指定平台") : platforms;
+            default:
+                throw new RuntimeException("不支持的透视维度: " + dimension);
+        }
+    }
+
+    // ============ 员工个人趋势（2026-07 新增，仅年度报告用） ============
+    // 按月循环（跟 getRangeSummary 同样的模式），一次HTTP调用内在后端拼好"负责人×月份"矩阵，
+    // 避免前端对每个负责人每个月分别发请求（会到上百次，Render 免费层数据库连接池只有3个）。
+
+    public DashboardManagerTrendResponse getManagerTrend(String startMonth, String endMonth,
+                                                          String currency, String role) {
+        boolean isExecutor = "executor".equals(role);
+        boolean toRmb = "RMB".equalsIgnoreCase(currency);
+        List<String> months = monthsBetween(startMonth, endMonth);
+
+        Map<Long, String> nameById = new LinkedHashMap<>();
+        Map<Long, Map<String, TrendAccumulator>> data = new LinkedHashMap<>();
+
+        for (String month : months) {
+            List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(month));
+            BigDecimal rate = exchangeRateService.getRateForMonth(month).getUsdToCny();
+            for (CollaborationTracking o : orders) {
+                Long personId = isExecutor ? o.getExecutorId() : o.getProjectManagerId();
+                if (personId == null) continue; // 未指定负责人/执行人员的记录不计入个人趋势
+                Computed c = compute(o);
+                nameById.putIfAbsent(personId, isExecutor ? executorNameOf(personId) : managerNameOf(personId));
+                TrendAccumulator acc = data.computeIfAbsent(personId, k -> new LinkedHashMap<>())
+                        .computeIfAbsent(month, k -> new TrendAccumulator());
+                acc.videoCount += 1;
+                acc.clientPrice = acc.clientPrice.add(convert(c.clientPrice, rate, toRmb));
+                acc.grossProfit = acc.grossProfit.add(convert(c.grossProfit, rate, toRmb));
+                acc.companyProfit = acc.companyProfit.add(convert(c.companyProfit, rate, toRmb));
+                acc.commissionAmount = acc.commissionAmount.add(convert(c.commissionAmount, rate, toRmb));
+                acc.internalExecutionCost = acc.internalExecutionCost
+                        .add(convertFromRmb(safe(o.getInternalExecutionCost()), rate, toRmb));
+            }
+        }
+
+        // 排序用：personId -> 排序权重（role=manager 用总公司利润，role=executor 用总视频数量），
+        // 用 personId 而不是姓名做 key——两个人姓名可能重名，不能用姓名字符串当排序依据的 key
+        List<Map.Entry<Long, BigDecimal>> sortWeights = new ArrayList<>();
+        Map<Long, DashboardManagerTrendResponse.ManagerSeries> seriesByPersonId = new LinkedHashMap<>();
+        for (Map.Entry<Long, Map<String, TrendAccumulator>> e : data.entrySet()) {
+            Map<String, TrendAccumulator> byMonth = e.getValue();
+            long totalVideoCount = 0;
+            BigDecimal totalCompanyProfit = BigDecimal.ZERO;
+            List<DashboardManagerTrendResponse.ManagerSeries.MonthlyMetric> monthly = new ArrayList<>();
+            for (String month : months) {
+                TrendAccumulator acc = byMonth.getOrDefault(month, new TrendAccumulator());
+                totalVideoCount += acc.videoCount;
+                totalCompanyProfit = totalCompanyProfit.add(acc.companyProfit);
+                monthly.add(DashboardManagerTrendResponse.ManagerSeries.MonthlyMetric.builder()
+                        .yearMonth(month)
+                        .videoCount(acc.videoCount)
+                        .clientPrice(acc.clientPrice.setScale(SCALE, RoundingMode.HALF_UP))
+                        .grossProfit(acc.grossProfit.setScale(SCALE, RoundingMode.HALF_UP))
+                        .companyProfit(acc.companyProfit.setScale(SCALE, RoundingMode.HALF_UP))
+                        .commissionAmount(acc.commissionAmount.setScale(SCALE, RoundingMode.HALF_UP))
+                        .internalExecutionCost(acc.internalExecutionCost.setScale(SCALE, RoundingMode.HALF_UP))
+                        .build());
+            }
+            // 整个区间内一笔视频项目都没有的人，不用出现在趋势图里
+            if (totalVideoCount == 0) continue;
+            seriesByPersonId.put(e.getKey(), DashboardManagerTrendResponse.ManagerSeries.builder()
+                    .managerName(nameById.get(e.getKey()))
+                    .monthly(monthly)
+                    .build());
+            sortWeights.add(new AbstractMap.SimpleEntry<>(e.getKey(),
+                    isExecutor ? BigDecimal.valueOf(totalVideoCount) : totalCompanyProfit));
+        }
+        // role=manager 按总公司利润降序；role=executor 按总视频数量降序
+        sortWeights.sort((a, b) -> b.getValue().compareTo(a.getValue()));
+        List<DashboardManagerTrendResponse.ManagerSeries> series = new ArrayList<>();
+        for (Map.Entry<Long, BigDecimal> w : sortWeights) {
+            series.add(seriesByPersonId.get(w.getKey()));
+        }
+
+        return DashboardManagerTrendResponse.builder()
+                .currency(toRmb ? "RMB" : "USD")
+                .months(months)
+                .series(series)
+                .build();
+    }
+
+    /** {@link #getManagerTrend} 用：单个负责人/执行人员在单个月份内的累计值 */
+    private static class TrendAccumulator {
+        long videoCount = 0;
+        BigDecimal clientPrice = BigDecimal.ZERO;
+        BigDecimal grossProfit = BigDecimal.ZERO;
+        BigDecimal companyProfit = BigDecimal.ZERO;
+        BigDecimal commissionAmount = BigDecimal.ZERO;
+        BigDecimal internalExecutionCost = BigDecimal.ZERO;
+    }
+
     // ============ 通用：按品牌方/团队/账号/类型/项目负责人 拆分金额 ============
 
     private DashboardDrilldownResponse drilldownAmountByDimension(
@@ -575,13 +874,27 @@ public class DashboardStatsService {
             java.util.function.Function<Computed, BigDecimal> extractor) {
 
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
-        BigDecimal rate = rateForRange(endMonth);
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
 
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
         Map<String, Long> counted = new LinkedHashMap<>();
         for (CollaborationTracking o : orders) {
             Computed c = compute(o);
+            // 按记录自己所在月份的汇率折算后再汇总，而不是整段区间统一用一个汇率——
+            // 单月查询（startMonth==endMonth）时区间内只有一个月，跟原来行为完全一致；
+            // 多月查询时才会体现出差异（更准确）
+            BigDecimal recordRate = monthRateOf(o);
+
+            if ("platform".equals(dimension)) {
+                List<String> platforms = splitPlatforms(o.getPlatform());
+                if (platforms.isEmpty()) platforms = Collections.singletonList("未指定平台");
+                for (String p : platforms) {
+                    grouped.merge(p, convert(extractor.apply(c), recordRate, toRmb), BigDecimal::add);
+                    counted.merge(p, 1L, Long::sum);
+                }
+                continue;
+            }
+
             String key;
             switch (dimension) {
                 case "team":
@@ -604,10 +917,13 @@ public class DashboardStatsService {
                     key = managerNameOf(o.getProjectManagerId()) + " - " + brandNameOf(o.getBrandId())
                             + " - " + teamNameOf(o.getTeam());
                     break;
+                case "countryMarket":
+                    key = countryMarketOf(o.getCountryMarket());
+                    break;
                 default: // brand
                     key = brandNameOf(o.getBrandId());
             }
-            grouped.merge(key, extractor.apply(c), BigDecimal::add);
+            grouped.merge(key, convert(extractor.apply(c), recordRate, toRmb), BigDecimal::add);
             counted.merge(key, 1L, Long::sum);
         }
 
@@ -616,7 +932,7 @@ public class DashboardStatsService {
                         .dimensionLabel(e.getKey())
                         .dimensionType(dimension)
                         .videoCount(counted.get(e.getKey()))
-                        .amount(convert(e.getValue(), rate, toRmb))
+                        .amount(e.getValue().setScale(SCALE, RoundingMode.HALF_UP))
                         .build())
                 .sorted((a, b) -> b.getAmount().compareTo(a.getAmount()))
                 .collect(Collectors.toList());
@@ -729,6 +1045,31 @@ public class DashboardStatsService {
     /** 下钻接口统一用范围终止月份对应的汇率（即查看的最新月份的"上月最后工作日"汇率） */
     BigDecimal rateForRange(String endMonth) {
         return exchangeRateService.getRateForMonth(endMonth).getUsdToCny();
+    }
+
+    /** 某条记录自己所在月份（按发布时间）对应的汇率，供按月折算精度更高的下钻聚合使用 */
+    private BigDecimal monthRateOf(CollaborationTracking o) {
+        String month = o.getPublishDate() != null
+                ? new java.text.SimpleDateFormat("yyyyMM").format(o.getPublishDate())
+                : null;
+        if (month == null) return null;
+        return exchangeRateService.getRateForMonth(month).getUsdToCny();
+    }
+
+    /** 国家/市场维度展示用：没填时给个明确提示语，而不是留空 */
+    private String countryMarketOf(String v) {
+        return (v == null || v.trim().isEmpty()) ? "未指定服务国家/市场" : v.trim();
+    }
+
+    /**
+     * 合作平台是多值字段（换行分隔），一条记录同时算进它涉及的每一个平台维度下——
+     * 各平台各自计一次，加总会超过实际总记录数，这是"合作平台"维度分析的预期行为，
+     * 跟单值维度（品牌方/团队/国家市场等）不一样，不能直接复用同一套单值 switch 逻辑。
+     */
+    private List<String> splitPlatforms(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return Collections.emptyList();
+        return Arrays.stream(raw.split("\\n")).map(String::trim)
+                .filter(s -> !s.isEmpty()).distinct().collect(Collectors.toList());
     }
 
     BigDecimal convert(BigDecimal usdAmount, BigDecimal rate, boolean toRmb) {
