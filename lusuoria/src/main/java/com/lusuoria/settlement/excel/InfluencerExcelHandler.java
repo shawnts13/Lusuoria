@@ -100,7 +100,6 @@ public class InfluencerExcelHandler {
         cols.add(new String[]{"红人视频制作与发布成本（美金）", "1"});
         cols.add(new String[]{"视频投流成本（美金）",          "1"});
         cols.add(new String[]{"视频版权成本（美金）",          "1"});
-        cols.add(new String[]{"合作案例链接",        "0"});
         cols.add(new String[]{"红人邮箱",            "0"});
         cols.add(new String[]{"红人电话",            "0"});
         cols.add(new String[]{"红人WhatsApp",        "0"});
@@ -138,7 +137,6 @@ public class InfluencerExcelHandler {
                 setCellStrColored(row, c++, inf.getAdSpendCost(),    wrap, red);  // 视频投流成本
                 setCellStrColored(row, c++, inf.getCopyrightCost(),  wrap, red);  // 视频版权成本
             }
-            setCellStr(row, c++, inf.getCasesLinks(),    wrap);                 // 合作案例链接
             setCellStr(row, c++, inf.getEmail(),         wrap);                 // 红人邮箱
             Map<String, String> contacts = parseContacts(inf.getContacts());
             setCellStr(row, c++, contacts.getOrDefault("phone",    ""), wrap);  // 红人电话
@@ -200,7 +198,6 @@ public class InfluencerExcelHandler {
         cols.add(new String[]{"红人视频制作与发布成本（美金）", "1"});
         cols.add(new String[]{"视频投流成本（美金）",          "1"});
         cols.add(new String[]{"视频版权成本（美金）",          "1"});
-        cols.add(new String[]{"合作案例链接(多条用换行分隔)", "0"});
         cols.add(new String[]{"红人邮箱",                 "0"});
         cols.add(new String[]{"红人电话",                 "0"});
         cols.add(new String[]{"红人WhatsApp",             "0"});
@@ -243,7 +240,6 @@ public class InfluencerExcelHandler {
         examples.put("所属领域(多个用换行分隔)", "科技");
         examples.put("粉丝量",                   "500000");
         examples.put("主页链接(多条用换行分隔)", "https://tiktok.com/xxx");
-        examples.put("合作案例链接(多条用换行分隔)", "https://youtube.com/xxx");
         examples.put("红人邮箱",                 "influencer@email.com");
         examples.put("红人电话",                 "+1 234 567 8900");
         examples.put("红人WhatsApp",             "+1 234 567 8900");
@@ -360,7 +356,6 @@ public class InfluencerExcelHandler {
             {"服务国家/市场(多个用换行分隔)", "服务国家/市场"},
             {"主页链接(多条用换行分隔)", "主页链接"},
             {"所属领域(多个用换行分隔)", "所属领域"},
-            {"合作案例链接(多条用换行分隔)", "合作案例链接"},
             {"粉丝量"},
             {"建联情况"},
             {"跟进人"},
@@ -550,10 +545,6 @@ public class InfluencerExcelHandler {
                     try { inf.setFollowerCount(Long.parseLong(followerStr.replaceAll(",", ""))); }
                     catch (NumberFormatException ignored) {}
                 }
-
-                String casesRaw = getStr(row, colMap, "合作案例链接(多条用换行分隔)");
-                if (casesRaw == null) casesRaw = getStr(row, colMap, "合作案例链接");
-                if (hasValue(casesRaw)) inf.setCasesLinks(parseLinks(casesRaw));
 
                 setIfPresent(inf::setEmail,        getStr(row, colMap, "红人邮箱"));
 
