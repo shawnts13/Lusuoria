@@ -14,9 +14,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.LinkedMultiValueMap;
@@ -59,9 +61,24 @@ public class GoogleDriveAuthService {
 
     @Autowired private GoogleDriveAuthRepository authRepo;
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    /**
+     * 自己的懒加载代理引用：persistTokens() 需要经过 Spring 事务代理调用才能让 @Transactional
+     * 生效（同一个 bean 内部 this.persistTokens(...) 会绕开代理），跟 InfluencerExcelHandler.self
+     * 是同一套写法。
+     */
+    @Autowired @Lazy private GoogleDriveAuthService self;
+
+    // 连接/读取都给明确超时，避免 Google 那边响应慢时把请求线程无限期挂住
+    private final RestTemplate restTemplate = buildRestTemplate();
     // 单实例部署，内存存一下就够；state -> 生成时间戳，callback 校验完立刻删除
     private final Map<String, Long> pendingStates = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static RestTemplate buildRestTemplate() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(10_000);
+        factory.setReadTimeout(15_000);
+        return new RestTemplate(factory);
+    }
 
     /** 生成 Google 授权页面 URL，供前端整页跳转 */
     public String authorizeUrl() {
@@ -88,8 +105,15 @@ public class GoogleDriveAuthService {
         }
     }
 
-    /** callback 收到 code 后换 token 并存库；替换掉旧的一行（软删旧的，插入新的） */
-    @Transactional
+    /**
+     * callback 收到 code 后换 token 并存库；替换掉旧的一行（软删旧的，插入新的）。
+     *
+     * 换 token 是同步调用 Google 的网络请求，耗时不可控（对方响应慢/抖动），特意不放进
+     * @Transactional 里——如果事务从方法入口就开始，会让这次网络等待占住一个数据库连接，
+     * 而这个项目 HikariCP 连接池总共只有 3 个（Render 免费版限制），一次慢请求就可能吃掉
+     * 1/3 的连接预算。网络调用完全结束、拿到 token 之后，才通过 persistTokens() 开一个
+     * 只包 DB 写入的短事务。
+     */
     public void exchangeCodeForTokens(String code, String state) {
         validateState(state);
 
@@ -114,6 +138,12 @@ public class GoogleDriveAuthService {
             throw new RuntimeException("Google 未返回 refresh_token，请检查 OAuth 客户端配置（access_type=offline）");
         }
 
+        self.persistTokens(resp.getRefreshToken(), RoleUtil.getCurrentUsername());
+    }
+
+    /** 换 token 成功后的纯 DB 写入部分，单独开短事务，见 exchangeCodeForTokens() 的说明 */
+    @Transactional
+    public void persistTokens(String refreshToken, String connectedByUsername) {
         authRepo.findFirstByIsDeletedFalseOrderByIdDesc().ifPresent(old -> {
             old.setIsDeleted(true);
             authRepo.save(old);
@@ -121,8 +151,8 @@ public class GoogleDriveAuthService {
 
         GoogleDriveAuth auth = new GoogleDriveAuth();
         auth.setIsDeleted(false);
-        auth.setRefreshToken(resp.getRefreshToken());
-        auth.setConnectedByUsername(RoleUtil.getCurrentUsername());
+        auth.setRefreshToken(refreshToken);
+        auth.setConnectedByUsername(connectedByUsername);
         auth.setConnectedAt(new Date());
         authRepo.save(auth);
         log.info("Google Drive 授权已更新，操作人：{}", auth.getConnectedByUsername());

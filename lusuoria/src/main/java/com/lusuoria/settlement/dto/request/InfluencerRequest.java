@@ -28,7 +28,6 @@ public class InfluencerRequest {
 
     private Long   followerCount;
     private List<String> links;
-    private List<String> casesLinks;
 
     private String email;
 

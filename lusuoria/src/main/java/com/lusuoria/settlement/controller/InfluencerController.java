@@ -238,7 +238,6 @@ public class InfluencerController {
         inf.setDomains(listToStr(req.getDomains(), "\n"));
         inf.setFollowerCount(req.getFollowerCount());
         inf.setLinks(listToStr(req.getLinks(), "\n"));
-        inf.setCasesLinks(listToStr(req.getCasesLinks(), "\n"));
         inf.setEmail(req.getEmail());
         inf.setContacts(req.getContacts());
         inf.setContactStatus(req.getContactStatus());

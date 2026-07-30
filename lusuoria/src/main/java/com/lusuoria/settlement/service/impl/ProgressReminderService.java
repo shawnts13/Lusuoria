@@ -480,6 +480,13 @@ public class ProgressReminderService {
         if (candidates.isEmpty()) return;
         influencerPaymentService.attachTeamIds(candidates); // 补上瞬态字段 teamIds，供拼团队名用
 
+        // 批量预加载这批候选结款记录关联的红人合作跟踪记录，避免下面循环里逐条查库
+        List<Long> candidateIds = candidates.stream().map(InfluencerPayment::getId).collect(Collectors.toList());
+        Map<Long, List<CollaborationTracking>> linkedByPaymentId = new HashMap<>();
+        for (CollaborationTracking t : trackingRepo.findByInfluencerPaymentIdInAndIsDeletedFalse(candidateIds)) {
+            linkedByPaymentId.computeIfAbsent(t.getInfluencerPaymentId(), k -> new ArrayList<>()).add(t);
+        }
+
         int overdueMaxDays = thresholdCache.getInt(ReminderCategory.INFLUENCER_PAYMENT_DUE, "TIER_OVERDUE_MAX_DAYS", 0);
         int nearMaxDays = thresholdCache.getInt(ReminderCategory.INFLUENCER_PAYMENT_DUE, "TIER_NEAR_MAX_DAYS", 3);
         int windowMaxDays = thresholdCache.getInt(ReminderCategory.INFLUENCER_PAYMENT_DUE, "TIER_WINDOW_MAX_DAYS", 7);
@@ -490,7 +497,7 @@ public class ProgressReminderService {
             ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining, overdueMaxDays, nearMaxDays, windowMaxDays);
             if (urgency == null) continue; // 超过7天，暂时不用提醒
 
-            List<CollaborationTracking> linked = trackingRepo.findByInfluencerPaymentIdAndIsDeletedFalse(p.getId());
+            List<CollaborationTracking> linked = linkedByPaymentId.getOrDefault(p.getId(), Collections.emptyList());
             if (linked.isEmpty()) continue; // 理论上不会发生（有合作数量/应付金额说明必然关联了记录），防御性跳过
 
             ProgressReminderDetail detail = new ProgressReminderDetail();

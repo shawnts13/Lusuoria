@@ -13,6 +13,13 @@ public interface InfluencerBrandTeamRepository extends JpaRepository<InfluencerB
 
     List<InfluencerBrandTeam> findByInfluencerId(Long influencerId);
 
+    /**
+     * Excel 批量导入"品牌-团队关联同步"专用：一次性查出这批红人的全部关联（含已软删的——
+     * 导入时要靠软删记录做"复活"判断，不能像 findByInfluencerIdIn 那样只查未删除的），
+     * 避免导入循环里逐个红人单独查一次库。
+     */
+    List<InfluencerBrandTeam> findAllByInfluencerIdIn(List<Long> influencerIds);
+
     /** 批量查询多个红人的关联关系（红人列表展示用，避免逐条 N+1 查询） */
     @Query("SELECT ibt FROM InfluencerBrandTeam ibt WHERE ibt.influencerId IN :influencerIds AND ibt.isDeleted = false")
     List<InfluencerBrandTeam> findByInfluencerIdIn(@Param("influencerIds") List<Long> influencerIds);

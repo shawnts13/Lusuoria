@@ -627,6 +627,23 @@ public class InfluencerExcelHandler {
             Map<String, Influencer> savedMap = new HashMap<String, Influencer>();
             influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc()
                     .forEach(inf -> savedMap.put(nameKey(inf.getAccountName()), inf));
+
+            // 批量预加载这批红人现有的全部关联（含已软删的，复活判断需要），避免下面循环里
+            // 逐个红人单独查一次库
+            List<Long> involvedInfIds = new ArrayList<Long>();
+            for (String key : pendingBrandTeamPairs.keySet()) {
+                Influencer inf = savedMap.get(key);
+                if (inf != null) involvedInfIds.add(inf.getId());
+            }
+            Map<Long, List<InfluencerBrandTeam>> existingRelsByInfId = new HashMap<Long, List<InfluencerBrandTeam>>();
+            if (!involvedInfIds.isEmpty()) {
+                for (InfluencerBrandTeam rel : influencerBrandTeamRepo.findAllByInfluencerIdIn(involvedInfIds)) {
+                    existingRelsByInfId.computeIfAbsent(rel.getInfluencerId(), k -> new ArrayList<InfluencerBrandTeam>()).add(rel);
+                }
+            }
+
+            // 收集所有新增/移除/复活的关联，循环结束后一次性批量写库
+            List<InfluencerBrandTeam> relsToSave = new ArrayList<InfluencerBrandTeam>();
             for (Map.Entry<String, Set<String>> entry : pendingBrandTeamPairs.entrySet()) {
                 Influencer inf = savedMap.get(entry.getKey());
                 if (inf == null) continue;
@@ -647,7 +664,7 @@ public class InfluencerExcelHandler {
                     keyToIds.put(idKey, new Long[]{brand.getId(), teamId});
                 }
 
-                List<InfluencerBrandTeam> existingRels = influencerBrandTeamRepo.findByInfluencerId(inf.getId());
+                List<InfluencerBrandTeam> existingRels = existingRelsByInfId.getOrDefault(inf.getId(), Collections.<InfluencerBrandTeam>emptyList());
                 Map<String, InfluencerBrandTeam> existingByKey = new HashMap<String, InfluencerBrandTeam>();
                 for (InfluencerBrandTeam rel : existingRels) {
                     existingByKey.put(rel.getBrandId() + "|" + (rel.getTeamId() != null ? rel.getTeamId() : -1L), rel);
@@ -658,7 +675,7 @@ public class InfluencerExcelHandler {
                     String key = rel.getBrandId() + "|" + (rel.getTeamId() != null ? rel.getTeamId() : -1L);
                     if (!Boolean.TRUE.equals(rel.getIsDeleted()) && !newKeys.contains(key)) {
                         rel.setIsDeleted(true);
-                        influencerBrandTeamRepo.save(rel);
+                        relsToSave.add(rel);
                     }
                 }
                 // 新增/复活
@@ -671,13 +688,14 @@ public class InfluencerExcelHandler {
                         rel.setBrandId(ids[0]);
                         rel.setTeamId(ids[1]);
                         rel.setIsDeleted(false);
-                        influencerBrandTeamRepo.save(rel);
+                        relsToSave.add(rel);
                     } else if (Boolean.TRUE.equals(rel.getIsDeleted())) {
                         rel.setIsDeleted(false);
-                        influencerBrandTeamRepo.save(rel);
+                        relsToSave.add(rel);
                     }
                 }
             }
+            influencerBrandTeamRepo.saveAll(relsToSave);
         }
 
         int skipCount = processedCount - successCount - updateCount - duplicateSkipCount - errors.size();
@@ -801,7 +819,6 @@ public class InfluencerExcelHandler {
             || !eq(original.getDomains(),        updated.getDomains())
             || !eqLong(original.getFollowerCount(), updated.getFollowerCount())
             || !eq(original.getLinks(),          updated.getLinks())
-            || !eq(original.getCasesLinks(),     updated.getCasesLinks())
             || !eq(original.getEmail(),          updated.getEmail())
             || !eq(original.getContacts(),       updated.getContacts())
             || !eq(original.getContactStatus() != null ? original.getContactStatus().name() : null,

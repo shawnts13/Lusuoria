@@ -89,14 +89,12 @@ public class ExchangeRateService {
 
         // 强制覆盖该月（按发布时间匹配）所有已存在红人合作跟踪记录的汇率
         List<CollaborationTracking> orders = trackingRepo.findByPublishMonth(yearMonth);
-        int updated = 0;
         for (CollaborationTracking o : orders) {
             o.setExchangeRate(newRate);
-            trackingRepo.save(o);
-            updated++;
         }
+        trackingRepo.saveAll(orders);
         log.info("汇率维护：月份={}，操作人={}，{} -> {}，已回填红人合作跟踪 {} 条",
-                yearMonth, operator, oldRate, newRate, updated);
+                yearMonth, operator, oldRate, newRate, orders.size());
 
         return saved;
     }

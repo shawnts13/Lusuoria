@@ -13,7 +13,6 @@ import javax.persistence.*;
  * 多值字段用换行符分隔存储（TEXT）：
  *   domains    - 所属领域，如 "家居\n科技"
  *   links      - 主页链接
- *   casesLinks - 合作案例链接
  *
  * contacts 字段存 JSON 数组：
  *   [{"type":"phone","value":"xxx"},{"type":"whatsapp","value":"xxx"},...]
@@ -55,9 +54,6 @@ public class Influencer extends BaseEntity {
 
     @Column(name = "links", columnDefinition = "TEXT")
     private String links;
-
-    @Column(name = "cases_links", columnDefinition = "TEXT")
-    private String casesLinks;
 
     // ===== 联系方式 =====
     @Column(name = "email")

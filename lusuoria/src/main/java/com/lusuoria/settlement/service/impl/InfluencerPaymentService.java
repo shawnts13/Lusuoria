@@ -214,8 +214,12 @@ public class InfluencerPaymentService {
         for (Long teamId : req.getTeamIds()) {
             if (teamId == null) includeNoTeam = true; else realTeamIds.add(teamId);
         }
-        for (Long teamId : realTeamIds) {
-            if (!teamRepo.findById(teamId).isPresent()) throw new RuntimeException("红人团队不存在：" + teamId);
+        if (!realTeamIds.isEmpty()) {
+            Set<Long> foundTeamIds = new HashSet<>();
+            for (InfluencerTeam t : teamRepo.findAllById(realTeamIds)) foundTeamIds.add(t.getId());
+            for (Long teamId : realTeamIds) {
+                if (!foundTeamIds.contains(teamId)) throw new RuntimeException("红人团队不存在：" + teamId);
+            }
         }
 
         List<CollaborationTracking> items = loadAndValidateItems(

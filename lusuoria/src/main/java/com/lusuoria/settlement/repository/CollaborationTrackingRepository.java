@@ -370,6 +370,9 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     /** 红人结款 - 某条结款记录已纳入的红人合作跟踪明细 */
     List<CollaborationTracking> findByInfluencerPaymentIdAndIsDeletedFalse(Long influencerPaymentId);
 
+    /** 上面那条的批量版本：进度提醒批次一次性算多条结款记录时用，避免循环里逐条查库 */
+    List<CollaborationTracking> findByInfluencerPaymentIdInAndIsDeletedFalse(List<Long> influencerPaymentIds);
+
     /** 红人结款 - 创建/编辑时校验勾选的 id 是否都合法可用（属于该品牌+团队、且未被其他批次占用） */
     List<CollaborationTracking> findByIdInAndIsDeletedFalse(List<Long> ids);
 
