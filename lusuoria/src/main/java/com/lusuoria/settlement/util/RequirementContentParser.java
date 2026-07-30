@@ -3,6 +3,8 @@ package com.lusuoria.settlement.util;
 import com.lusuoria.settlement.dto.response.RequirementContentParseResponse;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.repository.InfluencerRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -23,6 +25,8 @@ import java.util.regex.Pattern;
  */
 @Component
 public class RequirementContentParser {
+
+    private static final Logger log = LoggerFactory.getLogger(RequirementContentParser.class);
 
     @Autowired private InfluencerRepository influencerRepo;
 
@@ -149,6 +153,9 @@ public class RequirementContentParser {
         try {
             return new BigDecimal(raw);
         } catch (NumberFormatException e) {
+            // 正则理论上只会捕获数字和小数点，走到这里说明规则本身可能有遗漏case，
+            // 之前完全静默返回 null，日志里查不到是什么输入触发的
+            log.warn("金额解析失败（理论上不应发生），原始片段：{}", raw);
             return null;
         }
     }

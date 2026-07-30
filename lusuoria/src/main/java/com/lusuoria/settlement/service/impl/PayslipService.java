@@ -20,6 +20,8 @@ import com.lusuoria.settlement.repository.ExecutorPayRateTierRepository;
 import com.lusuoria.settlement.repository.ExecutorWageConfirmationRepository;
 import com.lusuoria.settlement.repository.PayslipRepository;
 import com.lusuoria.settlement.util.EmployeeRoleUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -55,6 +57,7 @@ import java.util.stream.Collectors;
 @Service
 public class PayslipService {
 
+    private static final Logger log = LoggerFactory.getLogger(PayslipService.class);
     private static final int SCALE = 2;
     private static final Set<String> FIXED_SALARY_ROLES = new HashSet<>(Arrays.asList("财务", "IT后勤"));
     /** 工资单列表默认展示顺序（2026-07 新增）：按角色分组展示，不然混排看着乱；角色内部再按姓名排序 */
@@ -833,6 +836,11 @@ public class PayslipService {
                 tiersByType.put(key, executorPayRateTierRepo
                         .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(managerId, executorId, vt));
             } catch (IllegalArgumentException e) {
+                // key 是行数据自己带的 videoType 字段值，理论上必然是合法的 VideoType 枚举名——
+                // 走到这里说明数据有问题（比如枚举值改名/废弃后遗留的旧数据），之前静默当作
+                // "没配置梯度"处理，日志里完全查不到，这里记一下方便定位是哪条数据
+                log.warn("排序时 VideoType.valueOf 失败，未知视频类型：{}，managerId={}，executorId={}",
+                        key, managerId, executorId);
                 tiersByType.put(key, Collections.emptyList());
             }
         }
@@ -913,6 +921,10 @@ public class PayslipService {
         try {
             videoType = VideoType.valueOf(videoTypeKey);
         } catch (IllegalArgumentException e) {
+            // 同 sortExecutorRowsByTier 的说明：videoTypeKey 理论上必然是合法枚举名，
+            // 走到这里说明数据有问题，之前静默跳过整段"梯度小计行"，日志里查不到痕迹
+            log.warn("追加梯度小计行时 VideoType.valueOf 失败，未知视频类型：{}，managerId={}，executorId={}",
+                    videoTypeKey, managerId, executorId);
             return;
         }
         List<ExecutorPayRateTier> tiers = executorPayRateTierRepo
@@ -1008,6 +1020,8 @@ public class PayslipService {
         try {
             return VideoType.valueOf(name).ordinal();
         } catch (IllegalArgumentException e) {
+            // 同上：name 理论上必然是合法枚举名，走到这里说明数据有问题
+            log.warn("排序时 VideoType.valueOf 失败，未知视频类型：{}", name);
             return Integer.MAX_VALUE;
         }
     }

@@ -28,6 +28,15 @@ public class GlobalExceptionHandler {
             log.error("未预期的 RuntimeException：{}", e.toString(), e);
             return ApiResponse.error(400, "服务器处理异常：" + e.toString());
         }
+        // e.getCause() 非空说明这条 RuntimeException 是 catch 块里包装了某个底层技术异常
+        // （IO/序列化/第三方SDK等）抛出来的，不是纯业务校验失败——虽然 message 本身可读，
+        // 但如果这里不打印，底层真正的异常类型和堆栈就永久丢失了：前端只会看到这句包装消息，
+        // Render 日志里也查不到具体是哪一行、哪种异常导致的（这条系统里已经踩过好几次这个坑，
+        // 比如 GoogleDriveAuthService/PayslipService 里包装 IOException/序列化异常抛出的
+        // RuntimeException，之前完全没有日志痕迹）。
+        if (e.getCause() != null) {
+            log.error("业务异常（附带底层异常，见栈底）：{}", e.toString(), e);
+        }
         return ApiResponse.error(400, e.getMessage());
     }
 

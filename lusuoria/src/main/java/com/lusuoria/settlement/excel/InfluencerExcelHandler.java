@@ -732,7 +732,12 @@ public class InfluencerExcelHandler {
                 String value = extractJsonValue(item, "value");
                 if (type != null && value != null) map.put(type, value);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            // contacts 是系统自己写入的 JSON 格式（不是用户填的），走到这里说明数据本身
+            // 已经损坏/格式不对，之前这里完全静默吞掉，导出的联系方式会莫名其妙全部是空的，
+            // 且日志里查不到任何痕迹——记一下具体是哪个红人、哪段内容解析失败
+            log.warn("联系方式 JSON 解析失败，原始内容：{}，原因：{}", json, e.toString());
+        }
         return map;
     }
 

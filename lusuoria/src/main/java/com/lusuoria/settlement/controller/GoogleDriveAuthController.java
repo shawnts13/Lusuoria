@@ -3,6 +3,8 @@ package com.lusuoria.settlement.controller;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.GoogleDriveAuth;
 import com.lusuoria.settlement.service.impl.GoogleDriveAuthService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -26,6 +28,8 @@ import java.nio.charset.StandardCharsets;
 @RestController
 @RequestMapping("/api/google-drive-auth")
 public class GoogleDriveAuthController {
+
+    private static final Logger log = LoggerFactory.getLogger(GoogleDriveAuthController.class);
 
     @Autowired private GoogleDriveAuthService authService;
 
@@ -52,7 +56,13 @@ public class GoogleDriveAuthController {
             authService.exchangeCodeForTokens(code, state);
             target += "?googleDriveConnected=1";
         } catch (Exception e) {
-            target += "?googleDriveConnectError=" + URLEncoder.encode(e.getMessage(), StandardCharsets.UTF_8.name());
+            // 这个接口是 Google 直接重定向过来的（见类注释），失败时是靠拼错误信息到跳转链接上
+            // 展示给用户，不会走 GlobalExceptionHandler（异常在这里已经被吃掉，不会再往外抛），
+            // 之前这里完全没打日志——如果不在这里手动记一下，Render 日志里就永远查不到这次
+            // 授权到底是哪里失败的，只能看到用户反馈"连接失败"这一句话
+            log.error("Google Drive 授权回调失败：{}", e.toString(), e);
+            String message = e.getMessage() != null ? e.getMessage() : e.toString();
+            target += "?googleDriveConnectError=" + URLEncoder.encode(message, StandardCharsets.UTF_8.name());
         }
         response.sendRedirect(target);
     }
