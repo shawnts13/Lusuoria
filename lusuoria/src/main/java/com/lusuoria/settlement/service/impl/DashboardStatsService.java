@@ -502,6 +502,7 @@ public class DashboardStatsService {
                                                               String currency, String dimension) {
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
+        Map<String, BigDecimal> monthRateCache = buildMonthRateCache(orders);
 
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
         Map<String, Long> counted = new LinkedHashMap<>();
@@ -530,7 +531,7 @@ public class DashboardStatsService {
                 key = key + "（不影响公司利润）";
             }
             // 按记录自己所在月份的汇率折算后再汇总（原因同 drilldownAmountByDimension）
-            BigDecimal converted = convertFromRmb(execCostRmb, monthRateOf(o), toRmb);
+            BigDecimal converted = convertFromRmb(execCostRmb, monthRateOf(o, monthRateCache), toRmb);
             grouped.merge(key, converted, BigDecimal::add);
             managerNameByKey.putIfAbsent(key, managerName);
             // 笔数只统计实际填了内部执行成本的记录，跟金额是不是0保持同一个口径
@@ -580,6 +581,7 @@ public class DashboardStatsService {
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
         BigDecimal rangeRate = rateForRange(endMonth); // bonus 阶梯规则本身按区间末月汇率门槛判定，与逐条记录折算无关，保留不变
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
+        Map<String, BigDecimal> monthRateCache = buildMonthRateCache(orders);
 
         // commissionAmount（美元原值）按记录自己所在月份的汇率折算后再汇总（原因同
         // drilldownAmountByDimension），跟 bonus 阶梯判定用的区间末月汇率是两回事，分开存
@@ -590,7 +592,7 @@ public class DashboardStatsService {
             Computed c = compute(o);
             Long managerId = o.getProjectManagerId() != null ? o.getProjectManagerId() : NO_MANAGER_KEY;
             groupedUsd.merge(managerId, c.commissionAmount, BigDecimal::add);
-            groupedConverted.merge(managerId, convert(c.commissionAmount, monthRateOf(o), toRmb), BigDecimal::add);
+            groupedConverted.merge(managerId, convert(c.commissionAmount, monthRateOf(o, monthRateCache), toRmb), BigDecimal::add);
             counted.merge(managerId, 1L, Long::sum);
         }
 
@@ -689,6 +691,7 @@ public class DashboardStatsService {
         }
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
+        Map<String, BigDecimal> monthRateCache = buildMonthRateCache(orders);
 
         Map<String, BigDecimal> rowTotals = new LinkedHashMap<>();
         Map<String, BigDecimal> colTotals = new LinkedHashMap<>();
@@ -696,7 +699,7 @@ public class DashboardStatsService {
 
         for (CollaborationTracking o : orders) {
             Computed c = compute(o);
-            BigDecimal rate = monthRateOf(o);
+            BigDecimal rate = monthRateOf(o, monthRateCache);
             BigDecimal clientPrice = convert(c.clientPrice, rate, toRmb);
             BigDecimal grossProfit = convert(c.grossProfit, rate, toRmb);
             BigDecimal companyProfit = convert(c.companyProfit, rate, toRmb);
@@ -875,6 +878,7 @@ public class DashboardStatsService {
 
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
+        Map<String, BigDecimal> monthRateCache = buildMonthRateCache(orders);
 
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
         Map<String, Long> counted = new LinkedHashMap<>();
@@ -883,7 +887,7 @@ public class DashboardStatsService {
             // 按记录自己所在月份的汇率折算后再汇总，而不是整段区间统一用一个汇率——
             // 单月查询（startMonth==endMonth）时区间内只有一个月，跟原来行为完全一致；
             // 多月查询时才会体现出差异（更准确）
-            BigDecimal recordRate = monthRateOf(o);
+            BigDecimal recordRate = monthRateOf(o, monthRateCache);
 
             if ("platform".equals(dimension)) {
                 List<String> platforms = splitPlatforms(o.getPlatform());
@@ -1047,13 +1051,37 @@ public class DashboardStatsService {
         return exchangeRateService.getRateForMonth(endMonth).getUsdToCny();
     }
 
-    /** 某条记录自己所在月份（按发布时间）对应的汇率，供按月折算精度更高的下钻聚合使用 */
-    private BigDecimal monthRateOf(CollaborationTracking o) {
-        String month = o.getPublishDate() != null
+    private String monthKeyOf(CollaborationTracking o) {
+        return o.getPublishDate() != null
                 ? new java.text.SimpleDateFormat("yyyyMM").format(o.getPublishDate())
                 : null;
+    }
+
+    /**
+     * 按月折算精度更高的下钻聚合（drilldownAmountByDimension/drilldownExecutionCost/
+     * drilldownCommission/drilldownPivot）要用到每条记录自己所在月份的汇率——2026-07-30
+     * 修复：一开始直接对每条记录都调一次 {@link ExchangeRateService#getRateForMonth}，
+     * 该方法内部是一次未缓存的数据库查询，年度报告这种一次请求要处理成百上千条记录的场景下
+     * 变成了严重的 N+1 查询（一次请求打出成百上千次汇率表查询），把 Render 免费层本来就只有
+     * 3 个连接的数据库连接池打满，导致这批接口大面积超时/连接失败。改成请求级别的月份汇率
+     * 缓存：一次请求最多只有区间内的月份数（比如整年最多12个）真正查库，同一批记录里同月份
+     * 的后续查询全部走内存 map，不再重复打数据库。
+     */
+    private Map<String, BigDecimal> buildMonthRateCache(List<CollaborationTracking> orders) {
+        Map<String, BigDecimal> cache = new HashMap<>();
+        for (CollaborationTracking o : orders) {
+            String month = monthKeyOf(o);
+            if (month == null || cache.containsKey(month)) continue;
+            cache.put(month, exchangeRateService.getRateForMonth(month).getUsdToCny());
+        }
+        return cache;
+    }
+
+    /** 某条记录自己所在月份（按发布时间）对应的汇率，从请求级别的缓存里取，不直接查库 */
+    private BigDecimal monthRateOf(CollaborationTracking o, Map<String, BigDecimal> monthRateCache) {
+        String month = monthKeyOf(o);
         if (month == null) return null;
-        return exchangeRateService.getRateForMonth(month).getUsdToCny();
+        return monthRateCache.get(month);
     }
 
     /** 国家/市场维度展示用：没填时给个明确提示语，而不是留空 */
