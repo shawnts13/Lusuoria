@@ -18,7 +18,15 @@ import java.util.Date;
  * 不需要改动这张表的结构。
  */
 @Entity
-@Table(name = "pending_approvals")
+@Table(name = "pending_approvals", indexes = {
+        // 覆盖 existsBy/findByTargetModuleAndTargetIdAndCategoryAndStatus + findPendingTargetIds
+        @Index(name = "idx_pa_target_lookup", columnList = "target_module, target_id, category, status"),
+        // 覆盖 findPending（status 必筛，category 可选，按 createdAt 倒序）
+        @Index(name = "idx_pa_status_category", columnList = "status, category"),
+        // 覆盖 findResolvedForEmployee / findMyApprovalQueue 里按负责人/执行人员过滤
+        @Index(name = "idx_pa_project_manager_id", columnList = "target_project_manager_id"),
+        @Index(name = "idx_pa_executor_id", columnList = "target_executor_id")
+})
 @Getter
 @Setter
 public class PendingApproval extends BaseEntity {

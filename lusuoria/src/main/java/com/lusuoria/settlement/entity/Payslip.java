@@ -23,7 +23,11 @@ import java.util.Date;
  * 保证，不建数据库唯一约束（跟 DomainCache.getOrCreate 的既有套路一致）。
  */
 @Entity
-@Table(name = "payslips")
+@Table(name = "payslips", indexes = {
+        // 覆盖 findByYearMonthAndIsDeletedFalse（列表页按月查全部）和
+        // findByEmployeeIdAndYearMonthAndIsDeletedFalse（单个员工按月查）两种查询
+        @Index(name = "idx_payslip_year_month_employee", columnList = "year_month, employee_id")
+})
 @Getter
 @Setter
 @NoArgsConstructor

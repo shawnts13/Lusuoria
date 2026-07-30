@@ -19,7 +19,11 @@ import java.util.List;
  * InfluencerPaymentTeam 记录创建时选定的范围（可能包含"不选团队"）。
  */
 @Entity
-@Table(name = "influencer_payments")
+@Table(name = "influencer_payments", indexes = {
+        @Index(name = "idx_ipay_settlement_month", columnList = "settlement_month"),
+        @Index(name = "idx_ipay_brand_id", columnList = "brand_id"),
+        @Index(name = "idx_ipay_payment_status", columnList = "payment_status")
+})
 @Getter
 @Setter
 @NoArgsConstructor

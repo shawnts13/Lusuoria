@@ -16,7 +16,11 @@ import java.math.BigDecimal;
  * maxAmount 为空表示不封顶（该档位覆盖 minAmount 及以上所有金额）。
  */
 @Entity
-@Table(name = "commission_bonus_tiers")
+@Table(name = "commission_bonus_tiers", indexes = {
+        // 覆盖 findByEmployeeId(In)AndIsDeletedFalseOrderByMinAmountAsc，索引里带上排序列
+        // 省去一次额外的排序步骤
+        @Index(name = "idx_cbt_employee_min_amount", columnList = "employee_id, min_amount")
+})
 @Getter
 @Setter
 @NoArgsConstructor

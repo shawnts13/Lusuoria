@@ -18,8 +18,25 @@ import java.util.Date;
  * 去重键：influencerId + publishLink + publishDate（三者完全相同视为重复）
  * 当 publishLink 和 publishDate 都为空时不参与去重。
  */
+/**
+ * 索引说明：这里的 @Index 只覆盖普通列索引，起文档/新库建表兜底作用——
+ * is_deleted 过滤条件对应的"部分索引"（WHERE is_deleted = false）和 publish_date 按月分组
+ * 用到的表达式索引，JPA 的 @Index 语法都表达不了，ddl-auto=update 对已存在的表也不一定会
+ * 补建索引，实际生产索引以手动在 Supabase SQL 编辑器执行的 CREATE INDEX 脚本为准
+ * （见 2026-07 数据库索引排查记录）。
+ */
 @Entity
-@Table(name = "collaboration_trackings")
+@Table(name = "collaboration_trackings", indexes = {
+        @Index(name = "idx_ct_brand_id", columnList = "brand_id"),
+        @Index(name = "idx_ct_team_id", columnList = "team_id"),
+        @Index(name = "idx_ct_influencer_id", columnList = "influencer_id"),
+        @Index(name = "idx_ct_progress", columnList = "progress"),
+        @Index(name = "idx_ct_payment_progress", columnList = "influencer_payment_progress"),
+        @Index(name = "idx_ct_project_manager_id", columnList = "project_manager_id"),
+        @Index(name = "idx_ct_executor_id", columnList = "executor_id"),
+        @Index(name = "idx_ct_influencer_payment_id", columnList = "influencer_payment_id"),
+        @Index(name = "idx_ct_internal_requirement_no", columnList = "internal_requirement_no")
+})
 @Getter
 @Setter
 @NoArgsConstructor

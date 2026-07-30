@@ -25,7 +25,12 @@ import java.math.BigDecimal;
  * CollaborationTrackingService.suggestExecutorCost()。
  */
 @Entity
-@Table(name = "executor_pay_rate_tiers")
+@Table(name = "executor_pay_rate_tiers", indexes = {
+        // 覆盖 findByManagerId(In)AndIsDeletedFalseOrderByMinCountAsc
+        @Index(name = "idx_ept_manager_min_count", columnList = "manager_id, min_count"),
+        // 覆盖 findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc
+        @Index(name = "idx_ept_manager_executor_type_min", columnList = "manager_id, executor_id, video_type, min_count")
+})
 @Getter
 @Setter
 @NoArgsConstructor

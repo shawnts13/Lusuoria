@@ -26,7 +26,12 @@ import java.util.Date;
  * 保证，不建数据库唯一约束（同项目里既有的惯例）。
  */
 @Entity
-@Table(name = "executor_wage_confirmations")
+@Table(name = "executor_wage_confirmations", indexes = {
+        // 覆盖 findByManagerIdAndExecutorIdAndYearMonthAndIsDeletedFalse
+        @Index(name = "idx_ewc_manager_executor_month", columnList = "manager_id, executor_id, year_month"),
+        // 覆盖 findByYearMonthAndIsDeletedFalse
+        @Index(name = "idx_ewc_year_month", columnList = "year_month")
+})
 @Getter
 @Setter
 @NoArgsConstructor

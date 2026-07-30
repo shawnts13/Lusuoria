@@ -14,7 +14,13 @@ import javax.persistence.*;
  */
 @Entity
 @Table(name = "influencer_brand_teams",
-       uniqueConstraints = @UniqueConstraint(columnNames = {"influencer_id", "brand_id", "team_id"}))
+       uniqueConstraints = @UniqueConstraint(columnNames = {"influencer_id", "brand_id", "team_id"}),
+       indexes = {
+               // influencer_id 已经是上面复合唯一索引的首列，查询够用，不用单独再建；
+               // brand_id/team_id 单独按这两列过滤时用不上复合索引（不是首列），需要各自建索引
+               @Index(name = "idx_ibt_brand_id", columnList = "brand_id"),
+               @Index(name = "idx_ibt_team_id", columnList = "team_id")
+       })
 @Getter
 @Setter
 @NoArgsConstructor
