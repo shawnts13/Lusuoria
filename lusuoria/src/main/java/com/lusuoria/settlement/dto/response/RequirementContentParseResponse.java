@@ -1,13 +1,13 @@
 package com.lusuoria.settlement.dto.response;
 
+import com.lusuoria.settlement.enums.VideoType;
 import lombok.Data;
 
 import java.math.BigDecimal;
 import java.util.List;
 
 /**
- * "提取需求内容"解析结果。videoType 故意不在这里提取——目前的启发式规则识别不出项目视频类型，
- * 一律留空让用户手动选（见 RequirementContentParser 的说明）。
+ * "提取需求内容"解析结果。
  */
 @Data
 public class RequirementContentParseResponse {
@@ -18,6 +18,8 @@ public class RequirementContentParseResponse {
 
     @Data
     public static class ParsedItem {
+        /** 识别到的项目视频类型，识别不出来时留空，让用户手动选 */
+        private VideoType videoType;
         /** 识别到的合作平台（多选） */
         private List<String> platform;
         private Integer videoCount;

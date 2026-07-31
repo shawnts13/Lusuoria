@@ -681,8 +681,12 @@ public class CollaborationTrackingService {
         // 另一个状态 —— 这种改动需要走管理员审核，不能直接生效。这条路径本身已经是一个受控动作
         // （必须填写理由 + 管理员审核才会真正落地，审核通过时红人结款进度固定清空，不看这次请求
         // 传的 newPayment），所以不受下面"系统状态只能内部设置"限制的约束——那条限制针对的是
-        // "直接选中/直接改动"这种没有审核环节的操作
-        boolean isRollback = t.getInfluencerPaymentProgress() != null
+        // "直接选中/直接改动"这种没有审核环节的操作。
+        // "折损"永远不算倒退（2026-07 修复）：折损代表这条记录彻底作废，跟"进度倒退"想防的
+        // "误操作/需要复核才能撤回已完成的结算进度"是两回事，不该被同一套审核流程拦住；
+        // 改成通过下面的 isEnteringDelayed 分支直接生效，只额外要求填一下备注
+        boolean isRollback = newProgress != CollaborationProgress.DELAYED
+                && t.getInfluencerPaymentProgress() != null
                 && t.getProgress() != null && t.getProgress().allowsPaymentProgress()
                 && newProgress != null && !newProgress.allowsPaymentProgress()
                 && newProgress != t.getProgress();
@@ -742,6 +746,25 @@ public class CollaborationTrackingService {
                 throw new RuntimeException("该记录还没有填写" + missingFields + "，无法流转到\""
                         + newProgress.getLabel() + "\"，请先通过\"编辑\"功能填写后再进行状态流转");
             }
+        }
+
+        // 流转到"折损"：同步要求填备注，直接更新到这条记录上（2026-07 新增）。不看是不是真的发生了
+        // 变化——已经是"折损"的记录也可以借这个弹窗更新备注内容，所以只要这次提交的目标是"折损"就校验
+        if (newProgress == CollaborationProgress.DELAYED) {
+            if (req.getNotes() == null || req.getNotes().trim().isEmpty()) {
+                throw new RuntimeException("流转到\"折损\"状态需要填写备注");
+            }
+            t.setNotes(req.getNotes().trim());
+        }
+
+        // 财务流转到"客户已结算"：同步要求填客户方付款批次单号，直接更新到这条记录上（2026-07 新增）。
+        // 只针对员工角色精确是"财务"这一种情况，管理层/ADMIN 走这个接口流转到"客户已结算"不受此限——
+        // 跟 requireFinanceForSettlementProgress() 判定的"能不能流转进来"是两条独立的规则
+        if (newProgress == CollaborationProgress.SETTLED && "财务".equals(employeeRoleUtil.getCurrentEmployeeRole())) {
+            if (req.getClientPaymentBatch() == null || req.getClientPaymentBatch().trim().isEmpty()) {
+                throw new RuntimeException("流转到\"客户已结算\"状态需要填写客户方付款批次单号");
+            }
+            t.setClientPaymentBatch(req.getClientPaymentBatch().trim());
         }
 
         // 进度真正变化时才刷新"进度最近更新时间"（供进度滞留提醒批次用），原样提交回去

@@ -23,4 +23,16 @@ public class CollaborationTrackingStatusRequest {
      * 其他正常的状态流转不需要填这个字段。
      */
     private String reason;
+
+    /**
+     * 备注：只有当 progress 是"折损"时才需要填写，直接覆盖更新到这条记录的 notes 字段
+     * （2026-07 新增，见 CollaborationTrackingService.updateStatus()）。
+     */
+    private String notes;
+
+    /**
+     * 客户方付款批次单号：只有当 progress 是"客户已结算"、且操作人员工角色是"财务"时才需要填写，
+     * 直接覆盖更新到这条记录的 clientPaymentBatch 字段（2026-07 新增）。
+     */
+    private String clientPaymentBatch;
 }
