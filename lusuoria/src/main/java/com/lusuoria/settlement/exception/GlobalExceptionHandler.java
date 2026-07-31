@@ -3,7 +3,9 @@ package com.lusuoria.settlement.exception;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -16,6 +18,28 @@ import java.util.stream.Collectors;
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    // 登录失败的所有原因（用户名不存在/密码错、账号被禁用等，AuthenticationException 的各种子类）
+    // 统一收口成同一句模糊提示，不区分对外展示——避免外部人通过报错文案差异枚举出哪些用户名是真实存在的。
+    // 注意：这里故意用 400 而不是 401——前端 http.js 拦截器把 401 当"登录已过期/session 失效"处理
+    // （清 token、弹"登录已过期"、跳转 /login），如果登录失败本身也返回 401 会被那条逻辑误伤，
+    // 弹出误导性的"登录已过期"而不是这里真正想展示的"用户名或密码错误"
+    @ExceptionHandler(AuthenticationException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ApiResponse<Void> handleAuthenticationException(AuthenticationException e) {
+        log.warn("登录失败：{}", e.toString());
+        return ApiResponse.error(400, "用户名或密码错误");
+    }
+
+    // Spring Data/JDBC 抛出的技术性异常（唯一约束冲突等）message 里经常直接带 SQL 报错原文
+    // （表名/字段名/约束名甚至具体值），不能像下面业务 RuntimeException 那样直接透出给调用方；
+    // 完整信息打日志，返回给前端的是固定的模糊提示
+    @ExceptionHandler(DataAccessException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ApiResponse<Void> handleDataAccessException(DataAccessException e) {
+        log.error("数据库操作异常：{}", e.toString(), e);
+        return ApiResponse.error(400, "数据处理失败，请稍后重试或联系管理员");
+    }
 
     @ExceptionHandler(RuntimeException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
@@ -52,7 +76,9 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public ApiResponse<Void> handleException(Exception e) {
+        // 走到这里的都是没预料到的受检异常（IO/序列化/第三方SDK等），message 里可能带内部实现细节
+        // （文件路径、SDK 报错原文等），完整信息打日志，前端只给固定的模糊提示
         log.error("未预期的异常：{}", e.toString(), e);
-        return ApiResponse.error(500, "服务器错误：" + e.getMessage());
+        return ApiResponse.error(500, "服务器错误，请联系管理员");
     }
 }

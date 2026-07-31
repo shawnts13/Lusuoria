@@ -34,8 +34,10 @@ public class AuthController {
         Authentication auth = authManager.authenticate(
                 new UsernamePasswordAuthenticationToken(req.getUsername(), req.getPassword()));
 
+        // 理论上走到这里 user 必然存在（上面 authManager.authenticate 已经验证过），这里只是防御性兜底；
+        // 消息统一成跟登录失败一样的模糊提示，不额外泄露信息
         SysUser user = userRepo.findByUsernameAndIsDeletedFalse(req.getUsername())
-                .orElseThrow(() -> new RuntimeException("用户不存在"));
+                .orElseThrow(() -> new RuntimeException("用户名或密码错误"));
 
         String token = jwtUtil.generateToken(user.getUsername(), user.getRole());
 

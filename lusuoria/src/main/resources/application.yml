@@ -37,7 +37,7 @@ spring:
 
 # JWT
 jwt:
-  secret: ${JWT_SECRET:lusuoria-settlement-jwt-secret-2024-please-change-me}
+  secret: ${JWT_SECRET}
   expiration: 86400000              # 24小时（毫秒）
 
 # CORS 允许的前端域名

@@ -20,8 +20,10 @@ public class UserDetailsServiceImpl implements UserDetailsService {
 
     @Override
     public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        // 异常消息里不回显 username：即便 Spring Security 默认的 hideUserNotFoundExceptions
+        // 保护机制以后被意外改动，这里也不会成为一条能反推"哪些用户名真实存在"的信息源
         SysUser user = userRepository.findByUsernameAndIsDeletedFalse(username)
-                .orElseThrow(() -> new UsernameNotFoundException("用户不存在：" + username));
+                .orElseThrow(() -> new UsernameNotFoundException("用户名或密码错误"));
 
         boolean enabled = Boolean.TRUE.equals(user.getEnabled());
 
