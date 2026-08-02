@@ -948,8 +948,16 @@ public class CollaborationTrackingService {
             resp.setRateBasedSuggestion(false);
             resp.setAlreadySet(true);
             resp.setSuggestedAmount(t.getInternalExecutionCost());
-            resp.setBreakdown(monthLabel + "该执行人员已经处理了" + countSoFar + "笔" + videoType.getLabel()
-                    + "记录，该笔(第" + position + "笔)：目前已设置成 ¥" + fmtAmount(t.getInternalExecutionCost()));
+            // 文案措辞（2026-08 二次修复）：alreadySet 时这条记录本身就是"已经处理"的一部分，
+            // 不是额外新增的一笔——"已经处理了{countSoFar}笔...该笔(第{position}笔)"这种"前面N笔
+            // + 这一笔是第N+1笔"的框架，只在"这笔是全新待处理"时才自然（还没处理过，这笔会成为
+            // 下一笔）。已经处理过的记录应该用"共处理了{总笔数，含自己}笔，这笔排第{position}位"
+            // 来表述，两个数字才不会互相矛盾（比如这个月只有这一笔时，之前是"已经处理了0笔...
+            // 该笔第1笔"，笔数和"这是第1笔"对不上，容易让人以为笔数还是算错了；改成"共处理了1笔，
+            // 这笔排第1位"就是自洽的）。总笔数 = 排除自己的同类型名单大小 + 1（把自己加回去）
+            int totalSameType = costedSameType.size() + 1;
+            resp.setBreakdown(monthLabel + "该执行人员共处理了" + totalSameType + "笔" + videoType.getLabel()
+                    + "记录，这笔排第" + position + "位：目前已设置成 ¥" + fmtAmount(t.getInternalExecutionCost()));
         } else if (matched == null) {
             // 配置了梯度，但档位没有覆盖到"这个月第几条"这个数字（比如只配了1-50条，这已经是第51条）
             resp.setRateBasedSuggestion(true);
