@@ -80,6 +80,8 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) InfluencerPaymentProgress influencerPaymentProgress,
             @RequestParam(required = false) VideoType videoType,
             @RequestParam(required = false) String videoMonth,
+            @RequestParam(required = false) String videoDateStart,
+            @RequestParam(required = false) String videoDateEnd,
             @RequestParam(required = false) String internalProjectNo,
             @RequestParam(required = false) String internalRequirementNo,
             @RequestParam(required = false) String clientOrderId,
@@ -118,6 +120,10 @@ public class CollaborationTrackingController {
                 .and(Sort.by(userSortDirection, sortProperty));
         PageRequest pageable = PageRequest.of(page, size, sort);
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
+        // 视频发布日期区间：跟视频发布月份是两个独立的筛选参数，同时传了会一起生效（AND）——
+        // 前端保证这两个互斥（选一个会清空另一个），这里不用互相覆盖，各自为 null 就不生效
+        String videoDateStartParam = (videoDateStart == null || videoDateStart.trim().isEmpty()) ? null : videoDateStart.trim();
+        String videoDateEndParam = (videoDateEnd == null || videoDateEnd.trim().isEmpty()) ? null : videoDateEnd.trim();
         // 默认（不点列头排序，仍是按 id）：未完成的项目排在前面，其次是还没加入结款批次的。
         // 这两档改在 Java 内存里做（见 buildIncompleteAndUnbatchedFirstPage 的注释——本来想跟
         // priorityEmployeeId 那两级一样直接拼 JpaSort.unsafe CASE WHEN，上线后触发了
@@ -125,12 +131,14 @@ public class CollaborationTrackingController {
         Page<CollaborationTracking> result = "id".equals(sortBy)
                 ? buildIncompleteAndUnbatchedFirstPage(
                         brandId, teamId, countryMarket, accountName, influencerId, platform,
-                        progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
+                        progress, influencerPaymentProgress, videoType, videoMonthParam, videoDateStartParam, videoDateEndParam,
+                        internalProjectNo, internalRequirementNo,
                         clientOrderId, clientPaymentBatch, projectManagerId,
                         priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, sort, pageable)
                 : trackingRepo.findByFilters(
                         brandId, teamId, countryMarket, accountName, influencerId, platform,
-                        progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
+                        progress, influencerPaymentProgress, videoType, videoMonthParam, videoDateStartParam, videoDateEndParam,
+                        internalProjectNo, internalRequirementNo,
                         clientOrderId, clientPaymentBatch, projectManagerId,
                         priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, pageable);
 
@@ -190,13 +198,15 @@ public class CollaborationTrackingController {
     private Page<CollaborationTracking> buildIncompleteAndUnbatchedFirstPage(
             Long brandId, Long teamId, String countryMarket, String accountName, Long influencerId, String platform,
             CollaborationProgress progress, InfluencerPaymentProgress influencerPaymentProgress, VideoType videoType,
-            String videoMonthParam, String internalProjectNo, String internalRequirementNo,
+            String videoMonthParam, String videoDateStartParam, String videoDateEndParam,
+            String internalProjectNo, String internalRequirementNo,
             String clientOrderId, String clientPaymentBatch, Long projectManagerId,
             Long priorityEmployeeId, boolean prioritizeFinance, boolean onlyMyResponsibility, boolean onlyIncomplete,
             Sort sort, Pageable pageable) {
         List<Object[]> liteRows = trackingRepo.findLitePriorityProjectionByFilters(
                 brandId, teamId, countryMarket, accountName, influencerId, platform,
-                progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
+                progress, influencerPaymentProgress, videoType, videoMonthParam, videoDateStartParam, videoDateEndParam,
+                internalProjectNo, internalRequirementNo,
                 clientOrderId, clientPaymentBatch, projectManagerId,
                 priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, sort);
 
@@ -466,6 +476,8 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) InfluencerPaymentProgress influencerPaymentProgress,
             @RequestParam(required = false) VideoType videoType,
             @RequestParam(required = false) String videoMonth,
+            @RequestParam(required = false) String videoDateStart,
+            @RequestParam(required = false) String videoDateEnd,
             @RequestParam(required = false) String internalProjectNo,
             @RequestParam(required = false) String internalRequirementNo,
             @RequestParam(required = false) String clientOrderId,
@@ -475,10 +487,13 @@ public class CollaborationTrackingController {
         // 导出按当前筛选条件，取全部（不分页）
         PageRequest all = PageRequest.of(0, Integer.MAX_VALUE, Sort.by(Sort.Direction.DESC, "id"));
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
+        String videoDateStartParam = (videoDateStart == null || videoDateStart.trim().isEmpty()) ? null : videoDateStart.trim();
+        String videoDateEndParam = (videoDateEnd == null || videoDateEnd.trim().isEmpty()) ? null : videoDateEnd.trim();
         // 导出是整份文件全量拿走，不需要"优先展示"/"只看我负责的"/"只看未完成的"这几个参数，传 null/false
         List<CollaborationTracking> list = trackingRepo.findByFilters(
                 brandId, teamId, countryMarket, accountName, null, platform,
-                progress, influencerPaymentProgress, videoType, videoMonthParam, internalProjectNo, internalRequirementNo,
+                progress, influencerPaymentProgress, videoType, videoMonthParam, videoDateStartParam, videoDateEndParam,
+                internalProjectNo, internalRequirementNo,
                 clientOrderId, clientPaymentBatch, projectManagerId, null, false, false, false, all).getContent();
         // canViewFull：汇率/其他外部成本/内部执行成本/毛利/提成/公司利润这些财务字段，
         // 只有导出的人是 ADMIN/AUDITOR，或员工角色是"管理层"/"财务"才包含在导出文件里，

@@ -120,6 +120,8 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress = :influencerPaymentProgress) " +
            "AND (:videoType IS NULL OR c.videoType = :videoType) " +
            "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth) " +
+           "AND (:videoDateStart IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYY-MM-DD') >= :videoDateStart) " +
+           "AND (:videoDateEnd IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYY-MM-DD') <= :videoDateEnd) " +
            "AND (:internalProjectNo IS NULL OR c.internalProjectNo LIKE %:internalProjectNo%) " +
            "AND (:internalRequirementNo IS NULL OR c.internalRequirementNo LIKE %:internalRequirementNo%) " +
            "AND (:clientOrderId IS NULL OR c.clientOrderId LIKE %:clientOrderId%) " +
@@ -144,6 +146,8 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("influencerPaymentProgress") InfluencerPaymentProgress influencerPaymentProgress,
             @Param("videoType") VideoType videoType,
             @Param("videoMonth") String videoMonth,
+            @Param("videoDateStart") String videoDateStart,
+            @Param("videoDateEnd") String videoDateEnd,
             @Param("internalProjectNo") String internalProjectNo,
             @Param("internalRequirementNo") String internalRequirementNo,
             @Param("clientOrderId") String clientOrderId,
@@ -181,6 +185,8 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress = :influencerPaymentProgress) " +
            "AND (:videoType IS NULL OR c.videoType = :videoType) " +
            "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth) " +
+           "AND (:videoDateStart IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYY-MM-DD') >= :videoDateStart) " +
+           "AND (:videoDateEnd IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYY-MM-DD') <= :videoDateEnd) " +
            "AND (:internalProjectNo IS NULL OR c.internalProjectNo LIKE %:internalProjectNo%) " +
            "AND (:internalRequirementNo IS NULL OR c.internalRequirementNo LIKE %:internalRequirementNo%) " +
            "AND (:clientOrderId IS NULL OR c.clientOrderId LIKE %:clientOrderId%) " +
@@ -205,6 +211,8 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("influencerPaymentProgress") InfluencerPaymentProgress influencerPaymentProgress,
             @Param("videoType") VideoType videoType,
             @Param("videoMonth") String videoMonth,
+            @Param("videoDateStart") String videoDateStart,
+            @Param("videoDateEnd") String videoDateEnd,
             @Param("internalProjectNo") String internalProjectNo,
             @Param("internalRequirementNo") String internalRequirementNo,
             @Param("clientOrderId") String clientOrderId,
@@ -331,6 +339,19 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND FUNCTION('to_char', c.publishDate, 'YYYYMM') BETWEEN :startMonth AND :endMonth")
     List<CollaborationTracking> findByPublishMonthBetween(
             @Param("startMonth") String startMonth, @Param("endMonth") String endMonth);
+
+    /**
+     * 数据看板"视频发布日期"筛选用（2026-08 新增）：按"发布时间"精确到天的区间（闭区间）查询，
+     * 跟 findByPublishMonthBetween 是同一个思路，只是 to_char 格式换成 'YYYY-MM-DD'，
+     * 用字符串比较而不是 Date 类型参数（原因见 findByFilters 上关于 videoMonth 的注释——
+     * Supabase 连接池下 Date 类型参数在这类动态筛选查询里会报"could not determine data type
+     * of parameter"）。startDate/endDate 格式 'YYYY-MM-DD'。
+     */
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"influencer", "brand", "projectManager", "team"})
+    @Query("SELECT c FROM CollaborationTracking c WHERE c.isDeleted = false " +
+           "AND FUNCTION('to_char', c.publishDate, 'YYYY-MM-DD') BETWEEN :startDate AND :endDate")
+    List<CollaborationTracking> findByPublishDateBetween(
+            @Param("startDate") String startDate, @Param("endDate") String endDate);
 
     /**
      * 内部执行成本梯度分档计算专用：某执行人员在某"发布时间"月份下、某个具体项目负责人名下，

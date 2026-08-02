@@ -26,13 +26,26 @@ public class DashboardController {
     @Autowired private DashboardStatsService dashboardStatsService;
     @Autowired private ExchangeRateService exchangeRateService;
 
-    /** 顶部汇总卡片 */
+    /**
+     * 顶部汇总卡片。yearMonth（按月）和 startDate+endDate（2026-08 新增，"视频发布日期"筛选，
+     * 按天）二选一——前端保证同一次请求只传其中一套，这里按"有日期就用日期"的优先级处理，
+     * 两个都没传才报错（不会出现"两个都传了到底听谁的"这种歧义，因为前端的月份/日期筛选
+     * 本来就是互斥的，选一个会清空另一个）。
+     */
     @GetMapping("/summary")
     public ApiResponse<DashboardSummaryResponse> summary(
-            @RequestParam String yearMonth,
+            @RequestParam(required = false) String yearMonth,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate,
             @RequestParam(defaultValue = "USD") String currency) {
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.error(403, "无权限查看财务数据");
+        }
+        if (startDate != null && endDate != null) {
+            return ApiResponse.success(dashboardStatsService.getSummaryByDateRange(startDate, endDate, currency));
+        }
+        if (yearMonth == null) {
+            return ApiResponse.error(400, "请传入 yearMonth 或 startDate+endDate");
         }
         return ApiResponse.success(dashboardStatsService.getSummary(yearMonth, currency));
     }
@@ -61,95 +74,133 @@ public class DashboardController {
 
     /**
      * 下钻：视频项目数量（dimension: brand|brand_team(默认)|manager|executor|publish_month|
-     * countryMarket|platform，后两个是2026-07新增，platform 一条记录可能同时计入多个平台）
+     * countryMarket|platform，后两个是2026-07新增，platform 一条记录可能同时计入多个平台）。
+     * startMonth+endMonth（按月）和 startDate+endDate（2026-08新增，按天）二选一，见 /summary 说明。
      */
     @GetMapping("/drilldown/video-count")
     public ApiResponse<DashboardDrilldownResponse> drilldownVideoCount(
-            @RequestParam String startMonth,
-            @RequestParam String endMonth,
+            @RequestParam(required = false) String startMonth,
+            @RequestParam(required = false) String endMonth,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate,
             @RequestParam(defaultValue = "brand_type") String dimension) {
-        return ApiResponse.success(dashboardStatsService.drilldownVideoCount(startMonth, endMonth, dimension));
+        if (startMonth == null && (startDate == null || endDate == null)) {
+            return ApiResponse.error(400, "请传入 startMonth+endMonth 或 startDate+endDate");
+        }
+        return ApiResponse.success(
+                dashboardStatsService.drilldownVideoCount(startMonth, endMonth, startDate, endDate, dimension));
     }
 
     /**
      * 下钻：客户合作价格（dimension: brand|brand_team(默认)|manager|countryMarket|platform，
-     * 后两个是2026-07新增）
+     * 后两个是2026-07新增）。startMonth+endMonth 和 startDate+endDate 二选一，见 /summary 说明。
      */
     @GetMapping("/drilldown/client-price")
     public ApiResponse<DashboardDrilldownResponse> drilldownClientPrice(
-            @RequestParam String startMonth,
-            @RequestParam String endMonth,
+            @RequestParam(required = false) String startMonth,
+            @RequestParam(required = false) String endMonth,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate,
             @RequestParam(defaultValue = "USD") String currency,
             @RequestParam(defaultValue = "brand_team") String dimension) {
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.error(403, "无权限查看财务数据");
         }
-        return ApiResponse.success(dashboardStatsService.drilldownClientPrice(startMonth, endMonth, currency, dimension));
+        if (startMonth == null && (startDate == null || endDate == null)) {
+            return ApiResponse.error(400, "请传入 startMonth+endMonth 或 startDate+endDate");
+        }
+        return ApiResponse.success(
+                dashboardStatsService.drilldownClientPrice(startMonth, endMonth, startDate, endDate, currency, dimension));
     }
 
     /**
      * 下钻：红人成本（dimension: brand(默认)|team|account|type|countryMarket|platform，
-     * 后两个是2026-07新增）
+     * 后两个是2026-07新增）。startMonth+endMonth 和 startDate+endDate 二选一，见 /summary 说明。
      */
     @GetMapping("/drilldown/influencer-cost")
     public ApiResponse<DashboardDrilldownResponse> drilldownInfluencerCost(
-            @RequestParam String startMonth,
-            @RequestParam String endMonth,
+            @RequestParam(required = false) String startMonth,
+            @RequestParam(required = false) String endMonth,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate,
             @RequestParam(defaultValue = "USD") String currency,
             @RequestParam(defaultValue = "brand") String dimension) {
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.error(403, "无权限查看财务数据");
         }
+        if (startMonth == null && (startDate == null || endDate == null)) {
+            return ApiResponse.error(400, "请传入 startMonth+endMonth 或 startDate+endDate");
+        }
         return ApiResponse.success(
-                dashboardStatsService.drilldownInfluencerCost(startMonth, endMonth, currency, dimension));
+                dashboardStatsService.drilldownInfluencerCost(startMonth, endMonth, startDate, endDate, currency, dimension));
     }
 
     /**
      * 下钻：项目毛利（dimension: brand(默认)|team|account|type|brand_team|manager|
-     * manager_brand_team|countryMarket|platform，后两个是2026-07新增）
+     * manager_brand_team|countryMarket|platform，后两个是2026-07新增）。
+     * startMonth+endMonth 和 startDate+endDate 二选一，见 /summary 说明。
      */
     @GetMapping("/drilldown/gross-profit")
     public ApiResponse<DashboardDrilldownResponse> drilldownGrossProfit(
-            @RequestParam String startMonth,
-            @RequestParam String endMonth,
+            @RequestParam(required = false) String startMonth,
+            @RequestParam(required = false) String endMonth,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate,
             @RequestParam(defaultValue = "USD") String currency,
             @RequestParam(defaultValue = "brand") String dimension) {
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.error(403, "无权限查看财务数据");
         }
+        if (startMonth == null && (startDate == null || endDate == null)) {
+            return ApiResponse.error(400, "请传入 startMonth+endMonth 或 startDate+endDate");
+        }
         return ApiResponse.success(
-                dashboardStatsService.drilldownGrossProfit(startMonth, endMonth, currency, dimension));
+                dashboardStatsService.drilldownGrossProfit(startMonth, endMonth, startDate, endDate, currency, dimension));
     }
 
     /**
      * 下钻：公司利润（dimension: brand(默认)|team|account|type|brand_team|manager|
-     * manager_brand_team|countryMarket|platform，后两个是2026-07新增）
+     * manager_brand_team|countryMarket|platform，后两个是2026-07新增）。
+     * startMonth+endMonth 和 startDate+endDate 二选一，见 /summary 说明。
      */
     @GetMapping("/drilldown/company-profit")
     public ApiResponse<DashboardDrilldownResponse> drilldownCompanyProfit(
-            @RequestParam String startMonth,
-            @RequestParam String endMonth,
+            @RequestParam(required = false) String startMonth,
+            @RequestParam(required = false) String endMonth,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate,
             @RequestParam(defaultValue = "USD") String currency,
             @RequestParam(defaultValue = "brand") String dimension) {
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.error(403, "无权限查看财务数据");
         }
+        if (startMonth == null && (startDate == null || endDate == null)) {
+            return ApiResponse.error(400, "请传入 startMonth+endMonth 或 startDate+endDate");
+        }
         return ApiResponse.success(
-                dashboardStatsService.drilldownCompanyProfit(startMonth, endMonth, currency, dimension));
+                dashboardStatsService.drilldownCompanyProfit(startMonth, endMonth, startDate, endDate, currency, dimension));
     }
 
-    /** 下钻：内部执行人力成本，按项目负责人，或项目负责人-品牌方-团队 可切换 */
+    /**
+     * 下钻：内部执行人力成本，按项目负责人，或项目负责人-品牌方-团队 可切换。
+     * startMonth+endMonth 和 startDate+endDate 二选一，见 /summary 说明。
+     */
     @GetMapping("/drilldown/execution-cost")
     public ApiResponse<DashboardDrilldownResponse> drilldownExecutionCost(
-            @RequestParam String startMonth,
-            @RequestParam String endMonth,
+            @RequestParam(required = false) String startMonth,
+            @RequestParam(required = false) String endMonth,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate,
             @RequestParam(defaultValue = "USD") String currency,
             @RequestParam(defaultValue = "manager") String dimension) {
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.error(403, "无权限查看财务数据");
         }
+        if (startMonth == null && (startDate == null || endDate == null)) {
+            return ApiResponse.error(400, "请传入 startMonth+endMonth 或 startDate+endDate");
+        }
         return ApiResponse.success(
-                dashboardStatsService.drilldownExecutionCost(startMonth, endMonth, currency, dimension));
+                dashboardStatsService.drilldownExecutionCost(startMonth, endMonth, startDate, endDate, currency, dimension));
     }
 
     /** 下钻：内部其他员工成本，按"员工角色-姓名"（财务/IT后勤这些固定月薪的角色） */
@@ -165,16 +216,25 @@ public class DashboardController {
                 dashboardStatsService.drilldownOtherStaffCost(startMonth, endMonth, currency));
     }
 
-    /** 下钻：负责人提成合计，按负责人拆分 */
+    /**
+     * 下钻：负责人提成合计，按负责人拆分。
+     * startMonth+endMonth 和 startDate+endDate 二选一，见 /summary 说明。
+     */
     @GetMapping("/drilldown/commission")
     public ApiResponse<DashboardDrilldownResponse> drilldownCommission(
-            @RequestParam String startMonth,
-            @RequestParam String endMonth,
+            @RequestParam(required = false) String startMonth,
+            @RequestParam(required = false) String endMonth,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate,
             @RequestParam(defaultValue = "USD") String currency) {
         if (!RoleUtil.canViewSensitiveFields()) {
             return ApiResponse.error(403, "无权限查看财务数据");
         }
-        return ApiResponse.success(dashboardStatsService.drilldownCommission(startMonth, endMonth, currency));
+        if (startMonth == null && (startDate == null || endDate == null)) {
+            return ApiResponse.error(400, "请传入 startMonth+endMonth 或 startDate+endDate");
+        }
+        return ApiResponse.success(
+                dashboardStatsService.drilldownCommission(startMonth, endMonth, startDate, endDate, currency));
     }
 
     /** 下钻：奖金（Payslip.extraBonusAmount），按员工拆分（2026-07 新增） */

@@ -139,6 +139,88 @@ public class DashboardStatsService {
     }
 
     /**
+     * 顶部汇总的"视频发布日期"区间变体（2026-08 新增）：跟 {@link #getSummary} 是同一套字段和
+     * 公式，只是记录来源换成按"发布时间"精确到天的区间查询，不要求整月。
+     *
+     * "内部其他员工成本"（财务/IT后勤固定月薪 + 法务当月工资）和"奖金"（Payslip.extraBonusAmount）
+     * 这两项本质是按月设置的，没有"某一天的工资/奖金"这个概念，不按天折算——日期区间覆盖到
+     * 哪几个月，就把这几个月的固定成本/奖金整月计入（哪怕区间只覆盖某个月的几天），
+     * 跟 {@link #getRangeSummary} 处理跨月区间是同一个思路。展示用汇率固定取区间覆盖到的
+     * 最后一个月（跟 sumMonthly 等其他跨月场景保持一致的取法）。
+     *
+     * @param startDate 起始日期 yyyy-MM-dd
+     * @param endDate   截止日期 yyyy-MM-dd（闭区间，含这天）
+     * @param currency  USD 或 RMB
+     */
+    public DashboardSummaryResponse getSummaryByDateRange(String startDate, String endDate, String currency) {
+        List<CollaborationTracking> allOrders = trackingRepo.findByPublishDateBetween(startDate, endDate);
+        long videoCount = allOrders.size();
+        long damagedVideoCount = allOrders.stream()
+                .filter(o -> o.getProgress() == CollaborationProgress.DELAYED).count();
+        List<CollaborationTracking> orders = excludeDamaged(allOrders);
+
+        BigDecimal totalClientPrice = BigDecimal.ZERO;
+        BigDecimal totalInfluencerCost = BigDecimal.ZERO;
+        BigDecimal totalOtherCost = BigDecimal.ZERO;
+        BigDecimal totalExecCost = BigDecimal.ZERO;
+        BigDecimal totalExecCostForProfitUsd = BigDecimal.ZERO;
+        BigDecimal totalGrossProfit = BigDecimal.ZERO;
+        BigDecimal totalDistributable = BigDecimal.ZERO;
+        BigDecimal totalCommission = BigDecimal.ZERO;
+        BigDecimal totalCompanyProfit = BigDecimal.ZERO;
+
+        for (CollaborationTracking o : orders) {
+            Computed c = compute(o);
+            totalClientPrice    = totalClientPrice.add(c.clientPrice);
+            totalInfluencerCost = totalInfluencerCost.add(c.influencerCost);
+            totalOtherCost      = totalOtherCost.add(c.otherExternalCost);
+            totalExecCost       = totalExecCost.add(c.internalExecutionCost);
+            totalExecCostForProfitUsd = totalExecCostForProfitUsd.add(c.internalExecutionCostForProfitUsd);
+            totalGrossProfit    = totalGrossProfit.add(c.grossProfit);
+            totalDistributable  = totalDistributable.add(c.distributableProfit);
+            totalCommission     = totalCommission.add(c.commissionAmount);
+            totalCompanyProfit  = totalCompanyProfit.add(c.companyProfit);
+        }
+
+        String startMonth = monthOf(startDate);
+        String endMonth = monthOf(endDate);
+        List<String> touchedMonths = monthsBetween(startMonth, endMonth);
+
+        ExchangeRateInfo rateInfo = exchangeRateService.getRateForMonth(endMonth);
+        BigDecimal rate = rateInfo.getUsdToCny();
+
+        BigDecimal totalOtherStaffCostRmb = otherStaffCostRmb(touchedMonths.size()).add(legalStaffCostRmb(startMonth, endMonth));
+        BigDecimal totalOtherStaffCostUsd = (rate != null && rate.compareTo(BigDecimal.ZERO) > 0)
+                ? totalOtherStaffCostRmb.divide(rate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
+        totalCompanyProfit = totalCompanyProfit.subtract(totalOtherStaffCostUsd);
+
+        BigDecimal totalExtraBonusUsd = BigDecimal.ZERO;
+        for (String m : touchedMonths) {
+            totalExtraBonusUsd = totalExtraBonusUsd.add(extraBonusTotalUsd(m, rate));
+        }
+        totalCompanyProfit = totalCompanyProfit.subtract(totalExtraBonusUsd);
+
+        boolean toRmb = "RMB".equalsIgnoreCase(currency);
+        return DashboardSummaryResponse.builder()
+                .videoProjectCount(videoCount)
+                .damagedVideoProjectCount(damagedVideoCount)
+                .totalClientPrice(convert(totalClientPrice, rate, toRmb))
+                .totalInfluencerCost(convert(totalInfluencerCost, rate, toRmb))
+                .totalOtherExternalCost(convertFromRmb(totalOtherCost, rate, toRmb))
+                .totalInternalExecutionCost(convertFromRmb(totalExecCost, rate, toRmb))
+                .totalInternalExecutionCostForProfit(convert(totalExecCostForProfitUsd, rate, toRmb))
+                .totalOtherStaffCost(convertFromRmb(totalOtherStaffCostRmb, rate, toRmb))
+                .totalExtraBonus(convert(totalExtraBonusUsd, rate, toRmb))
+                .totalGrossProfit(convert(totalGrossProfit, rate, toRmb))
+                .totalDistributableProfit(convert(totalDistributable, rate, toRmb))
+                .totalCommissionAmount(convert(totalCommission, rate, toRmb))
+                .totalCompanyProfit(convert(totalCompanyProfit, rate, toRmb))
+                .currency(toRmb ? "RMB" : "USD")
+                .exchangeRateInfo(rateInfo)
+                .build();
+    }
+
+    /**
      * 区间汇总（年度报告/同比用，2026-07 新增）：逐月调用现有单月 {@link #getSummary}
      * 后求和——每个月各自按当月汇率换算好之后再相加，不是整段区间统一按一个汇率换算，
      * 天然是"按月折算"的正确做法，不需要额外写汇率逻辑。
@@ -285,6 +367,32 @@ public class DashboardStatsService {
         return result;
     }
 
+    /** 'yyyy-MM-dd' 取前7位去掉横杠，变成 'yyyyMM'——日期区间筛选换算成月份范围时统一走这个 */
+    private String monthOf(String yyyyMmDd) {
+        return yyyyMmDd.substring(0, 7).replace("-", "");
+    }
+
+    /**
+     * 下钻查询的记录来源：日期区间（startDate/endDate 都给了）优先于月份区间——2026-08
+     * "视频发布日期"筛选新增。前端保证这两种筛选互斥，不会同时传两套都非空的参数，
+     * 这里按"有日期就用日期"的优先级处理，不用额外校验冲突。
+     */
+    private List<CollaborationTracking> fetchOrdersForPeriod(
+            String startMonth, String endMonth, String startDate, String endDate) {
+        if (startDate != null && endDate != null) {
+            return trackingRepo.findByPublishDateBetween(startDate, endDate);
+        }
+        return trackingRepo.findByPublishMonthBetween(startMonth, endMonth);
+    }
+
+    /**
+     * 下钻结果里"展示用汇率对应的月份"：日期区间模式下 endMonth 本身是 null（前端没传），
+     * 从 endDate 反推；月份区间模式下 endMonth 直接就是要的值。
+     */
+    private String effectiveEndMonth(String endMonth, String endDate) {
+        return endMonth != null ? endMonth : monthOf(endDate);
+    }
+
     /**
      * 法务角色薪资是管理层每月手动在"工资单"模块录入的（Payslip.legalSalaryRmb），不是像
      * 财务/IT后勤那样的固定月薪，不能简单"单月金额 × 月份数"相乘——要逐月查 Payslip 表，
@@ -370,8 +478,9 @@ public class DashboardStatsService {
 
     // ============ 下钻：视频项目数量（按品牌方 + 红人类型） ============
 
-    public DashboardDrilldownResponse drilldownVideoCount(String startMonth, String endMonth, String dimension) {
-        List<CollaborationTracking> allOrders = trackingRepo.findByPublishMonthBetween(startMonth, endMonth);
+    public DashboardDrilldownResponse drilldownVideoCount(String startMonth, String endMonth,
+                                                           String startDate, String endDate, String dimension) {
+        List<CollaborationTracking> allOrders = fetchOrdersForPeriod(startMonth, endMonth, startDate, endDate);
         List<CollaborationTracking> orders = excludeDamaged(allOrders);
         long damagedCount = allOrders.size() - orders.size();
 
@@ -466,29 +575,33 @@ public class DashboardStatsService {
     // ============ 下钻：客户合作价格（按品牌方/红人团队，或按项目负责人） ============
 
     public DashboardDrilldownResponse drilldownClientPrice(String startMonth, String endMonth,
+                                                            String startDate, String endDate,
                                                             String currency, String dimension) {
-        return drilldownAmountByDimension(startMonth, endMonth, currency, dimension, c -> c.clientPrice);
+        return drilldownAmountByDimension(startMonth, endMonth, startDate, endDate, currency, dimension, c -> c.clientPrice);
     }
 
     // ============ 下钻：红人成本（按品牌方/团队/账号/类型） ============
 
     public DashboardDrilldownResponse drilldownInfluencerCost(String startMonth, String endMonth,
+                                                               String startDate, String endDate,
                                                                String currency, String dimension) {
-        return drilldownAmountByDimension(startMonth, endMonth, currency, dimension, c -> c.influencerCost);
+        return drilldownAmountByDimension(startMonth, endMonth, startDate, endDate, currency, dimension, c -> c.influencerCost);
     }
 
     // ============ 下钻：项目毛利（按品牌方/团队/账号/类型） ============
 
     public DashboardDrilldownResponse drilldownGrossProfit(String startMonth, String endMonth,
+                                                            String startDate, String endDate,
                                                             String currency, String dimension) {
-        return drilldownAmountByDimension(startMonth, endMonth, currency, dimension, c -> c.grossProfit);
+        return drilldownAmountByDimension(startMonth, endMonth, startDate, endDate, currency, dimension, c -> c.grossProfit);
     }
 
     // ============ 下钻：公司利润（美金/人民币，品牌方/团队/账号/类型/品牌方-团队 可切换） ============
 
     public DashboardDrilldownResponse drilldownCompanyProfit(String startMonth, String endMonth,
+                                                              String startDate, String endDate,
                                                               String currency, String dimension) {
-        return drilldownAmountByDimension(startMonth, endMonth, currency, dimension, c -> c.companyProfit);
+        return drilldownAmountByDimension(startMonth, endMonth, startDate, endDate, currency, dimension, c -> c.companyProfit);
     }
 
     // ============ 下钻：内部执行人力成本（按项目负责人，或项目负责人-品牌方-团队） ============
@@ -499,8 +612,9 @@ public class DashboardStatsService {
     // 这个下钻明细只是把那个总数字拆开来看，口径也应该保持一致）。
 
     public DashboardDrilldownResponse drilldownExecutionCost(String startMonth, String endMonth,
+                                                              String startDate, String endDate,
                                                               String currency, String dimension) {
-        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
+        List<CollaborationTracking> orders = excludeDamaged(fetchOrdersForPeriod(startMonth, endMonth, startDate, endDate));
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
         Map<String, BigDecimal> monthRateCache = buildMonthRateCache(orders);
 
@@ -562,7 +676,7 @@ public class DashboardStatsService {
 
         return DashboardDrilldownResponse.builder()
                 .currency(toRmb ? "RMB" : "USD")
-                .exchangeRateInfo(exchangeRateService.getRateForMonth(endMonth))
+                .exchangeRateInfo(exchangeRateService.getRateForMonth(effectiveEndMonth(endMonth, endDate)))
                 .rows(rows)
                 .build();
     }
@@ -577,9 +691,11 @@ public class DashboardStatsService {
      * 且不参与 bonus 阶梯），其他下钻面板（客户合作价格/红人成本等）不受影响，继续按
      * managerNameOf() 用姓名字符串分组，不跟这里共用。
      */
-    public DashboardDrilldownResponse drilldownCommission(String startMonth, String endMonth, String currency) {
-        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
-        BigDecimal rangeRate = rateForRange(endMonth); // bonus 阶梯规则本身按区间末月汇率门槛判定，与逐条记录折算无关，保留不变
+    public DashboardDrilldownResponse drilldownCommission(String startMonth, String endMonth,
+                                                           String startDate, String endDate, String currency) {
+        List<CollaborationTracking> orders = excludeDamaged(fetchOrdersForPeriod(startMonth, endMonth, startDate, endDate));
+        // bonus 阶梯规则本身按区间末月汇率门槛判定，与逐条记录折算无关，保留不变
+        BigDecimal rangeRate = rateForRange(effectiveEndMonth(endMonth, endDate));
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
         Map<String, BigDecimal> monthRateCache = buildMonthRateCache(orders);
 
@@ -627,7 +743,7 @@ public class DashboardStatsService {
 
         return DashboardDrilldownResponse.builder()
                 .currency(toRmb ? "RMB" : "USD")
-                .exchangeRateInfo(exchangeRateService.getRateForMonth(endMonth))
+                .exchangeRateInfo(exchangeRateService.getRateForMonth(effectiveEndMonth(endMonth, endDate)))
                 .rows(rows)
                 .build();
     }
@@ -873,10 +989,10 @@ public class DashboardStatsService {
     // ============ 通用：按品牌方/团队/账号/类型/项目负责人 拆分金额 ============
 
     private DashboardDrilldownResponse drilldownAmountByDimension(
-            String startMonth, String endMonth, String currency, String dimension,
+            String startMonth, String endMonth, String startDate, String endDate, String currency, String dimension,
             java.util.function.Function<Computed, BigDecimal> extractor) {
 
-        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
+        List<CollaborationTracking> orders = excludeDamaged(fetchOrdersForPeriod(startMonth, endMonth, startDate, endDate));
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
         Map<String, BigDecimal> monthRateCache = buildMonthRateCache(orders);
 
@@ -943,7 +1059,7 @@ public class DashboardStatsService {
 
         return DashboardDrilldownResponse.builder()
                 .currency(toRmb ? "RMB" : "USD")
-                .exchangeRateInfo(exchangeRateService.getRateForMonth(endMonth))
+                .exchangeRateInfo(exchangeRateService.getRateForMonth(effectiveEndMonth(endMonth, endDate)))
                 .rows(rows)
                 .build();
     }
