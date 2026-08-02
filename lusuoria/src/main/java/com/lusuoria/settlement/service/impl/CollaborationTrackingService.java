@@ -914,15 +914,36 @@ public class CollaborationTrackingService {
         List<CollaborationTracking> costedSameType = costedAllTypes.stream()
                 .filter(c -> c.getVideoType() == videoType)
                 .collect(Collectors.toList());
-        int countSoFar = costedSameType.size();
-        int position = countSoFar + 1;
-        ExecutorPayRateTier matched = findMatchingTier(tiers, position);
 
         // 这条记录本身已经设置过内部执行成本（重新打开弹窗编辑老记录）：展示的应该是"当前实际
         // 保存的金额"，不是重新按梯度推算的建议值——梯度配置事后可能变过，重新推算的数字不一定
-        // 等于当初实际保存的，用推算值反而会误导（Shawn 反馈：位次本身已经修好了，但文案
-        // 应该说明"目前已设置成"而不是当成一个新的"建议"来措辞）
+        // 等于当初实际保存的，用推算值反而会误导（Shawn 反馈：文案应该说明"目前已设置成"而不是
+        // 当成一个新的"建议"来措辞）
         boolean alreadySet = t.getInternalExecutionCost() != null;
+
+        // 位次/笔数计算（2026-08 修复）：上面已经把这条记录自己从 costedSameType 里排除掉了
+        // （见 costedAllTypes 那处 filter 的注释），但不能简单"排除自己后的数量 + 1"当成
+        // "最新一笔"来算位次——这个假设只在"这条记录恰好是这个月按id顺序最后一个被设置成本的"
+        // 时才成立。如果这条记录不是已知记录里id最大的那个（比如后来又有别的记录被设置了成本，
+        // id比它大，但这条记录本身id更早），"排除自己数量+1"会把它错误地推到序列末尾，导致
+        // "已经处理了111笔...该笔(第112笔)"这种笔数被多算1的错误——不管这条记录id实际排在
+        // 第几，永远显示成"最后一笔"（用户反馈：已经设置过执行成本的记录，笔数会多算1）。
+        // 正确做法：用它在"同类型已赋值成本名单（含它自己）"里按 id 升序排列的真实位次，
+        // 也就是"id 比它小的同类型已赋值记录数 + 1"——这样不管它在这个月的顺序中处于中间还是
+        // 末尾，位次都准确，且不受"后来又有别的记录被设置成本"影响。
+        // 还没设置过成本的记录（走 else 分支）本来就不在 costedSameType 里，"排除自己数量+1"
+        // 对这种情况仍然是对的（它会成为下一个被处理的，也就是当前笔数+1）
+        int countSoFar;
+        int position;
+        if (alreadySet) {
+            countSoFar = (int) costedSameType.stream().filter(c -> c.getId() < t.getId()).count();
+            position = countSoFar + 1;
+        } else {
+            countSoFar = costedSameType.size();
+            position = countSoFar + 1;
+        }
+        ExecutorPayRateTier matched = findMatchingTier(tiers, position);
+
         if (alreadySet) {
             resp.setRateBasedSuggestion(false);
             resp.setAlreadySet(true);
