@@ -115,6 +115,7 @@ public class ProgressReminderService {
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private InfluencerContractRepository influencerContractRepo;
     @Autowired private InfluencerRequirementRepository requirementRepo;
+    @Autowired private InfluencerRequirementService requirementService;
     @Autowired private InfluencerPaymentRepository influencerPaymentRepo;
     @Autowired private InfluencerPaymentService influencerPaymentService;
     @Autowired private ReminderAcknowledgementRepository ackRepo;
@@ -289,7 +290,19 @@ public class ProgressReminderService {
         reminderRepo.deleteByCategoryIn(categories);
     }
 
-    /** Part A：品牌方付款周期=按红人成本阈值分档 */
+    /**
+     * Part A：品牌方付款周期=按红人成本阈值分档。
+     *
+     * 2026-08 起按品牌方是否需要invoice分两套口径计算，跟 InfluencerPaymentService.
+     * computeCycleInfo 保持一致（实际计算也共用同一个 InfluencerRequirementService.
+     * fetchPaymentInfo，不各自维护一份聚合逻辑，避免两边口径跑偏）：
+     *   - 需要invoice：一次结款只能对应一个需求（一张invoice），所以只有"需求完成进度"=100%
+     *     的需求才参与提醒；阈值分档用整个需求的实际可结款成本（不含折损），起算点是
+     *     "需求完成进度达到100%的时间"，不是视频发布时间。同一需求下每条视频各生成一行明细
+     *     （粒度跟"选择涉及的红人视频项目"弹窗一致），但共享同一组 cycleDays/deadlineDate。
+     *     "折损"状态的记录本身不生成提醒（不会真正付款，提醒没有意义）。
+     *   - 不需要invoice：保持原来的按单笔成本+发布时间计算，行为不变。
+     */
     private void runCollabPaymentDue(LocalDate today, Date batchDate) {
         Map<Long, Brand> qualifyingBrands = new HashMap<>();
         for (Brand b : brandCache.getAll()) {
@@ -302,19 +315,35 @@ public class ProgressReminderService {
         }
         if (qualifyingBrands.isEmpty()) return;
 
-        List<CollaborationTracking> candidates = new ArrayList<>();
+        List<CollaborationTracking> allCandidates = new ArrayList<>();
         for (CollaborationTracking t : trackingRepo.findByIsDeletedFalse()) {
             if (t.getBrandId() == null || !qualifyingBrands.containsKey(t.getBrandId())) continue;
             if (t.getPublishDate() == null) continue;
             if (t.getInfluencerPaymentProgress() != null && t.getInfluencerPaymentProgress().isIncludedInBatch()) continue;
-            if (t.getInfluencerCost() == null) continue; // 没有成本没法判断走哪个天数档位，跳过
-            candidates.add(t);
+            allCandidates.add(t);
         }
-        if (candidates.isEmpty()) return;
+        if (allCandidates.isEmpty()) return;
+
+        List<CollaborationTracking> perItemCandidates = new ArrayList<>();
+        List<CollaborationTracking> perRequirementCandidates = new ArrayList<>();
+        for (CollaborationTracking t : allCandidates) {
+            Brand brand = qualifyingBrands.get(t.getBrandId());
+            if (brand.requiresInvoiceUpload()) {
+                perRequirementCandidates.add(t);
+            } else if (t.getInfluencerCost() != null) { // 没有成本没法判断走哪个天数档位，跳过
+                perItemCandidates.add(t);
+            }
+        }
+        if (perItemCandidates.isEmpty() && perRequirementCandidates.isEmpty()) return;
+
+        List<String> requirementNos = perRequirementCandidates.stream()
+                .map(CollaborationTracking::getInternalRequirementNo).collect(Collectors.toList());
+        Map<String, InfluencerRequirementService.RequirementPaymentInfo> requirementByNo =
+                requirementService.fetchPaymentInfo(requirementNos);
 
         // 批量查红人账号名，避免逐条查库
         Set<Long> influencerIds = new HashSet<>();
-        for (CollaborationTracking t : candidates) {
+        for (CollaborationTracking t : allCandidates) {
             if (t.getInfluencerId() != null) influencerIds.add(t.getInfluencerId());
         }
         Map<Long, String> accountNameById = new HashMap<>();
@@ -328,36 +357,27 @@ public class ProgressReminderService {
         int nearMaxDays = thresholdCache.getInt(ReminderCategory.COLLAB_PAYMENT_DUE, "TIER_NEAR_MAX_DAYS", 3);
         int windowMaxDays = thresholdCache.getInt(ReminderCategory.COLLAB_PAYMENT_DUE, "TIER_WINDOW_MAX_DAYS", 7);
         Map<ReminderUrgency, List<ProgressReminderDetail>> byUrgency = new EnumMap<>(ReminderUrgency.class);
-        for (CollaborationTracking t : candidates) {
+
+        for (CollaborationTracking t : perItemCandidates) {
             Brand brand = qualifyingBrands.get(t.getBrandId());
             int cycleDays = t.getInfluencerCost().compareTo(brand.getCostThresholdAmount()) <= 0
                     ? brand.getDaysWithinThreshold() : brand.getDaysAboveThreshold();
+            LocalDate deadlineLocalDate = toLocalDate(t.getPublishDate()).plusDays(cycleDays);
+            addCollabPaymentDueDetail(byUrgency, today, overdueMaxDays, nearMaxDays, windowMaxDays,
+                    t, brand, accountNameById, cycleDays, deadlineLocalDate, null);
+        }
 
-            LocalDate publishLocalDate = toLocalDate(t.getPublishDate());
-            LocalDate deadlineLocalDate = publishLocalDate.plusDays(cycleDays);
-            long daysRemaining = ChronoUnit.DAYS.between(today, deadlineLocalDate);
-            ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining, overdueMaxDays, nearMaxDays, windowMaxDays);
-            if (urgency == null) continue; // 超过窗口天数，暂时不用提醒
-
-            ProgressReminderDetail detail = new ProgressReminderDetail();
-            detail.setIsDeleted(false);
-            detail.setTrackingId(t.getId());
-            detail.setInternalProjectNo(t.getInternalProjectNo());
-            detail.setBrandName(brand.getName());
-            InfluencerTeam team = t.getTeamId() != null ? teamCache.findById(t.getTeamId()) : null;
-            detail.setTeamName(team != null ? team.getName() : null);
-            detail.setAccountName(accountNameById.get(t.getInfluencerId()));
-            detail.setDemandContent(t.getDemandContent());
-            detail.setInfluencerCost(t.getInfluencerCost());
-            detail.setProgressLabel(t.getProgress() != null ? t.getProgress().getLabel() : null);
-            detail.setPublishDate(t.getPublishDate());
-            detail.setCycleDays(cycleDays);
-            detail.setDeadlineDate(toDate(deadlineLocalDate));
-            detail.setOverdueDays((int) Math.max(0, -daysRemaining));
-            detail.setPaymentProgressLabel(t.getInfluencerPaymentProgress() != null
-                    ? t.getInfluencerPaymentProgress().getLabel() : null);
-
-            byUrgency.computeIfAbsent(urgency, k -> new ArrayList<>()).add(detail);
+        for (CollaborationTracking t : perRequirementCandidates) {
+            if (t.getProgress() == CollaborationProgress.DELAYED) continue; // 折损不会真正付款，不提醒
+            String reqNo = t.getInternalRequirementNo();
+            InfluencerRequirementService.RequirementPaymentInfo info = reqNo != null ? requirementByNo.get(reqNo) : null;
+            if (info == null || !info.isComplete() || info.payableCost == null || info.completedAt == null) continue;
+            Brand brand = qualifyingBrands.get(t.getBrandId());
+            int cycleDays = info.payableCost.compareTo(brand.getCostThresholdAmount()) <= 0
+                    ? brand.getDaysWithinThreshold() : brand.getDaysAboveThreshold();
+            LocalDate deadlineLocalDate = toLocalDate(info.completedAt).plusDays(cycleDays);
+            addCollabPaymentDueDetail(byUrgency, today, overdueMaxDays, nearMaxDays, windowMaxDays,
+                    t, brand, accountNameById, cycleDays, deadlineLocalDate, info.completedAt);
         }
 
         for (ReminderUrgency urgency : ReminderUrgency.values()) {
@@ -379,6 +399,38 @@ public class ProgressReminderService {
             for (ProgressReminderDetail d : details) d.setReminderId(reminder.getId());
             detailRepo.saveAll(details);
         }
+    }
+
+    /** runCollabPaymentDue 的公共收尾：算严重度分档、组装明细行，两条路径（单笔/按需求）共用 */
+    private void addCollabPaymentDueDetail(Map<ReminderUrgency, List<ProgressReminderDetail>> byUrgency,
+            LocalDate today, int overdueMaxDays, int nearMaxDays, int windowMaxDays,
+            CollaborationTracking t, Brand brand, Map<Long, String> accountNameById,
+            int cycleDays, LocalDate deadlineLocalDate, Date requirementCompletedAt) {
+        long daysRemaining = ChronoUnit.DAYS.between(today, deadlineLocalDate);
+        ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining, overdueMaxDays, nearMaxDays, windowMaxDays);
+        if (urgency == null) return; // 超过窗口天数，暂时不用提醒
+
+        ProgressReminderDetail detail = new ProgressReminderDetail();
+        detail.setIsDeleted(false);
+        detail.setTrackingId(t.getId());
+        detail.setInternalProjectNo(t.getInternalProjectNo());
+        detail.setInternalRequirementNo(t.getInternalRequirementNo());
+        detail.setRequirementCompletedAt(requirementCompletedAt);
+        detail.setBrandName(brand.getName());
+        InfluencerTeam team = t.getTeamId() != null ? teamCache.findById(t.getTeamId()) : null;
+        detail.setTeamName(team != null ? team.getName() : null);
+        detail.setAccountName(accountNameById.get(t.getInfluencerId()));
+        detail.setDemandContent(t.getDemandContent());
+        detail.setInfluencerCost(t.getInfluencerCost());
+        detail.setProgressLabel(t.getProgress() != null ? t.getProgress().getLabel() : null);
+        detail.setPublishDate(t.getPublishDate());
+        detail.setCycleDays(cycleDays);
+        detail.setDeadlineDate(toDate(deadlineLocalDate));
+        detail.setOverdueDays((int) Math.max(0, -daysRemaining));
+        detail.setPaymentProgressLabel(t.getInfluencerPaymentProgress() != null
+                ? t.getInfluencerPaymentProgress().getLabel() : null);
+
+        byUrgency.computeIfAbsent(urgency, k -> new ArrayList<>()).add(detail);
     }
 
     /**

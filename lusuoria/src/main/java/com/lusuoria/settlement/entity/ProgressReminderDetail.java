@@ -72,7 +72,11 @@ public class ProgressReminderDetail extends BaseEntity {
 
     /**
      * 历史 NOT NULL 列，含义按类别重新解释（2026-07）：
-     *   - COLLAB_PAYMENT_DUE：结款周期（天数），根据品牌方配置 + 单笔红人成本算出来的。
+     *   - COLLAB_PAYMENT_DUE：结款周期（天数），根据品牌方配置算出来的。2026-08 起口径按
+     *     品牌方是否需要invoice区分：需要invoice的，按这条记录关联需求的实际可结款成本
+     *     （不含折损）分档；不需要invoice的，仍按单笔红人成本分档——跟
+     *     InfluencerPaymentService.computeCycleInfo 保持同一套口径（共用
+     *     InfluencerRequirementService.fetchPaymentInfo）。
      *   - PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL："提醒阈值（工作日）"——
      *     超过多少个工作日没流转就算滞留，跑批当时从"进度提醒阈值维护"读到的实际值。
      *   - REQUIREMENT_INVOICE_OVERDUE/REQUIREMENT_CONTRACT_OVERDUE："需求条目总数"（不是
@@ -85,8 +89,10 @@ public class ProgressReminderDetail extends BaseEntity {
     private Integer cycleDays;
 
     /**
-     * 最迟结款日 = 视频发布时间 + 结款周期。INFLUENCER_PAYMENT_DUE 复用成这条结款记录的
-     * 预计付款日（跟这类提醒的分档依据是同一个日期）。
+     * 最迟结款日。COLLAB_PAYMENT_DUE：不需要invoice时 = 视频发布时间 + 结款周期；需要invoice时
+     * = {@link #requirementCompletedAt}（需求完成进度达到100%的时间）+ 结款周期，不是从视频
+     * 发布时间起算，见该字段注释。INFLUENCER_PAYMENT_DUE 复用成这条结款记录的预计付款日
+     * （跟这类提醒的分档依据是同一个日期）。
      */
     @Temporal(TemporalType.DATE)
     @Column(name = "deadline_date", nullable = false)
@@ -110,8 +116,24 @@ public class ProgressReminderDetail extends BaseEntity {
     @Column(name = "requirement_id")
     private Long requirementId;
 
+    /**
+     * 2026-08 起 COLLAB_PAYMENT_DUE 也会给需要invoice的记录填这个字段（纯展示用，不影响
+     * "查看详情"跳转——那个类别的跳转固定按 internalProjectNo 去"红人合作跟踪"，前端
+     * goToDetail() 在通用的"有值就跳需求管理"分支之前专门排除了这一类，不要在那边删掉这个
+     * 特判，否则点这一类的"查看详情"会被误判成需求维度、跳错地方）。
+     */
     @Column(name = "internal_requirement_no")
     private String internalRequirementNo;
+
+    /**
+     * 需求完成进度达到100%的那一刻（2026-08 新增，COLLAB_PAYMENT_DUE 需要invoice的分支专用）：
+     * 这类品牌方的"结款周期"是从这个时间起算的，不是从"视频发布时间"起算，前端在"视频发布
+     * 时间"列右边单独展示这个字段，方便核对"最迟结款日"到底是怎么算出来的。其余情况
+     * （不需要invoice的记录、以及其它提醒类别）不设置，为 null。
+     */
+    @Temporal(TemporalType.TIMESTAMP)
+    @Column(name = "requirement_completed_at")
+    private Date requirementCompletedAt;
 
     /**
      * 以下4个字段 2026-07 新增，供 PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL 展示

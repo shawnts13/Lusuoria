@@ -434,6 +434,62 @@ public class InfluencerRequirementService {
     }
 
     /**
+     * 需求维度的"结款相关"汇总信息：需要invoice的品牌方，红人结款模块（InfluencerPaymentService）
+     * 和"待处理-进度提醒"里的红人合作跟踪临近结款（ProgressReminderService.runCollabPaymentDue）
+     * 都要用同一套口径判断"这个需求能不能结款、阈值怎么分档、起算点是哪天"，2026-08 抽到这里
+     * 共用一份实现，避免两边各自查一遍、后续改动时忘了同步导致口径又跑偏（之前就出过一次这个
+     * 问题：红人结款那边先改成排除折损，这边提醒模块隔了几天才跟上）。
+     */
+    public static class RequirementPaymentInfo {
+        public Integer completedCount;
+        public Integer totalItemCount;
+        /** 需求完成进度达到100%的那一刻，阈值分档结款周期天数从这天开始算 */
+        public Date completedAt;
+        /** 实际可结款成本：已发布(未结算)/已加入客户未结算列表/客户已结算 三个终态之和，不含折损 */
+        public BigDecimal payableCost;
+        public Integer delayedCount;
+        public BigDecimal delayedCost;
+
+        /** total>0 且 completed>=total 才算完成，口径跟"红人需求管理"列表页/前端 requirementComplete() 一致 */
+        public boolean isComplete() {
+            return totalItemCount != null && totalItemCount > 0
+                    && completedCount != null && completedCount >= totalItemCount;
+        }
+    }
+
+    /** 按 internalRequirementNo 批量取 {@link RequirementPaymentInfo}，避免逐条查库 */
+    @Transactional(readOnly = true)
+    public Map<String, RequirementPaymentInfo> fetchPaymentInfo(List<String> internalRequirementNos) {
+        List<String> nos = internalRequirementNos.stream().filter(java.util.Objects::nonNull)
+                .distinct().collect(Collectors.toList());
+        if (nos.isEmpty()) return new HashMap<>();
+
+        Map<String, RequirementPaymentInfo> result = new HashMap<>();
+        for (InfluencerRequirement r : requirementRepo.findByInternalRequirementNoInAndIsDeletedFalse(nos)) {
+            RequirementPaymentInfo info = new RequirementPaymentInfo();
+            info.totalItemCount = r.getTotalItemCount();
+            info.completedAt = r.getCompletedAt();
+            result.put(r.getInternalRequirementNo(), info);
+        }
+        for (Object[] row : trackingRepo.countCompletedByRequirementNos(nos)) {
+            RequirementPaymentInfo info = result.get((String) row[0]);
+            if (info != null) info.completedCount = ((Long) row[1]).intValue();
+        }
+        for (Object[] row : trackingRepo.sumPayableCostByRequirementNos(nos)) {
+            RequirementPaymentInfo info = result.get((String) row[0]);
+            if (info != null) info.payableCost = (BigDecimal) row[1];
+        }
+        for (Object[] row : trackingRepo.sumDelayedByRequirementNos(nos)) {
+            RequirementPaymentInfo info = result.get((String) row[0]);
+            if (info != null) {
+                info.delayedCount = ((Long) row[1]).intValue();
+                info.delayedCost = (BigDecimal) row[2];
+            }
+        }
+        return result;
+    }
+
+    /**
      * 维护 completedAt（需求完成进度达到100%的时间，2026-07 新增，供"Invoice逾期"提醒批次用）。
      * 由 CollaborationTrackingService 在每次某条关联记录的 progress 真正发生变化后调用。
      * 达到100%且当前为空 → 设置成当前时间；没达到100%但当前有值（说明是被"进度倒退"审批

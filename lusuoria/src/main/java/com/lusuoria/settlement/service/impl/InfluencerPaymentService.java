@@ -11,7 +11,6 @@ import com.lusuoria.settlement.entity.ExchangeRateCache;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.InfluencerPayment;
 import com.lusuoria.settlement.entity.InfluencerPaymentTeam;
-import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.InfluencerPaymentStatus;
@@ -22,7 +21,6 @@ import com.lusuoria.settlement.repository.ExchangeRateCacheRepository;
 import com.lusuoria.settlement.repository.InfluencerPaymentRepository;
 import com.lusuoria.settlement.repository.InfluencerPaymentTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
-import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
 import com.lusuoria.settlement.repository.InfluencerTeamRepository;
 import com.lusuoria.settlement.util.PaymentNoGenerator;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -60,7 +58,7 @@ public class InfluencerPaymentService {
     @Autowired private BrandRepository brandRepo;
     @Autowired private InfluencerTeamRepository teamRepo;
     @Autowired private InfluencerRepository influencerRepo;
-    @Autowired private InfluencerRequirementRepository requirementRepo;
+    @Autowired private InfluencerRequirementService requirementService;
     @Autowired private ExchangeRateCacheRepository exchangeRateCacheRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private InfluencerTeamCache teamCache;
@@ -129,7 +127,10 @@ public class InfluencerPaymentService {
             }
         }
 
-        Map<String, RequirementInfo> requirementByNo = fetchRequirementInfo(list);
+        List<String> requirementNos = list.stream().map(CollaborationTracking::getInternalRequirementNo)
+                .collect(Collectors.toList());
+        Map<String, InfluencerRequirementService.RequirementPaymentInfo> requirementByNo =
+                requirementService.fetchPaymentInfo(requirementNos);
 
         YearMonth reconcileMonth = reconcileDate != null ? YearMonth.from(toLocalDate(reconcileDate)) : null;
 
@@ -153,7 +154,7 @@ public class InfluencerPaymentService {
             item.setPublishDate(t.getPublishDate());
             item.setInvoiceWarning(t.getInfluencerPaymentProgress() == InfluencerPaymentProgress.PENDING_INVOICE);
 
-            RequirementInfo requirement = t.getInternalRequirementNo() != null
+            InfluencerRequirementService.RequirementPaymentInfo requirement = t.getInternalRequirementNo() != null
                     ? requirementByNo.get(t.getInternalRequirementNo()) : null;
             if (requirement != null) {
                 item.setRequirementCompletedCount(requirement.completedCount);
@@ -187,53 +188,6 @@ public class InfluencerPaymentService {
         return result;
     }
 
-    /** 需求维度的汇总信息，仅在 buildItems() 内部使用，不对外暴露（对外通过 PaymentCandidateItem 的 requirement* 字段） */
-    private static class RequirementInfo {
-        Integer completedCount;
-        Integer totalItemCount;
-        Date completedAt;
-        /** 实际可结款成本（已发布(未结算)/已加入客户未结算列表/客户已结算 之和，不含折损） */
-        BigDecimal payableCost;
-        Integer delayedCount;
-        BigDecimal delayedCost;
-    }
-
-    /**
-     * 按 internalRequirementNo 批量取"需求完成进度"分子/分母 + 完成时间 + 实际可结款成本 +
-     * 折损条目数/金额，避免逐条查库。completedCount 口径复用 InfluencerRequirementService
-     * 同款定义，但直接查 trackingRepo/requirementRepo，不额外引入对 InfluencerRequirementService
-     * 的依赖。
-     */
-    private Map<String, RequirementInfo> fetchRequirementInfo(List<CollaborationTracking> list) {
-        List<String> nos = list.stream().map(CollaborationTracking::getInternalRequirementNo)
-                .filter(java.util.Objects::nonNull).distinct().collect(Collectors.toList());
-        if (nos.isEmpty()) return Collections.emptyMap();
-
-        Map<String, RequirementInfo> result = new HashMap<>();
-        for (InfluencerRequirement r : requirementRepo.findByInternalRequirementNoInAndIsDeletedFalse(nos)) {
-            RequirementInfo info = new RequirementInfo();
-            info.totalItemCount = r.getTotalItemCount();
-            info.completedAt = r.getCompletedAt();
-            result.put(r.getInternalRequirementNo(), info);
-        }
-        for (Object[] row : trackingRepo.countCompletedByRequirementNos(nos)) {
-            RequirementInfo info = result.get((String) row[0]);
-            if (info != null) info.completedCount = ((Long) row[1]).intValue();
-        }
-        for (Object[] row : trackingRepo.sumPayableCostByRequirementNos(nos)) {
-            RequirementInfo info = result.get((String) row[0]);
-            if (info != null) info.payableCost = (BigDecimal) row[1];
-        }
-        for (Object[] row : trackingRepo.sumDelayedByRequirementNos(nos)) {
-            RequirementInfo info = result.get((String) row[0]);
-            if (info != null) {
-                info.delayedCount = ((Long) row[1]).intValue();
-                info.delayedCost = (BigDecimal) row[2];
-            }
-        }
-        return result;
-    }
-
     private static class CycleInfo {
         Integer cycleDays;
         Date deadlineDate;
@@ -254,15 +208,18 @@ public class InfluencerPaymentService {
      *
      * 2026-08 修正：这里最初直接用 InfluencerRequirement.totalInfluencerCost（需求创建时按
      * 单价×数量算的计划总成本），但那个值不会因为某条关联记录后来被判"折损"而减少——折损代表
-     * 那笔视频不会真正付款，用计划总成本算阈值/预计付款日会算多。现在改成从 RequirementInfo.
-     * payableCost（sumPayableCostByRequirementNos，只加总非折损的终态记录）取值，天然排除
-     * 折损部分。折损条目本身也不会出现在"候选列表"里（红人结款进度恒为空，见
+     * 那笔视频不会真正付款，用计划总成本算阈值/预计付款日会算多。现在改成从
+     * InfluencerRequirementService.RequirementPaymentInfo.payableCost（底层是
+     * sumPayableCostByRequirementNos，只加总非折损的终态记录）取值，天然排除折损部分。折损
+     * 条目本身也不会出现在"候选列表"里（红人结款进度恒为空，见
      * CollaborationProgress.allowsPaymentProgress()），所以"应付金额"这类由勾选记录直接加总
      * 的字段本来就没有这个问题，出问题的只有这个阈值判断。
-     * ProgressReminderService 里的"待处理提醒"仍然是旧的按单笔成本口径，那部分逻辑本次不动，
-     * 后续单独调整。
+     * 2026-08 起 ProgressReminderService 的"红人合作跟踪临近结款"（COLLAB_PAYMENT_DUE）
+     * 需要invoice的分支也已经改用同一个 InfluencerRequirementService.fetchPaymentInfo()，
+     * 两边口径保证一致，不要再各自维护一份需求成本聚合逻辑。
      */
-    private CycleInfo computeCycleInfo(CollaborationTracking t, Brand brand, RequirementInfo requirement) {
+    private CycleInfo computeCycleInfo(CollaborationTracking t, Brand brand,
+                                        InfluencerRequirementService.RequirementPaymentInfo requirement) {
         CycleInfo info = new CycleInfo();
         if (brand.getPaymentCycleType() == null) return info;
 
@@ -483,15 +440,10 @@ public class InfluencerPaymentService {
             throw new RuntimeException("该品牌方每条结款记录只能对应一个内部需求编号（一张invoice）");
         }
         String reqNo = reqNos.iterator().next();
-        InfluencerRequirement requirement = requirementRepo
-                .findByInternalRequirementNoAndIsDeletedFalse(reqNo).orElse(null);
-        if (requirement == null) throw new RuntimeException("需求不存在：" + reqNo);
-        int completed = 0;
-        for (Object[] row : trackingRepo.countCompletedByRequirementNos(Collections.singletonList(reqNo))) {
-            completed = ((Long) row[1]).intValue();
-        }
-        int total = requirement.getTotalItemCount() != null ? requirement.getTotalItemCount() : 0;
-        if (total == 0 || completed < total) {
+        InfluencerRequirementService.RequirementPaymentInfo info = requirementService
+                .fetchPaymentInfo(Collections.singletonList(reqNo)).get(reqNo);
+        if (info == null) throw new RuntimeException("需求不存在：" + reqNo);
+        if (!info.isComplete()) {
             throw new RuntimeException("该需求尚未整体完成，暂时无法结款：" + reqNo);
         }
     }
