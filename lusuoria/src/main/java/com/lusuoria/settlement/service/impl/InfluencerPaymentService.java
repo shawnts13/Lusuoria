@@ -11,6 +11,7 @@ import com.lusuoria.settlement.entity.ExchangeRateCache;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.InfluencerPayment;
 import com.lusuoria.settlement.entity.InfluencerPaymentTeam;
+import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.InfluencerPaymentStatus;
@@ -21,6 +22,7 @@ import com.lusuoria.settlement.repository.ExchangeRateCacheRepository;
 import com.lusuoria.settlement.repository.InfluencerPaymentRepository;
 import com.lusuoria.settlement.repository.InfluencerPaymentTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
+import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
 import com.lusuoria.settlement.repository.InfluencerTeamRepository;
 import com.lusuoria.settlement.util.PaymentNoGenerator;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -58,6 +60,7 @@ public class InfluencerPaymentService {
     @Autowired private BrandRepository brandRepo;
     @Autowired private InfluencerTeamRepository teamRepo;
     @Autowired private InfluencerRepository influencerRepo;
+    @Autowired private InfluencerRequirementRepository requirementRepo;
     @Autowired private ExchangeRateCacheRepository exchangeRateCacheRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private InfluencerTeamCache teamCache;
@@ -126,6 +129,8 @@ public class InfluencerPaymentService {
             }
         }
 
+        Map<String, InfluencerRequirement> requirementByNo = fetchRequirementInfo(list);
+
         YearMonth reconcileMonth = reconcileDate != null ? YearMonth.from(toLocalDate(reconcileDate)) : null;
 
         List<PaymentCandidateItem> result = new ArrayList<>();
@@ -148,8 +153,17 @@ public class InfluencerPaymentService {
             item.setPublishDate(t.getPublishDate());
             item.setInvoiceWarning(t.getInfluencerPaymentProgress() == InfluencerPaymentProgress.PENDING_INVOICE);
 
+            InfluencerRequirement requirement = t.getInternalRequirementNo() != null
+                    ? requirementByNo.get(t.getInternalRequirementNo()) : null;
+            if (requirement != null) {
+                item.setRequirementCompletedCount(requirement.getCompletedCount());
+                item.setRequirementTotalItemCount(requirement.getTotalItemCount());
+                item.setRequirementTotalInfluencerCost(requirement.getTotalInfluencerCost());
+                item.setRequirementCompletedAt(requirement.getCompletedAt());
+            }
+
             if (brand != null) {
-                CycleInfo cycleInfo = computeCycleInfo(t, brand);
+                CycleInfo cycleInfo = computeCycleInfo(t, brand, requirement);
                 item.setCycleDays(cycleInfo.cycleDays);
                 item.setDeadlineDate(cycleInfo.deadlineDate);
             }
@@ -164,9 +178,34 @@ public class InfluencerPaymentService {
             result.add(item);
         }
         // 默认按红人社媒完整名字排序，方便管理层按红人扫视整批候选记录
-        // （前端另外支持按这个维度筛选，筛选前的默认顺序也是这个）
+        // （前端另外支持按这个维度筛选，筛选前的默认顺序也是这个；需要invoice+按需求分组选择的
+        // 品牌方，前端会按需求编号重新分组排序，这里的默认顺序只是兜底）
         result.sort(Comparator.comparing(PaymentCandidateItem::getAccountName,
                 Comparator.nullsLast(Comparator.naturalOrder())));
+        return result;
+    }
+
+    /**
+     * 按 internalRequirementNo 批量取"需求完成进度"分子/分母 + 总成本 + 完成时间，避免逐条查库。
+     * 复用 InfluencerRequirementService 同款口径（completedCount 定义一致），但直接查
+     * trackingRepo/requirementRepo，不额外引入对 InfluencerRequirementService 的依赖。
+     */
+    private Map<String, InfluencerRequirement> fetchRequirementInfo(List<CollaborationTracking> list) {
+        List<String> nos = list.stream().map(CollaborationTracking::getInternalRequirementNo)
+                .filter(java.util.Objects::nonNull).distinct().collect(Collectors.toList());
+        if (nos.isEmpty()) return Collections.emptyMap();
+
+        Map<String, InfluencerRequirement> result = new HashMap<>();
+        for (InfluencerRequirement r : requirementRepo.findByInternalRequirementNoInAndIsDeletedFalse(nos)) {
+            result.put(r.getInternalRequirementNo(), r);
+        }
+        Map<String, Integer> completedByNo = new HashMap<>();
+        for (Object[] row : trackingRepo.countCompletedByRequirementNos(nos)) {
+            completedByNo.put((String) row[0], ((Long) row[1]).intValue());
+        }
+        for (Map.Entry<String, InfluencerRequirement> e : result.entrySet()) {
+            e.getValue().setCompletedCount(completedByNo.getOrDefault(e.getKey(), 0));
+        }
         return result;
     }
 
@@ -179,22 +218,41 @@ public class InfluencerPaymentService {
      * 结款周期/最迟结款日计算，复用 ProgressReminderService 里已验证过的两段公式
      * （COST_THRESHOLD 按单笔成本分档、MONTH_END 按发布月份月底+固定天数），
      * 只是从"按品牌+月份汇总"改成套到每一行候选记录上。
+     *
+     * 2026-08 起：需要invoice的品牌方（brand.requiresInvoiceUpload()==true）走 COST_THRESHOLD
+     * 时，改成按"这条记录关联的需求"的总成本（requirement.totalInfluencerCost）分档、从"需求
+     * 完成进度达到100%的时间"（requirement.completedAt）起算天数——因为这类品牌方一次结款只能
+     * 对应一个需求（一张invoice），阈值判断/结款周期理应看整个需求而不是单笔视频。requirement
+     * 为 null（没关联需求，或还没100%完成导致 completedAt 还是空）时退化返回空信息，
+     * 跟"品牌未配置周期规则"一样在候选列表里显示"—"。不需要invoice的 COST_THRESHOLD 品牌方
+     * （目前没有，但字段本身允许）保留原来按单笔成本+发布时间计算，行为不变。
+     * ProgressReminderService 里的"待处理提醒"仍然是旧的按单笔成本口径，那部分逻辑本次不动，
+     * 后续单独调整。
      */
-    private CycleInfo computeCycleInfo(CollaborationTracking t, Brand brand) {
+    private CycleInfo computeCycleInfo(CollaborationTracking t, Brand brand, InfluencerRequirement requirement) {
         CycleInfo info = new CycleInfo();
-        if (brand.getPaymentCycleType() == null || t.getPublishDate() == null) return info;
-        LocalDate publishLocalDate = toLocalDate(t.getPublishDate());
+        if (brand.getPaymentCycleType() == null) return info;
 
         if (brand.getPaymentCycleType() == PaymentCycleType.COST_THRESHOLD) {
             if (brand.getCostThresholdAmount() == null || brand.getDaysWithinThreshold() == null
-                    || brand.getDaysAboveThreshold() == null || t.getInfluencerCost() == null) return info;
+                    || brand.getDaysAboveThreshold() == null) return info;
+            if (brand.requiresInvoiceUpload()) {
+                if (requirement == null || requirement.getTotalInfluencerCost() == null
+                        || requirement.getCompletedAt() == null) return info;
+                int cycleDays = requirement.getTotalInfluencerCost().compareTo(brand.getCostThresholdAmount()) <= 0
+                        ? brand.getDaysWithinThreshold() : brand.getDaysAboveThreshold();
+                info.cycleDays = cycleDays;
+                info.deadlineDate = toDate(toLocalDate(requirement.getCompletedAt()).plusDays(cycleDays));
+                return info;
+            }
+            if (t.getPublishDate() == null || t.getInfluencerCost() == null) return info;
             int cycleDays = t.getInfluencerCost().compareTo(brand.getCostThresholdAmount()) <= 0
                     ? brand.getDaysWithinThreshold() : brand.getDaysAboveThreshold();
             info.cycleDays = cycleDays;
-            info.deadlineDate = toDate(publishLocalDate.plusDays(cycleDays));
+            info.deadlineDate = toDate(toLocalDate(t.getPublishDate()).plusDays(cycleDays));
         } else if (brand.getPaymentCycleType() == PaymentCycleType.MONTH_END) {
-            if (brand.getDaysAfterMonthEnd() == null) return info;
-            LocalDate monthEnd = YearMonth.from(publishLocalDate).atEndOfMonth();
+            if (t.getPublishDate() == null || brand.getDaysAfterMonthEnd() == null) return info;
+            LocalDate monthEnd = YearMonth.from(toLocalDate(t.getPublishDate())).atEndOfMonth();
             info.cycleDays = brand.getDaysAfterMonthEnd();
             info.deadlineDate = toDate(monthEnd.plusDays(brand.getDaysAfterMonthEnd()));
         }
@@ -371,7 +429,39 @@ public class InfluencerPaymentService {
                 throw new RuntimeException("勾选的记录里有已被其他结款批次纳入的条目：" + t.getInternalProjectNo());
             }
         }
+        validateSingleRequirementIfNeeded(items, brandId);
         return items;
+    }
+
+    /**
+     * 需要invoice 且按红人成本阈值分档的品牌方：一条结款记录只能对应一个内部需求编号（一张
+     * invoice），且这个需求必须"需求完成进度"=100%才能结款——前端"选择涉及的红人视频项目"
+     * 弹窗已经通过置灰+禁用勾选实现了这个限制，这里是服务端兜底校验，防止绕过前端直接调接口。
+     * 其余品牌方（月结、或未来其它不需要invoice的阈值分档品牌方）不受此限制。
+     */
+    private void validateSingleRequirementIfNeeded(List<CollaborationTracking> items, Long brandId) {
+        Brand brand = brandCache.findById(brandId);
+        if (brand == null || brand.getPaymentCycleType() != PaymentCycleType.COST_THRESHOLD
+                || !brand.requiresInvoiceUpload()) {
+            return;
+        }
+        Set<String> reqNos = items.stream().map(CollaborationTracking::getInternalRequirementNo)
+                .collect(Collectors.toSet());
+        if (reqNos.size() != 1 || reqNos.contains(null)) {
+            throw new RuntimeException("该品牌方每条结款记录只能对应一个内部需求编号（一张invoice）");
+        }
+        String reqNo = reqNos.iterator().next();
+        InfluencerRequirement requirement = requirementRepo
+                .findByInternalRequirementNoAndIsDeletedFalse(reqNo).orElse(null);
+        if (requirement == null) throw new RuntimeException("需求不存在：" + reqNo);
+        int completed = 0;
+        for (Object[] row : trackingRepo.countCompletedByRequirementNos(Collections.singletonList(reqNo))) {
+            completed = ((Long) row[1]).intValue();
+        }
+        int total = requirement.getTotalItemCount() != null ? requirement.getTotalItemCount() : 0;
+        if (total == 0 || completed < total) {
+            throw new RuntimeException("该需求尚未整体完成，暂时无法结款：" + reqNo);
+        }
     }
 
     /**

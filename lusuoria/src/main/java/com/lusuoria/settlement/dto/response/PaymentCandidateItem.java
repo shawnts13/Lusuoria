@@ -44,4 +44,19 @@ public class PaymentCandidateItem {
 
     /** 品牌付款周期=月结 且已填对账日期时，视频发布时间落在对账日期所在月份，前端默认勾选用 */
     private boolean defaultChecked;
+
+    // ===== 2026-08 新增：需要invoice的品牌方，"选择涉及的红人视频项目"按需求编号分组、
+    // 且要求需求完成进度=100%才能勾选，需要这几个字段（没有关联需求的记录都为 null/0） =====
+
+    /** 这条记录关联的需求当前已完成条目数（口径同"红人需求管理"列表页），没有关联需求时为 null */
+    private Integer requirementCompletedCount;
+
+    /** 这条记录关联的需求条目总数，没有关联需求时为 null */
+    private Integer requirementTotalItemCount;
+
+    /** 这条记录关联的需求"红人视频制作与发布总成本"（美金），阈值分档结款用这个而不是单笔成本 */
+    private BigDecimal requirementTotalInfluencerCost;
+
+    /** 这条记录关联的需求达到"需求完成进度100%"的时间，阈值分档结款周期天数从这天开始算 */
+    private Date requirementCompletedAt;
 }

@@ -35,17 +35,25 @@ public class Brand extends BaseEntity {
     private PaymentCycleType paymentCycleType;
 
     /**
-     * 阈值分档结算专用：单笔"红人视频制作与发布成本"金额阈值，单位是本品牌方的结算币种
-     * （settlementCurrency）。只有 paymentCycleType = COST_THRESHOLD 时才有意义。
+     * 阈值分档结算专用：金额阈值，单位是本品牌方的结算币种（settlementCurrency）。只有
+     * paymentCycleType = COST_THRESHOLD 时才有意义。
+     *
+     * 2026-08 起口径变更：需要invoice的品牌方（requiresInvoiceUpload()==true），一次结款
+     * 只能对应一个"红人需求管理"里的需求（一张invoice），所以这里比较的是"单个需求红人视频
+     * 制作与发布总成本"（InfluencerRequirement.totalInfluencerCost），不再是单笔视频的成本，
+     * 见 InfluencerPaymentService.computeCycleInfo。不需要invoice的 COST_THRESHOLD 品牌方
+     * （目前没有配置这种的，但字段允许）仍按老口径——单笔"红人视频制作与发布成本"。
+     * 注意：ProgressReminderService 的"待处理提醒"批次目前还是旧的单笔口径，尚未跟进这次调整，
+     * 后续会单独处理，读这两处代码时不要假设它们口径一致。
      */
     @Column(name = "cost_threshold_amount", precision = 15, scale = 2)
     private java.math.BigDecimal costThresholdAmount;
 
-    /** 阈值分档结算专用：单笔红人成本 <= costThresholdAmount 时，多少天内结款 */
+    /** 阈值分档结算专用：成本 <= costThresholdAmount 时，多少天内结款（成本口径见 costThresholdAmount 注释） */
     @Column(name = "days_within_threshold")
     private Integer daysWithinThreshold;
 
-    /** 阈值分档结算专用：单笔红人成本 > costThresholdAmount 时，多少天内结款 */
+    /** 阈值分档结算专用：成本 > costThresholdAmount 时，多少天内结款（成本口径见 costThresholdAmount 注释） */
     @Column(name = "days_above_threshold")
     private Integer daysAboveThreshold;
 

@@ -19,6 +19,9 @@ public interface InfluencerRequirementRepository extends JpaRepository<Influence
 
     Optional<InfluencerRequirement> findByInternalRequirementNoAndIsDeletedFalse(String internalRequirementNo);
 
+    /** 红人结款"选择涉及的红人视频项目"按需求编号批量取需求信息用（避免逐条查库） */
+    List<InfluencerRequirement> findByInternalRequirementNoInAndIsDeletedFalse(List<String> internalRequirementNos);
+
     boolean existsByInternalRequirementNo(String internalRequirementNo);
 
     /** 内部需求编号分配用：统计某"品牌-团队-月份-账号-"前缀已用了多少个（作为序号起点估算） */
