@@ -63,6 +63,10 @@ public class InfluencerRequirementExcelHandler {
         cols.add("需求条目总数");
         cols.add("客户合作总价格（$）");
         cols.add("红人视频制作与发布总成本（$）");
+        // 2026-08 新增：需求完成时间（=需求完成进度达到100%的那一刻），未完成时导出"-"，
+        // 跟前端 RequirementListPage.vue 的 completedAt 列保持一致。这份导出目前没有单独的
+        // "需求完成进度"列（前端有），这里只按 Shawn 要求加"需求完成时间"，没有一并补进度列
+        cols.add("需求完成时间");
         cols.add("创建时间");
         cols.add("Invoice链接");
         cols.add("合同链接");
@@ -122,6 +126,7 @@ public class InfluencerRequirementExcelHandler {
             setCellNum(row, c++, r.getTotalItemCount() != null ? (double) r.getTotalItemCount() : null, nor);
             setCellMoney(row, c++, r.getTotalClientPrice(), money);
             setCellMoney(row, c++, r.getTotalInfluencerCost(), money);
+            setCellStr(row, c++, r.getCompletedAt() != null ? dtf.format(r.getCompletedAt()) : "-", nor);
             setCellStr(row, c++, r.getCreatedAt() != null ? dtf.format(r.getCreatedAt()) : "", nor);
             setCellStr(row, c++, invoiceCell(r, brand), wrap);
             setCellStr(row, c++, contractCell(r, brand, team, contractsByInfluencerId), wrap);
