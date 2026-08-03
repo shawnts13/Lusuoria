@@ -268,11 +268,15 @@ public class PayslipService {
             if (status.getBlockedReason() != null) throw new RuntimeException(status.getBlockedReason());
         }
         Payslip p = getOrCreateForWrite(employeeId, yearMonth);
-        // 项目负责人/执行人员：这里只是"管理层自己那部分"确认，是否到达最终版（连带冻结快照）
-        // 交给 recomputeFinality 另外判定，不在这里无条件冻结——否则相关的执行人员工资确认还没
-        // 全部到位时就提前把数据锁死了。其余角色没有这层下游依赖，点确认即最终版，照旧走
+        // 项目负责人/执行人员/管理层：这里只是"管理层自己那部分"确认，是否到达最终版（连带
+        // 冻结快照）交给 recomputeFinality 另外判定，不在这里无条件冻结——否则相关的执行人员
+        // 工资确认还没全部到位时就提前把数据锁死了。管理层本人也可能是某些执行人员的项目
+        // 负责人（"管理层手下执行人员工资"卡片），2026-08 起纳入同一套判定，不再无条件冻结
+        // （之前的问题：管理层确认整体工资单后，即使后续在"手下执行人员工资"取消确认了某个
+        // 执行人员，管理层自己这一行也不会退回非最终版，导致 /detail 一直吐旧快照）。
+        // 其余角色（财务/IT后勤/法务）没有这层下游依赖，点确认即最终版，照旧走
         // applyConfirmedSnapshot 立即冻结。
-        if ("项目负责人".equals(emp.getRole()) || "执行人员".equals(emp.getRole())) {
+        if ("项目负责人".equals(emp.getRole()) || "执行人员".equals(emp.getRole()) || "管理层".equals(emp.getRole())) {
             p.setEmployeeRole(emp.getRole());
             p.setConfirmed(true);
             p.setConfirmedAt(new Date());
@@ -1053,10 +1057,11 @@ public class PayslipService {
                                                   PayslipDetailResponse precomputedLive, Payslip p,
                                                   ExchangeRateInfo liveRateInfo) {
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
-        // 2026-07-28 起：是否使用冻结快照看 finalConfirmed，不是 confirmed——项目负责人/执行人员
-        // 这两个角色，管理层点了"确认"（confirmed=true）之后，只要相关的执行人员工资确认还没
-        // 全部到位（finalConfirmed 仍是 false），这里依然展示实时数据，不提前冻结（见
-        // recomputeFinality）。其余角色 confirmed/finalConfirmed 恒等，行为不变。
+        // 2026-07-28 起、2026-08 扩展到管理层：是否使用冻结快照看 finalConfirmed，不是
+        // confirmed——项目负责人/执行人员/管理层，点了"确认"（confirmed=true）之后，只要相关的
+        // 执行人员工资确认还没全部到位（finalConfirmed 仍是 false），这里依然展示实时数据，
+        // 不提前冻结（见 recomputeFinality）。其余角色（财务/IT后勤/法务）confirmed/finalConfirmed
+        // 恒等，行为不变。
         if (p != null && Boolean.TRUE.equals(p.getFinalConfirmed())) {
             BigDecimal snapshotRate = p.getExchangeRateSnapshot();
             ExchangeRateInfo snapshotRateInfo = ExchangeRateInfo.builder()
@@ -1283,9 +1288,10 @@ public class PayslipService {
 
     /**
      * 计算当前实时数据、写入确认快照并把 confirmed/finalConfirmed 置 true，不负责 save（调用方
-     * 决定何时落库）。只用于没有"下游执行人员工资"依赖的角色（财务/IT后勤/法务/管理层自己），
-     * 这些角色点确认即最终版；项目负责人/执行人员走 confirm() + recomputeFinality()，不调用
-     * 这个方法（避免在还没到最终版之前就提前冻结快照）。
+     * 决定何时落库）。只用于没有"下游执行人员工资"依赖的角色（财务/IT后勤/法务），这些角色
+     * 点确认即最终版；项目负责人/执行人员/管理层走 confirm() + recomputeFinality()，不调用
+     * 这个方法（避免在还没到最终版之前就提前冻结快照——管理层本人也可能是"手下执行人员工资"
+     * 的相关项目负责人，2026-08 起纳入同一套判定，不再无条件立即冻结）。
      */
     private void applyConfirmedSnapshot(Employee emp, String yearMonth, Payslip p, Long confirmedByEmployeeId, BigDecimal rate) {
         PayslipDetailResponse live = computeLive(emp, yearMonth, p, rate);
@@ -1335,6 +1341,13 @@ public class PayslipService {
      *     执行人员后，管理层对这个项目负责人本身提成的确认状态也被错误地清空，主表格错误地
      *     显示"预计（等待管理层确认）"+"确认"按钮，正确的应该是"等待项目负责人确认其执行
      *     人员工资"（confirmed 保持不变，只是 finalConfirmed 降级）。
+     *   - 管理层：跟项目负责人同一套道理——管理层本人也可能是某些执行人员的项目负责人（见
+     *     "管理层手下执行人员工资"卡片），confirmed 代表"管理层点没点自己整体工资单的确认"，
+     *     跟"手下执行人员工资是否都确认完"是两件独立的事，同样任何时候都不连带回退 confirmed，
+     *     只降级 finalConfirmed（2026-08 新增；此前管理层被归在"其余角色"里 shouldBeFinal
+     *     恒为 true，导致这条回退路径对管理层永远走不到——管理层确认整体工资单后，哪怕后续
+     *     在"手下执行人员工资"取消确认某个执行人员，管理层这一行也不会退回非最终版，
+     *     /detail 会一直吐旧的冻结快照给"管理层手下执行人员工资"那张卡片，看起来像没生效）。
      */
     private void recomputeFinality(Employee emp, String yearMonth, BigDecimal rate) {
         Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(emp.getId(), yearMonth).orElse(null);
@@ -1352,7 +1365,7 @@ public class PayslipService {
             ExecutorPmConfirmStatus status = resolveExecutorPmConfirmStatus(emp.getId(), yearMonth);
             shouldBeFinal = status.isAllConfirmed();
             resetOwnConfirmOnRollback = !status.isAnyConfirmed();
-        } else if ("项目负责人".equals(emp.getRole())) {
+        } else if ("项目负责人".equals(emp.getRole()) || "管理层".equals(emp.getRole())) {
             shouldBeFinal = allOwnExecutorWagesConfirmed(emp.getId(), yearMonth);
         } else {
             shouldBeFinal = true;
