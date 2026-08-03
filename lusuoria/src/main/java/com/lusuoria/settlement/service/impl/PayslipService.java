@@ -1365,8 +1365,24 @@ public class PayslipService {
             ExecutorPmConfirmStatus status = resolveExecutorPmConfirmStatus(emp.getId(), yearMonth);
             shouldBeFinal = status.isAllConfirmed();
             resetOwnConfirmOnRollback = !status.isAnyConfirmed();
-        } else if ("项目负责人".equals(emp.getRole()) || "管理层".equals(emp.getRole())) {
+        } else if ("项目负责人".equals(emp.getRole())) {
             shouldBeFinal = allOwnExecutorWagesConfirmed(emp.getId(), yearMonth);
+            // PM 的 confirmed 从不级联回退：PM 自己名下执行人员工资确认没到位，不会拦住管理层
+            // confirmRow(PM) 这个按钮（toRowResponse 里 PM 的 blockedReason 恒为 null），
+            // 两件事从设计上就是互不设限的，没有"前置条件"关系需要撤销。
+        } else if ("管理层".equals(emp.getRole())) {
+            shouldBeFinal = allOwnExecutorWagesConfirmed(emp.getId(), yearMonth);
+            // 2026-08 修复：管理层不能照抄 PM 的"从不回退"——管理层自己"手下执行人员工资"没
+            // 全部确认时，那些执行人员就到不了 finalConfirmed，而 managementBlockReason() 要求
+            // "所有其他员工都 finalConfirmed" 才放行管理层自己的"确认"按钮，所以
+            // allOwnExecutorWagesConfirmed==true 其实是管理层自己"确认"按钮当初能点亮的一个
+            // （间接）前置条件，跟 PM 的情况正好相反。这个前置条件一旦被打破（比如又跑去"手下
+            // 执行人员工资"取消确认了某一个），管理层自己的 confirmed 也要跟着回退，界面才会
+            // 正确显示"确认"（禁用+提示"请先确认其他员工的工资单"），而不是继续显示一个其实已经
+            // 不再成立的"取消确认"。这里没有执行人员那种"多个负责人各自confirm、只要还有一个在
+            // 就不整体回退"的部分抵免场景——allOwnExecutorWagesConfirmed 就是管理层自己一个人
+            // 的单一判断，所以无条件回退，不用像执行人员那样再判一次 anyConfirmed。
+            resetOwnConfirmOnRollback = true;
         } else {
             shouldBeFinal = true;
         }
