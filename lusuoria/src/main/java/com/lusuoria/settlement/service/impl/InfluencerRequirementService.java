@@ -146,7 +146,15 @@ public class InfluencerRequirementService {
                     noAllocator.allocate(brandName, teamName, requirement.getRequirementMonth(), influencer.getAccountName()));
         }
 
-        return requirementRepo.save(requirement);
+        InfluencerRequirement saved = requirementRepo.save(requirement);
+        // applyItems() 可能改了 totalItemCount（比如把条目总数改小了）——如果这一改让"需求完成
+        // 进度"跨过或跌破100%，completedAt 要跟着重新判定一次，不能只靠"某条合作跟踪记录进度
+        // 变化"这一种触发方式（2026-08 修复：之前编辑需求条目导致 totalItemCount 减少、
+        // 从而"被动"达到100%完成的场景，completedAt 永远不会被补上，因为这里从来没调用过
+        // refreshCompletedAt）。新建需求（isNew）时这里恒是 no-op（total>0 但 completed 必然
+        // 是0，不影响），一并调用不需要额外判断，逻辑更简单。
+        refreshCompletedAt(saved.getInternalRequirementNo());
+        return saved;
     }
 
     /**
@@ -490,10 +498,14 @@ public class InfluencerRequirementService {
     }
 
     /**
-     * 维护 completedAt（需求完成进度达到100%的时间，2026-07 新增，供"Invoice逾期"提醒批次用）。
-     * 由 CollaborationTrackingService 在每次某条关联记录的 progress 真正发生变化后调用。
+     * 维护 completedAt（需求完成进度达到100%的时间，2026-07 新增，供"Invoice逾期"提醒批次/
+     * 红人结款阈值分档用）。由 CollaborationTrackingService 在每次某条关联记录的 progress
+     * 真正发生变化后调用；2026-08 起 save()（本类自己，编辑需求条目导致 totalItemCount
+     * 变化时）也会调用——"是否100%完成"不只取决于关联记录的进度，也取决于需求自己的条目
+     * 总数，两边任意一个变了都要重新判定一次，不能只覆盖前者。
      * 达到100%且当前为空 → 设置成当前时间；没达到100%但当前有值（说明是被"进度倒退"审批
-     * 通过拉回去的）→ 清空。internalRequirementNo 为空或查不到需求时直接忽略。
+     * 通过拉回去的、或者需求条目被改多了）→ 清空。internalRequirementNo 为空或查不到需求时
+     * 直接忽略。
      */
     @Transactional
     public void refreshCompletedAt(String internalRequirementNo) {
