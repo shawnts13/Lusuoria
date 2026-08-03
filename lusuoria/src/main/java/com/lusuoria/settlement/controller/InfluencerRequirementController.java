@@ -186,6 +186,14 @@ public class InfluencerRequirementController {
         PageRequest all = PageRequest.of(0, Integer.MAX_VALUE, Sort.by(Sort.Direction.DESC, "id"));
         List<InfluencerRequirement> list = requirementRepo.findByFilters(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo, all).getContent();
+        // "需求完成进度"分子是瞬态字段，findByFilters 查出来的实体不会自动带上，导出前批量补一次
+        // （口径/写法跟 InfluencerRequirementService 分页接口给列表页用的完全一致）
+        List<String> nos = list.stream().map(InfluencerRequirement::getInternalRequirementNo)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toList());
+        Map<String, Integer> completedByNo = requirementService.completedCountByNos(nos);
+        for (InfluencerRequirement r : list) {
+            r.setCompletedCount(completedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
+        }
         excelHandler.export(list, response);
     }
 }
