@@ -39,10 +39,14 @@ public class Brand extends BaseEntity {
      * paymentCycleType = COST_THRESHOLD 时才有意义。
      *
      * 2026-08 起口径变更：需要invoice的品牌方（requiresInvoiceUpload()==true），一次结款
-     * 只能对应一个"红人需求管理"里的需求（一张invoice），所以这里比较的是"单个需求红人视频
-     * 制作与发布总成本"（InfluencerRequirement.totalInfluencerCost），不再是单笔视频的成本，
-     * 见 InfluencerPaymentService.computeCycleInfo。不需要invoice的 COST_THRESHOLD 品牌方
-     * （目前没有配置这种的，但字段允许）仍按老口径——单笔"红人视频制作与发布成本"。
+     * 只能对应一个"红人需求管理"里的需求（一张invoice），所以这里比较的是"单个需求实际可结款
+     * 成本"——即该需求下所有已发布(未结算)/已加入客户未结算列表/客户已结算 记录的红人视频制作
+     * 与发布成本之和，不再是单笔视频的成本，见 InfluencerPaymentService.computeCycleInfo/
+     * RequirementInfo.payableCost。**不是** InfluencerRequirement.totalInfluencerCost（那是
+     * 需求创建时按单价×数量算好的计划总成本）——2026-08 首版曾经直接用那个字段，但发现"折损"
+     * 状态的条目不会真正付款，用计划总成本会把折损部分也算进阈值，导致分档/预计付款日算多，
+     * 随后改成从实际记录聚合、天然排除折损。不需要invoice的 COST_THRESHOLD 品牌方（目前没有
+     * 配置这种的，但字段允许）仍按老口径——单笔"红人视频制作与发布成本"。
      * 注意：ProgressReminderService 的"待处理提醒"批次目前还是旧的单笔口径，尚未跟进这次调整，
      * 后续会单独处理，读这两处代码时不要假设它们口径一致。
      */

@@ -54,9 +54,20 @@ public class PaymentCandidateItem {
     /** 这条记录关联的需求条目总数，没有关联需求时为 null */
     private Integer requirementTotalItemCount;
 
-    /** 这条记录关联的需求"红人视频制作与发布总成本"（美金），阈值分档结款用这个而不是单笔成本 */
-    private BigDecimal requirementTotalInfluencerCost;
+    /**
+     * 这条记录关联的需求"实际可结款成本"之和（美金）：只加总 已发布(未结算)/已加入客户未结算
+     * 列表/客户已结算 这三个终态的记录，不含"折损"——阈值分档结款/预计付款日用这个，不是
+     * InfluencerRequirement.totalInfluencerCost（那是需求创建时按单价×数量算的计划总成本，
+     * 没扣掉后续判"折损"、事实上不会付款的条目，2026-08 发现这个偏差后改用这个字段）。
+     */
+    private BigDecimal requirementPayableCost;
 
     /** 这条记录关联的需求达到"需求完成进度100%"的时间，阈值分档结款周期天数从这天开始算 */
     private Date requirementCompletedAt;
+
+    /** 这条记录关联的需求下，"折损"状态的条目数（2026-08 新增，没有则为 0/null），前端提示用 */
+    private Integer requirementDelayedCount;
+
+    /** 这条记录关联的需求下，"折损"状态条目的红人视频制作与发布成本之和（美金），前端提示用 */
+    private BigDecimal requirementDelayedCost;
 }

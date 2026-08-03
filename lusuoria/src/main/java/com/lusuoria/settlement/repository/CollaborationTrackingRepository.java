@@ -415,6 +415,33 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     List<Object[]> countCompletedByRequirementNos(@Param("requirementNos") List<String> requirementNos);
 
     /**
+     * 红人结款用：按 internalRequirementNo 分组统计"实际可结款成本"——只看 已发布(未结算)/
+     * 已加入客户未结算列表/客户已结算 这三个"会真正付钱"的终态（不含折损），红人视频制作与发布
+     * 成本(influencerCost)之和。2026-08 修复：之前直接用 InfluencerRequirement.totalInfluencerCost
+     * （需求创建时按单价×数量算好的计划总成本）做阈值分档，没有排除后来被判"折损"、事实上不会
+     * 付款的条目，导致阈值/预计付款日算多了——现在改成从实际记录聚合，天然排除折损。
+     */
+    @Query("SELECT c.internalRequirementNo, SUM(c.influencerCost) FROM CollaborationTracking c " +
+           "WHERE c.isDeleted = false AND c.internalRequirementNo IN :requirementNos " +
+           "AND c.progress IN (" +
+           "  com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
+           "  com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST, " +
+           "  com.lusuoria.settlement.enums.CollaborationProgress.SETTLED) " +
+           "GROUP BY c.internalRequirementNo")
+    List<Object[]> sumPayableCostByRequirementNos(@Param("requirementNos") List<String> requirementNos);
+
+    /**
+     * 红人结款用：按 internalRequirementNo 分组统计"折损"条目的数量+成本之和——"选择涉及的红人
+     * 视频项目"弹窗要提示管理层"这个需求里有几笔折损，涉及金额多少"，避免管理层看着"需求完成
+     * 进度100%"却发现实际能勾选的条数比总数少，误以为哪里出了问题。
+     */
+    @Query("SELECT c.internalRequirementNo, COUNT(c), SUM(c.influencerCost) FROM CollaborationTracking c " +
+           "WHERE c.isDeleted = false AND c.internalRequirementNo IN :requirementNos " +
+           "AND c.progress = com.lusuoria.settlement.enums.CollaborationProgress.DELAYED " +
+           "GROUP BY c.internalRequirementNo")
+    List<Object[]> sumDelayedByRequirementNos(@Param("requirementNos") List<String> requirementNos);
+
+    /**
      * 需求列表页"新建合作跟踪"按钮判断用：按 internalRequirementNo 分组统计"已建立跟踪记录数"
      * ——不看 progress 状态，只要关联了就算（含折损），口径跟 findByInternalRequirementNoAndIsDeletedFalse
      * 一致。达到 totalItemCount 时说明每个条目的名额都已经有跟踪记录占上了，不该再允许新建，
