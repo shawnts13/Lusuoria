@@ -15,6 +15,7 @@ import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.InfluencerBrandTeam;
+import com.lusuoria.settlement.entity.InfluencerContract;
 import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.InfluencerRequirementItem;
 import com.lusuoria.settlement.entity.InfluencerTeam;
@@ -22,6 +23,7 @@ import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
+import com.lusuoria.settlement.repository.InfluencerContractRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementItemRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
@@ -34,7 +36,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.text.SimpleDateFormat;
+import java.time.LocalDate;
+import java.time.YearMonth;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -63,6 +68,7 @@ public class InfluencerRequirementService {
     @Autowired private RequirementNoAllocator noAllocator;
     @Autowired private RequirementContentParser contentParser;
     @Autowired private CollaborationTrackingRepository trackingRepo;
+    @Autowired private InfluencerContractRepository influencerContractRepo;
 
     @Transactional
     public InfluencerRequirement save(InfluencerRequirementRequest req) {
@@ -467,11 +473,18 @@ public class InfluencerRequirementService {
     }
 
     /**
-     * "需求列表页 - 查看未上传合同的需求"按钮专用（2026-08 新增）：条件跟 findByFilters
-     * 一致，只额外要求需求已完成（completedAt有值）、这个品牌方/团队组合是"每次需求签一次合同"
-     * （InfluencerTeam.isPerRequirementContract）、且还没上传合同（contractLink为空）——
-     * 口径完全对齐 REQUIREMENT_CONTRACT_OVERDUE 提醒批次
-     * （ProgressReminderService.runRequirementContractOverdue），只是不按"超出阈值天数"分档。
+     * "需求列表页 - 查看未上传合同的需求"按钮专用（2026-08 新增，2026-08 修复）：条件跟
+     * findByFilters 一致，只额外要求需求已完成（completedAt有值），再按这个品牌方/团队组合
+     * 是"每次需求签一次合同"还是"一年签一次合同"分两套判断"是否已上传合同"：
+     *   - 每次需求签一次合同：看需求自己的 contractLink 是否为空（口径对齐
+     *     REQUIREMENT_CONTRACT_OVERDUE 提醒批次，只是不按"超出阈值天数"分档）。
+     *   - 一年签一次合同：这类品牌方的合同不走需求自己的 contractLink 字段，而是在"红人管理"
+     *     维护（InfluencerContract，按红人+品牌方+团队各自维护有效期区间），前端"合同链接"列
+     *     也是这么判断的（见 RequirementListPage.vue 的 matchedInfluencerContract）——
+     *     之前这里漏了这一种情况，直接把所有"一年签一次合同"的需求都排除在候选之外，
+     *     导致这类品牌方下大量"红人管理处还没上传合同"的已完成需求，点这个按钮完全查不出来。
+     *     现在改成查这个红人名下的合同，看有没有一条 (品牌方,团队) 匹配、且有效期区间覆盖
+     *     这条需求的"需求月份"，没有匹配上就算"未上传合同"。
      */
     @Transactional(readOnly = true)
     public org.springframework.data.domain.Page<InfluencerRequirement> pageMissingContract(
@@ -479,16 +492,52 @@ public class InfluencerRequirementService {
             String internalRequirementNo, org.springframework.data.domain.Pageable pageable) {
         List<InfluencerRequirement> all = requirementRepo.findByFiltersNoPaging(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable.getSort());
+        List<Long> influencerIds = all.stream().map(InfluencerRequirement::getInfluencerId)
+                .filter(java.util.Objects::nonNull).distinct().collect(Collectors.toList());
+        Map<Long, List<InfluencerContract>> contractsByInfluencerId = influencerIds.isEmpty()
+                ? new HashMap<>()
+                : influencerContractRepo.findByInfluencerIdIn(influencerIds).stream()
+                        .collect(Collectors.groupingBy(InfluencerContract::getInfluencerId));
+
         List<InfluencerRequirement> missing = new ArrayList<>();
         for (InfluencerRequirement r : all) {
             if (r.getCompletedAt() == null) continue;
-            if (r.getContractLink() != null && !r.getContractLink().trim().isEmpty()) continue;
             Brand brand = r.getBrandId() != null ? brandCache.findById(r.getBrandId()) : null;
             InfluencerTeam team = r.getTeamId() != null ? teamCache.findById(r.getTeamId()) : null;
-            if (!InfluencerTeam.isPerRequirementContract(brand, team)) continue;
+            if (InfluencerTeam.isPerRequirementContract(brand, team)) {
+                if (r.getContractLink() != null && !r.getContractLink().trim().isEmpty()) continue;
+            } else {
+                List<InfluencerContract> contracts = contractsByInfluencerId.getOrDefault(r.getInfluencerId(), Collections.emptyList());
+                boolean matched = contracts.stream().anyMatch(c ->
+                        java.util.Objects.equals(c.getBrandId(), r.getBrandId())
+                        && java.util.Objects.equals(c.getTeamId(), r.getTeamId())
+                        && monthOverlapsContractRange(r.getRequirementMonth(), c.getStartDate(), c.getEndDate()));
+                if (matched) continue;
+            }
             missing.add(r);
         }
         return paginateAndEnrich(missing, pageable);
+    }
+
+    /** 需求月份（yyyyMM）是否落在合同有效期区间内，跟前端 RequirementListPage.vue 的
+     *  monthOverlapsContractRange 保持完全一致的判定口径 */
+    private boolean monthOverlapsContractRange(String yyyyMM, Date startDate, Date endDate) {
+        if (yyyyMM == null || yyyyMM.length() < 6 || startDate == null || endDate == null) return false;
+        try {
+            YearMonth ym = YearMonth.of(Integer.parseInt(yyyyMM.substring(0, 4)), Integer.parseInt(yyyyMM.substring(4, 6)));
+            LocalDate monthStart = ym.atDay(1);
+            LocalDate monthEnd = ym.atEndOfMonth();
+            LocalDate start = toLocalDate(startDate);
+            LocalDate end = toLocalDate(endDate);
+            return !monthStart.isAfter(end) && !start.isAfter(monthEnd);
+        } catch (NumberFormatException | java.time.DateTimeException e) {
+            return false;
+        }
+    }
+
+    /** 不管传进来的实际是 java.util.Date 还是 java.sql.Date 都能正常工作，避免时区转换出偏差 */
+    private LocalDate toLocalDate(Date date) {
+        return new java.sql.Date(date.getTime()).toLocalDate();
     }
 
     /** pageMissingInvoice/pageMissingContract 共用：内存筛选完的结果手动分页，
