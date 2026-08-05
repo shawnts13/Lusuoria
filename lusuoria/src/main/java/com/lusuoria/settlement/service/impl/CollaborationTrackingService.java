@@ -532,10 +532,9 @@ public class CollaborationTrackingService {
         }
 
         // 内部执行人员 + 项目视频类型：这个组合必须已经在"执行人员管理"配置过费率梯度才能保存
-        // （2026-08 新增，Shawn 反馈）——内部执行成本现在完全由系统按梯度价自动算（见
-        // setExecutorCost()），缺配置的组合系统根本算不出该给多少钱，不能让这种记录先保存下来
-        // 再说，Excel 导入走的也是这个 doSave()，同一条规则自动覆盖，不需要在 Excel handler
-        // 那边单独再判断一次。
+        // （2026-08 新增，Shawn 反馈）——内部执行成本现在完全由系统按梯度价自动算，缺配置的
+        // 组合系统根本算不出该给多少钱，不能让这种记录先保存下来再说，Excel 导入走的也是这个
+        // doSave()，同一条规则自动覆盖，不需要在 Excel handler 那边单独再判断一次。
         // 只在这次保存"新指定/改动"了执行人员或视频类型的那一刻才校验——已经保存过的历史
         // 记录，哪怕这个组合缺配置，只要这次没有改动这两个字段，仍然可以正常编辑其他字段
         // （比如改备注），不会被这条新规则卡住，避免大量存量数据从此以后动弹不得。
@@ -544,6 +543,10 @@ public class CollaborationTrackingService {
         // getProjectManagerId()——后两个是 insertable=false/updatable=false 的镜像列，
         // 刚 setExecutor()/setProjectManager() 之后不会立刻反映新值，跟上面 fvCtx 那段
         // isOwnExecutor/isOwnManager 判断用的是同一个道理（见那段注释旁边的写法）。
+        //
+        // 2026-08 二次调整（Shawn 反馈）：新指定/改动执行人员时，顺带直接把系统按梯度算出来的
+        // 内部执行成本存好，不再要求另外打开"内部执行成本"弹窗手动点一次——那个入口因此
+        // 从列表页去掉了（弹窗本身还在，只在自动触发/"不涉及执行人员"这两种场景下用得到）。
         Long newProjectManagerId = tracking.getProjectManager() != null ? tracking.getProjectManager().getId() : null;
         Long newExecutorId = tracking.getExecutor() != null ? tracking.getExecutor().getId() : null;
         boolean executorOrVideoTypeChanged = !java.util.Objects.equals(oldExecutorId, newExecutorId)
@@ -554,6 +557,16 @@ public class CollaborationTrackingService {
                 throw new RuntimeException("内部执行人员 [" + tracking.getExecutor().getName()
                         + "] 在项目负责人名下还没有配置\"" + tracking.getVideoType().getLabel()
                         + "\"这个视频类型的薪资费率梯度，无法保存，请先在\"员工管理\"/\"执行人员管理\"配置后再保存这条记录");
+            }
+            // 新指定/改动执行人员这一步顺带自动算成本，"不涉及执行人员"这个标记本来就跟
+            // "指定了一个真实执行人员"互斥，这里改动了执行人员说明用户明确要安排人，
+            // 先把这个标记复位，不然会跟下面 fvCtx 那段 isOwnExecutor 判断以外的展示逻辑打架
+            tracking.setExecutorCostNotApplicable(false);
+            if (!autoComputeExecutorCostOnAssignment(tracking, tracking.getExecutor(),
+                    existingOrNull != null ? existingOrNull.getId() : null)) {
+                throw new RuntimeException("内部执行人员 [" + tracking.getExecutor().getName()
+                        + "] 在项目负责人名下配置的\"" + tracking.getVideoType().getLabel()
+                        + "\"费率梯度覆盖不到这个月第几条这个数字，请先去\"员工管理\"/\"执行人员管理\"补充档位配置后再保存这条记录");
             }
         }
 
@@ -1071,6 +1084,47 @@ public class CollaborationTrackingService {
             resp.setBreakdown(resp.getBreakdown() + "\n" + specialPayNote);
         }
         return resp;
+    }
+
+    /**
+     * doSave() 专用（2026-08 新增）：编辑表单/Excel 新指定或改动了执行人员时，顺带按费率梯度
+     * 自动算出这一笔的内部执行成本，直接设到 tracking 上（不落库，doSave() 后面统一
+     * trackingRepo.save()）。跟 suggestExecutorCost() 走的是同一套"第几条"排位、封顶逻辑，
+     * 但这里操作的是内存里还没落库的 tracking 本身（新建场景甚至还没有 id），不能像
+     * suggestExecutorCost() 那样通过 id 重新查一遍，所以单独写一份、直接用查询结果现算。
+     * 调用方必须先确认 tiers 非空（hasExecutorPayRateConfigured）——这里只处理"发布时间
+     * 是否已填"和"位次是否在配置的档位覆盖范围内"。
+     *
+     * @param excludeId 这条记录本身如果已经落库过（编辑场景），传它的 id，从"已赋值成本的
+     *                  同类记录"名单里排除自己；新建场景传 null
+     * @return false 表示配置了梯度、但档位覆盖不到这个月第几条这个数字，调用方应该报错拒绝
+     *         保存；发布时间还没填时无法计算"第几条"，直接跳过不设置，仍返回 true（这不是
+     *         "算不出来"的错误，只是现在还不到能算的时候，等填了发布时间后这个方法会在
+     *         下一次保存时重新触发——只要那次保存里 executorId/videoType 也跟着变了；如果
+     *         只是单独补发布时间、executor/videoType 都没变，"编辑时自动流转到已发布"那段
+     *         逻辑会把 progress 带到 PUBLISHED_UNSETTLED，走 updateStatus()/自动弹窗兜底
+     */
+    private boolean autoComputeExecutorCostOnAssignment(CollaborationTracking tracking, Employee executor, Long excludeId) {
+        if (tracking.getPublishDate() == null) return true;
+        List<ExecutorPayRateTier> tiers = executorPayRateTierRepo
+                .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(
+                        tracking.getProjectManager().getId(), executor.getId(), tracking.getVideoType());
+        if (tiers.isEmpty()) return true; // 调用方已经校验过，这里只是防御
+        String month = new SimpleDateFormat("yyyyMM").format(tracking.getPublishDate());
+        List<CollaborationTracking> costedAllTypes = trackingRepo.findCostedOrdersForExecutorAndManager(
+                        executor.getId(), tracking.getProjectManager().getId(), month).stream()
+                .filter(c -> excludeId == null || !c.getId().equals(excludeId))
+                .collect(Collectors.toList());
+        List<CollaborationTracking> costedSameType = costedAllTypes.stream()
+                .filter(c -> c.getVideoType() == tracking.getVideoType())
+                .collect(Collectors.toList());
+        int position = costedSameType.size() + 1;
+        ExecutorPayRateTier matched = findMatchingTier(tiers, position);
+        if (matched == null) return false;
+        tracking.setInternalExecutionCost(capAdjustedRate(matched, costedSameType));
+        tracking.setExecutorCostOverridden(false);
+        tracking.setExecutorCostEverSet(true);
+        return true;
     }
 
     /**
