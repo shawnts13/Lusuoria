@@ -1274,10 +1274,17 @@ public class PayslipService {
      * 触发，请求量本身就是 O(1)，不受员工数量影响。
      */
     private String managementBlockReason(String yearMonth, Long managementEmployeeId, BigDecimal rate) {
+        // 这批"其他员工"的范围必须跟 listForMonth() 给管理层展示的"手下员工列表"完全一致——
+        // 之前这里漏了入职时间过滤（2026-08 修复）：listForMonth() 已经把入职月份晚于
+        // yearMonth 的员工过滤掉了（管理层压根看不到、也确认不了这个人这个月的工资单），
+        // 但这里独立查了一遍全部在职员工、没有同步做这个过滤，导致一个还没入职到这个月的
+        // 新员工，会被误当成"没确认"卡住管理层自己的确认按钮——即便管理层能看到的每一个
+        // "手下员工"其实都已经确认过了。
         List<Employee> activeOthers = employeeRepo.findByIsDeletedFalseOrderByNameAsc().stream()
                 .filter(e -> e.getResignDate() == null)
                 .filter(e -> !e.getId().equals(managementEmployeeId))
                 .filter(e -> !"管理层".equals(e.getRole()))
+                .filter(e -> !isBeforeHireMonth(e, yearMonth))
                 .collect(Collectors.toList());
         if (activeOthers.isEmpty()) return null;
 
