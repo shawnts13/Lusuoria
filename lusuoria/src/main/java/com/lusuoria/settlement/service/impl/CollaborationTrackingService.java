@@ -204,7 +204,9 @@ public class CollaborationTrackingService {
                 ? trackingRepo.findByIdAndIsDeletedFalse(req.getId())
                         .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + req.getId()))
                 : null;
-        return doSave(req, allowStatusUpdateOnEdit, influencer, existing, new DbLookupContext());
+        // 单条保存走的是当前 HTTP 请求线程，SecurityContext 是完整的，这里直接现场取就是准的
+        return doSave(req, allowStatusUpdateOnEdit, influencer, existing, new DbLookupContext(),
+                fieldVisibility.resolve().isFull());
     }
 
     /**
@@ -217,6 +219,8 @@ public class CollaborationTrackingService {
     @Transactional
     public List<CollaborationTracking> createBatch(List<CollaborationTrackingRequest> reqs) {
         requirementService.validateBatchLinkage(reqs);
+        // 同样是当前 HTTP 请求线程，一次性现场取，不用每条都重新查
+        boolean isFullAccess = fieldVisibility.resolve().isFull();
         List<CollaborationTracking> results = new ArrayList<>();
         for (CollaborationTrackingRequest req : reqs) {
             if (req.getId() != null) {
@@ -224,7 +228,7 @@ public class CollaborationTrackingService {
             }
             Influencer influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getInfluencerId())
                     .orElseThrow(() -> new RuntimeException("红人不存在：" + req.getInfluencerId()));
-            results.add(doSave(req, false, influencer, null, new DbLookupContext()));
+            results.add(doSave(req, false, influencer, null, new DbLookupContext(), isFullAccess));
         }
         return results;
     }
@@ -233,11 +237,17 @@ public class CollaborationTrackingService {
      * Excel 批量导入专用：红人、（如果是更新）已有记录、查重/编号分配用的数据，
      * 全部由调用方（CollaborationTrackingExcelHandler）提前批量查好传进来，
      * 这里不再逐行查数据库，只有最后落库这一步是真正的数据库写入。
+     *
+     * canSetFinanceSettlementProgress：调用方（Controller）必须在派发异步导入任务*之前*、
+     * 还在真正的 HTTP 请求线程里就把这个值算好传进来——异步导入线程池（AsyncConfig.importTaskExecutor）
+     * 没有配置 SecurityContext 传递，这里如果现场调 fieldVisibility.resolve()，取到的登录态是空的，
+     * 会被误判成最低权限档（2026-08 修复的 bug，见 requireFinanceForSettlementProgress()）。
      */
     @Transactional
     public CollaborationTracking saveBulk(CollaborationTrackingRequest req, Influencer influencer,
-                                           CollaborationTracking existingOrNull, BulkLookupContext ctx) {
-        CollaborationTracking saved = doSave(req, true, influencer, existingOrNull, ctx);
+                                           CollaborationTracking existingOrNull, BulkLookupContext ctx,
+                                           boolean canSetFinanceSettlementProgress) {
+        CollaborationTracking saved = doSave(req, true, influencer, existingOrNull, ctx, canSetFinanceSettlementProgress);
         // 增量维护批量上下文的索引，供同一批文件里后面的行查重/判断编号占用
         if (saved.getPublishLink() != null && saved.getPublishDate() != null) {
             ctx.dedupIndex.put(
@@ -254,10 +264,14 @@ public class CollaborationTrackingService {
      * 保存的核心逻辑，单条保存和批量导入共用，保证两条路径的校验规则完全一致。
      * 查重/团队校验/编号分配这几步"要问数据库的事"通过 ctx 抽象出去，
      * 不直接在这里查表，具体走数据库还是走内存，由调用方传的 ctx 决定。
+     *
+     * canSetFinanceSettlementProgress：调用方现场算好的"当前操作人是否财务/管理层权限"，
+     * 不在这里面重新调 fieldVisibility.resolve()——Excel 批量导入走的是没有 SecurityContext
+     * 的异步线程，这里如果现场取会一直被误判成最低权限档，见 saveBulk() 的说明。
      */
     private CollaborationTracking doSave(CollaborationTrackingRequest req, boolean allowStatusUpdateOnEdit,
                                           Influencer influencer, CollaborationTracking existingOrNull,
-                                          LookupContext ctx) {
+                                          LookupContext ctx, boolean canSetFinanceSettlementProgress) {
         CollaborationTracking tracking;
 
         if (existingOrNull != null) {
@@ -372,7 +386,7 @@ public class CollaborationTrackingService {
         // （上面"编辑时自动流转"只发生在单条编辑场景，跟这里的分支互斥，不会冲突）
         if (existingOrNull == null || allowStatusUpdateOnEdit) {
             CollaborationProgress oldProgressBeforeSet = tracking.getProgress();
-            requireFinanceForSettlementProgress(tracking.getProgress(), req.getProgress());
+            requireFinanceForSettlementProgress(tracking.getProgress(), req.getProgress(), canSetFinanceSettlementProgress);
             tracking.setProgress(req.getProgress());
             if (!java.util.Objects.equals(oldProgressBeforeSet, req.getProgress())) {
                 tracking.setProgressChangedAt(new Date());
@@ -670,7 +684,7 @@ public class CollaborationTrackingService {
         // 普通员工（项目负责人/执行人员/基础权限）只能流转到"已发布（未结算）"和"折损"这两个终态。
         // 只拦截真正的变动——原样提交回去（值没变）不受影响，跟下面 isSystemManagedChange 的
         // 放行原则保持一致
-        requireFinanceForSettlementProgress(oldProgress, newProgress);
+        requireFinanceForSettlementProgress(oldProgress, newProgress, fieldVisibility.resolve().isFull());
 
         // 倒退检测：红人结款进度当前已有值 + 视频项目进度当前满足条件 + 这次要改成不满足条件的
         // 另一个状态 —— 这种改动需要走管理员审核，不能直接生效。这条路径本身已经是一个受控动作
@@ -806,11 +820,19 @@ public class CollaborationTrackingService {
      * 其余角色（项目负责人/执行人员/基础权限的 STAFF）只能流转到"已发布（未结算）"和"折损"
      * 这两个终态。只拦截真正把值改成这两个状态之一的操作，原样提交回去（值没变，比如
      * Excel 重新导入同一批已经在这两个状态的记录）不受影响。
+     *
+     * isFull 由调用方现场传入，不在这里自己调 fieldVisibility.resolve()——2026-08 修复：
+     * 之前在这里现场解析，doSave() 走 Excel 批量导入这条路径时是在没有 SecurityContext 的
+     * 异步线程（AsyncConfig.importTaskExecutor）里执行的，现场解析永远拿到匿名/空登录态，
+     * 被误判成最低权限档，导致哪怕是 ADMIN/管理层账号发起的导入，只要有一行目标进度是
+     * 这两个状态就会被无条件拒绝（"仅能由财务/管理层设置"）。updateStatus() 走的是正常的
+     * HTTP 请求线程，调用方现场取值就是准的，不受这个问题影响。
      */
-    private void requireFinanceForSettlementProgress(CollaborationProgress oldProgress, CollaborationProgress newProgress) {
+    private void requireFinanceForSettlementProgress(CollaborationProgress oldProgress, CollaborationProgress newProgress,
+                                                       boolean isFull) {
         boolean isSettlementProgress = newProgress == CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST
                 || newProgress == CollaborationProgress.SETTLED;
-        if (isSettlementProgress && newProgress != oldProgress && !fieldVisibility.resolve().isFull()) {
+        if (isSettlementProgress && newProgress != oldProgress && !isFull) {
             throw new RuntimeException("\"已加入客户未结算列表\"/\"客户已结算\"这两个状态仅能由财务/管理层设置");
         }
     }

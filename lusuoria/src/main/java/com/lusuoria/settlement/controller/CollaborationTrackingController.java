@@ -522,7 +522,13 @@ public class CollaborationTrackingController {
         batch = importBatchRepo.save(batch);
 
         byte[] fileBytes = file.getBytes(); // 必须先读成字节数组，HTTP 请求结束后原始文件流就用不了了
-        excelHandler.importDataAsync(batch.getId(), fileBytes, RoleUtil.canViewBaselineFinancials());
+        // "已加入客户未结算列表"/"客户已结算"这两个状态是否允许导入进入，必须在这里、当前
+        // HTTP 请求线程里现场算好传下去——异步导入线程池没有 SecurityContext，进去以后
+        // 再解析登录态只会拿到空的（2026-08 修复：ADMIN/管理层账号导入带这两个状态的行会被
+        // 无差别拒绝），见 CollaborationTrackingService.requireFinanceForSettlementProgress()
+        boolean canSetFinanceSettlementProgress = fieldVisibility.resolve().isFull();
+        excelHandler.importDataAsync(batch.getId(), fileBytes, RoleUtil.canViewBaselineFinancials(),
+                canSetFinanceSettlementProgress);
         return ApiResponse.success(batch.getId());
     }
 
