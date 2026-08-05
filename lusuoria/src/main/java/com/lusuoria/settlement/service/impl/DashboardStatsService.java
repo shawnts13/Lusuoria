@@ -21,6 +21,7 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -106,7 +107,8 @@ public class DashboardStatsService {
         // 内部其他员工成本：财务、IT后勤这两个角色的固定月薪（不跟具体记录挂钩，员工管理里
         // 维护的是"月薪"，这里就是这一个月的固定支出）+ 法务当月的工资（管理层每月手动在
         // "工资单"模块设置，不是固定月薪，设置了就计入，没设置就是0），都要从公司利润里扣掉
-        BigDecimal totalOtherStaffCostRmb = otherStaffCostRmb(1).add(legalStaffCostRmb(yearMonth, yearMonth));
+        BigDecimal totalOtherStaffCostRmb = otherStaffCostRmb(java.util.Collections.singletonList(yearMonth))
+                .add(legalStaffCostRmb(yearMonth, yearMonth));
         BigDecimal totalOtherStaffCostUsd = (rate != null && rate.compareTo(BigDecimal.ZERO) > 0)
                 ? totalOtherStaffCostRmb.divide(rate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
         totalCompanyProfit = totalCompanyProfit.subtract(totalOtherStaffCostUsd);
@@ -189,7 +191,7 @@ public class DashboardStatsService {
         ExchangeRateInfo rateInfo = exchangeRateService.getRateForMonth(endMonth);
         BigDecimal rate = rateInfo.getUsdToCny();
 
-        BigDecimal totalOtherStaffCostRmb = otherStaffCostRmb(touchedMonths.size()).add(legalStaffCostRmb(startMonth, endMonth));
+        BigDecimal totalOtherStaffCostRmb = otherStaffCostRmb(touchedMonths).add(legalStaffCostRmb(startMonth, endMonth));
         BigDecimal totalOtherStaffCostUsd = (rate != null && rate.compareTo(BigDecimal.ZERO) > 0)
                 ? totalOtherStaffCostRmb.divide(rate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
         totalCompanyProfit = totalCompanyProfit.subtract(totalOtherStaffCostUsd);
@@ -333,23 +335,36 @@ public class DashboardStatsService {
         return result;
     }
 
-    /** 财务+IT后勤全部员工的固定月薪合计（人民币），乘以月份数（月份范围下钻会用到） */
-    private BigDecimal otherStaffCostRmb(int monthCount) {
-        BigDecimal sum = BigDecimal.ZERO;
-        for (Employee e : otherStaffEmployees()) {
-            sum = sum.add(safe(e.getFixedMonthlySalary()));
-        }
-        return sum.multiply(BigDecimal.valueOf(monthCount));
+    /**
+     * 该员工在给定月份是否还没入职（入职时间没标注时视为一直在职，不过滤）——2026-08 新增，
+     * 修复"财务/IT后勤固定月薪 × 月份数"这种简化算法把入职之前的月份也算成本的问题
+     * （用户反馈：管理层工资单确认按钮/公司利润被入职时间晚的新员工影响，这里是同一类问题
+     * 在数据看板/年度报告/双月对比这边的表现）。跟 PayslipService.isBeforeHireMonth() 是
+     * 同一套判断逻辑，两个模块目前没有共享工具类，各自维护一份，规则改动时要两边一起改。
+     */
+    private boolean isBeforeHireMonth(Employee e, String yearMonth) {
+        if (e.getHireDate() == null) return false;
+        String hireMonth = new SimpleDateFormat("yyyyMM").format(e.getHireDate());
+        return yearMonth.compareTo(hireMonth) < 0;
     }
 
-    /** 起止月份（yyyyMM）之间一共跨了多少个月，闭区间，比如 202601~202603 = 3 */
-    private int monthCountBetween(String startMonth, String endMonth) {
-        int startY = Integer.parseInt(startMonth.substring(0, 4));
-        int startM = Integer.parseInt(startMonth.substring(4));
-        int endY = Integer.parseInt(endMonth.substring(0, 4));
-        int endM = Integer.parseInt(endMonth.substring(4));
-        int count = (endY - startY) * 12 + (endM - startM) + 1;
-        return Math.max(count, 1);
+    /**
+     * 财务+IT后勤在给定月份列表内的固定月薪合计（人民币）——逐月判断每个人是否已经入职，
+     * 跟法务 legalStaffCostRmb() 是同一个"按月份列表逐月计算"的思路（2026-08 修复）。
+     * 之前是"当前月薪 × 月份数"，会把入职之前的月份也按当前在职算进成本，年度报告/
+     * 双月对比这类跨月查询尤其容易受影响。
+     */
+    private BigDecimal otherStaffCostRmb(List<String> months) {
+        BigDecimal sum = BigDecimal.ZERO;
+        List<Employee> staff = otherStaffEmployees();
+        for (String month : months) {
+            for (Employee e : staff) {
+                if (!isBeforeHireMonth(e, month)) {
+                    sum = sum.add(safe(e.getFixedMonthlySalary()));
+                }
+            }
+        }
+        return sum;
     }
 
     /** 起止月份（yyyyMM）之间逐月展开的列表，闭区间，比如 202601~202603 = [202601, 202602, 202603] */
@@ -426,18 +441,23 @@ public class DashboardStatsService {
     }
 
     // ============ 下钻：内部其他员工成本（按"员工角色-姓名"） ============
-    // 注意：财务/IT后勤这部分成本压根不来自 CollaborationTracking，是固定月薪，按查询的月份
-    // 范围跨了几个月来乘算；法务这部分是管理层每月手动录入的实际值，逐月查 Payslip 表求和，
+    // 注意：财务/IT后勤这部分成本压根不来自 CollaborationTracking，是固定月薪，逐月判断入职
+    // 状态再计入（2026-08 起不再是简单"月薪 × 月份数"，见 otherStaffCostRmb() 的注释）；
+    // 法务这部分是管理层每月手动录入的实际值，逐月查 Payslip 表求和，
     // 两种角色的取数方式不一样，不能用同一套乘法逻辑。
 
     public DashboardDrilldownResponse drilldownOtherStaffCost(String startMonth, String endMonth, String currency) {
         BigDecimal rate = rateForRange(endMonth);
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
-        int monthCount = monthCountBetween(startMonth, endMonth);
+        List<String> months = monthsBetween(startMonth, endMonth);
 
         List<DashboardDrilldownResponse.DrilldownRow> rows = new ArrayList<>();
         for (Employee e : otherStaffEmployees()) {
-            BigDecimal amountRmb = safe(e.getFixedMonthlySalary()).multiply(BigDecimal.valueOf(monthCount));
+            // 按月逐个判断入职状态再计入，不能简单"当前月薪 × 月份数"——那样会把入职之前的
+            // 月份也按当前在职算进这个人的成本（2026-08 修复，跟上面 otherStaffCostRmb() 同一
+            // 个问题、同一个思路修的）
+            long eligibleMonths = months.stream().filter(m -> !isBeforeHireMonth(e, m)).count();
+            BigDecimal amountRmb = safe(e.getFixedMonthlySalary()).multiply(BigDecimal.valueOf(eligibleMonths));
             rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
                     .dimensionLabel(e.getRole() + " - " + e.getName())
                     .dimensionType("role_name")
