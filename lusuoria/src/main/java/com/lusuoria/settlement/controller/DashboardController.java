@@ -114,6 +114,28 @@ public class DashboardController {
     }
 
     /**
+     * 下钻：客户已回款总金额（2026-08 新增，维度选项跟"客户合作价格"完全一样，只是多过滤
+     * 视频项目进度=客户已结算）。startMonth+endMonth 和 startDate+endDate 二选一，见 /summary 说明。
+     */
+    @GetMapping("/drilldown/client-settled-amount")
+    public ApiResponse<DashboardDrilldownResponse> drilldownClientSettledAmount(
+            @RequestParam(required = false) String startMonth,
+            @RequestParam(required = false) String endMonth,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate,
+            @RequestParam(defaultValue = "USD") String currency,
+            @RequestParam(defaultValue = "brand_team") String dimension) {
+        if (!RoleUtil.canViewSensitiveFields()) {
+            return ApiResponse.error(403, "无权限查看财务数据");
+        }
+        if (startMonth == null && (startDate == null || endDate == null)) {
+            return ApiResponse.error(400, "请传入 startMonth+endMonth 或 startDate+endDate");
+        }
+        return ApiResponse.success(
+                dashboardStatsService.drilldownClientSettledAmount(startMonth, endMonth, startDate, endDate, currency, dimension));
+    }
+
+    /**
      * 下钻：红人成本（dimension: brand(默认)|team|account|type|countryMarket|platform，
      * 后两个是2026-07新增）。startMonth+endMonth 和 startDate+endDate 二选一，见 /summary 说明。
      */

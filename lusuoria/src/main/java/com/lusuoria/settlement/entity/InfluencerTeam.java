@@ -58,4 +58,26 @@ public class InfluencerTeam extends BaseEntity {
         if (brand == null || brand.isPerRequirementContract()) return true;
         return team != null && Boolean.TRUE.equals(team.getForcePerRequirementContract());
     }
+
+    /**
+     * 是否涉及"公对公发票"（2026-08 新增，"红人结款"上传发票流程用）。三态：null=没有单独
+     * 配置，跟随品牌方默认（{@link Brand#getDefaultInvolvesCorporateInvoice()}）；显式
+     * true/false 则完全覆盖品牌方默认值（两个方向都支持，不像合同签订周期那样只能单向覆盖）——
+     * 团队有配置就以团队为准，见 {@link #involvesCorporateInvoice(Brand, InfluencerTeam)}。
+     */
+    @Column(name = "involves_corporate_invoice")
+    private Boolean involvesCorporateInvoice;
+
+    /**
+     * 是否涉及公对公发票判定优先级统一入口：团队有显式配置（非 null）就用团队的值（不管是
+     * true 还是 false，都直接覆盖品牌方默认，双向覆盖）；团队没配置时落回品牌方默认值
+     * （null/false 都按"不涉及"处理）。team 为空（该记录没配团队，比如 TEMU海外/ATOMS
+     * 这种品牌方底下没有团队的情况）时完全按品牌方默认值判断。
+     */
+    public static boolean involvesCorporateInvoice(Brand brand, InfluencerTeam team) {
+        if (team != null && team.getInvolvesCorporateInvoice() != null) {
+            return team.getInvolvesCorporateInvoice();
+        }
+        return brand != null && Boolean.TRUE.equals(brand.getDefaultInvolvesCorporateInvoice());
+    }
 }

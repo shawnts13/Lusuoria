@@ -21,4 +21,10 @@ public class InfluencerTeamRequest {
 
     /** 兜底默认合同到期日期（品牌方是"一年签一次合同"时才有意义） */
     private Date defaultContractEndDate;
+
+    /**
+     * 是否涉及"公对公发票"（2026-08 新增）。三态：不传/null=跟随品牌方默认，
+     * 显式 true/false=覆盖品牌方默认（双向覆盖），见 InfluencerTeam.involvesCorporateInvoice()。
+     */
+    private Boolean involvesCorporateInvoice;
 }

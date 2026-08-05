@@ -95,7 +95,7 @@ public class ProgressReminderService {
     /** "结款后更新提示内容"手动触发范围 */
     private static final Set<ReminderCategory> PAYMENT_CATEGORIES = EnumSet.of(
             ReminderCategory.COLLAB_PAYMENT_DUE, ReminderCategory.BRAND_MONTH_END_PAYMENT_DUE,
-            ReminderCategory.INFLUENCER_PAYMENT_DUE);
+            ReminderCategory.INFLUENCER_PAYMENT_DUE, ReminderCategory.INFLUENCER_PAYMENT_RECEIPT_OVERDUE);
     /** "项目流转后更新提示内容"手动触发范围（2026-07 新增，不含 CONTRACT_EXPIRING_SOON——
      * 那一类是按日历/合同到期日驱动的，不是按"进度流转"驱动的，只在每天3点主批次里跑） */
     private static final Set<ReminderCategory> PROJECT_FLOW_CATEGORIES = EnumSet.of(
@@ -141,6 +141,7 @@ public class ProgressReminderService {
             runCollabPaymentDue(today, batchDate);
             runBrandMonthEndPaymentDue(today, batchDate);
             runInfluencerPaymentDue(today, batchDate);
+            runInfluencerPaymentReceiptOverdue(today, batchDate);
             runPmExecutorProgressStall(today, batchDate);
             runFinanceProgressStall(today, batchDate);
             runRequirementInvoiceOverdue(today, batchDate);
@@ -253,6 +254,7 @@ public class ProgressReminderService {
             runCollabPaymentDue(today, batchDate);
             runBrandMonthEndPaymentDue(today, batchDate);
             runInfluencerPaymentDue(today, batchDate);
+            runInfluencerPaymentReceiptOverdue(today, batchDate);
         } catch (RuntimeException e) {
             log.error("进度提醒（结款类）手动重算失败：{}", e.toString(), e);
             throw e;
@@ -606,6 +608,91 @@ public class ProgressReminderService {
     private String formatSettlementMonthLabel(String yyyyMM) {
         if (yyyyMM == null || yyyyMM.length() != 6) return null;
         return yyyyMM.substring(0, 4) + "年" + yyyyMM.substring(4) + "月";
+    }
+
+    /**
+     * 红人结款上传发票逾期（2026-08 新增，"上传发票"功能配套提醒）：只提醒"涉及公对公发票"的
+     * 品牌方-团队组合，付款状态=已付款、且还没上传发票（receiptLink 为空）的结款记录，
+     * 计时起点是"实际付款日"（用户确认：钱付了，发票才该来）——付款状态还是"待付款"的记录
+     * 不计入（哪怕"上传发票"按钮本身不受付款状态限制，逾期提醒只在钱付了之后才有意义）。
+     * 阈值口径完全参照 REQUIREMENT_CONTRACT_OVERDUE（OverdueUrgency 三档，工作日计算）。
+     * 受众固定"财务"（管理层按 hasFullReminderVisibility 全量可见，不需要单独再判一次）。
+     */
+    private void runInfluencerPaymentReceiptOverdue(LocalDate today, Date batchDate) {
+        List<InfluencerPayment> candidates = influencerPaymentRepo.findByIsDeletedFalse().stream()
+                .filter(p -> p.getPaymentStatus() == InfluencerPaymentStatus.PAID)
+                .filter(p -> p.getActualPaymentDate() != null)
+                .filter(p -> p.getReceiptLink() == null || p.getReceiptLink().trim().isEmpty())
+                .collect(Collectors.toList());
+        if (candidates.isEmpty()) return;
+        influencerPaymentService.attachTeamIds(candidates);
+
+        List<Long> candidateIds = candidates.stream().map(InfluencerPayment::getId).collect(Collectors.toList());
+        Map<Long, List<CollaborationTracking>> linkedByPaymentId = new HashMap<>();
+        for (CollaborationTracking t : trackingRepo.findByInfluencerPaymentIdInAndIsDeletedFalse(candidateIds)) {
+            linkedByPaymentId.computeIfAbsent(t.getInfluencerPaymentId(), k -> new ArrayList<>()).add(t);
+        }
+
+        int overdueThreshold = thresholdCache.getInt(ReminderCategory.INFLUENCER_PAYMENT_RECEIPT_OVERDUE, "OVERDUE_THRESHOLD", 14);
+        int mildMaxDays = thresholdCache.getInt(ReminderCategory.INFLUENCER_PAYMENT_RECEIPT_OVERDUE, "TIER_MILD_MAX_DAYS", 3);
+        int moderateMaxDays = thresholdCache.getInt(ReminderCategory.INFLUENCER_PAYMENT_RECEIPT_OVERDUE, "TIER_MODERATE_MAX_DAYS", 7);
+
+        Map<OverdueUrgency, List<ProgressReminderDetail>> byUrgency = new EnumMap<>(OverdueUrgency.class);
+        for (InfluencerPayment p : candidates) {
+            Brand brand = p.getBrandId() != null ? brandCache.findById(p.getBrandId()) : null;
+            boolean involvesInvoice = p.getTeamIds() != null && p.getTeamIds().stream().anyMatch(teamId -> {
+                InfluencerTeam team = teamId != null ? teamCache.findById(teamId) : null;
+                return InfluencerTeam.involvesCorporateInvoice(brand, team);
+            });
+            if (!involvesInvoice) continue;
+
+            int workdays = WorkdayUtil.countWeekdaysInclusive(toLocalDate(p.getActualPaymentDate()), today);
+            int overdueDays = workdays - overdueThreshold;
+            OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays, mildMaxDays, moderateMaxDays);
+            if (urgency == null) continue;
+
+            List<CollaborationTracking> linked = linkedByPaymentId.getOrDefault(p.getId(), Collections.emptyList());
+            if (linked.isEmpty()) continue; // 理论上不会发生，防御性跳过
+
+            ProgressReminderDetail detail = new ProgressReminderDetail();
+            detail.setIsDeleted(false);
+            detail.setTrackingId(linked.get(0).getId());
+            detail.setBrandName(brand != null ? brand.getName() : null);
+            detail.setTeamName(joinTeamNames(p.getTeamIds()));
+            detail.setDemandContent(formatSettlementMonthLabel(p.getSettlementMonth()));
+            detail.setInfluencerCost(p.getPayableAmount());
+            detail.setProgressLabel(p.getPaymentStatus().getLabel());
+            detail.setPublishDate(p.getActualPaymentDate());
+            detail.setCycleDays(p.getCooperationQuantity() != null ? p.getCooperationQuantity() : 0);
+            detail.setDeadlineDate(p.getActualPaymentDate());
+            detail.setOverdueDays(overdueDays);
+            detail.setThresholdDays(overdueThreshold);
+            detail.setRequirementId(p.getId());
+            detail.setInternalRequirementNo(p.getPaymentNo());
+
+            byUrgency.computeIfAbsent(urgency, k -> new ArrayList<>()).add(detail);
+        }
+
+        for (OverdueUrgency urgency : OverdueUrgency.values()) {
+            List<ProgressReminderDetail> details = byUrgency.get(urgency);
+            if (details == null || details.isEmpty()) continue;
+
+            ProgressReminder reminder = new ProgressReminder();
+            reminder.setIsDeleted(false);
+            reminder.setBatchDate(batchDate);
+            reminder.setCategory(ReminderCategory.INFLUENCER_PAYMENT_RECEIPT_OVERDUE);
+            // urgency 是历史 NOT NULL 列，这一类没有实际展示意义，占位填 OVERDUE，
+            // 真正的颜色判断前端按 overdueUrgency 读（跟 saveStallReminder 同一套约定）
+            reminder.setUrgency(ReminderUrgency.OVERDUE);
+            reminder.setOverdueUrgency(urgency);
+            reminder.setAudienceEmployeeRole(FINANCE_ROLE);
+            reminder.setCount(details.size());
+            reminder.setTitle(details.size() + "笔结款记录已付款后长时间未上传发票");
+            reminder = reminderRepo.save(reminder);
+
+            for (ProgressReminderDetail d : details) d.setReminderId(reminder.getId());
+            detailRepo.saveAll(details);
+        }
     }
 
     /**

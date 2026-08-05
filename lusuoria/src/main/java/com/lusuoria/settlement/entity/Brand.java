@@ -100,6 +100,18 @@ public class Brand extends BaseEntity {
     @Column(name = "involves_client_payment_batch")
     private Boolean involvesClientPaymentBatch;
 
+    /**
+     * "红人结款"上传公对公发票流程默认值（2026-08 新增）。跟上面几个 requires.../involves...
+     * 字段方向相反——这个默认是"不涉及"（null/false 都按"不涉及"处理，只有显式设成 true 才是
+     * "涉及"），主要给 TEMU海外、ATOMS 这类品牌方下没有配团队的情况用（没有团队可以单独配置，
+     * 只能在品牌方这一级兜底）。品牌方下有团队时，每个团队可以在"管理团队"单独覆盖
+     * （{@link InfluencerTeam#involvesCorporateInvoice}），团队有显式配置时以团队为准，
+     * 团队没配置（null）时才落回这个品牌方默认值，见
+     * {@link InfluencerTeam#involvesCorporateInvoice(Brand, InfluencerTeam)}。
+     */
+    @Column(name = "default_involves_corporate_invoice")
+    private Boolean defaultInvolvesCorporateInvoice;
+
     /** null 按"需要 invoice"处理，只有显式设成 false 才是"不涉及"——统一用这个方法判断，不要在别处重复 !Boolean.FALSE.equals(...) */
     public boolean requiresInvoiceUpload() {
         return !Boolean.FALSE.equals(requiresInvoice);

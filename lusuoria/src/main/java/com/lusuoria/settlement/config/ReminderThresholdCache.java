@@ -74,6 +74,10 @@ public class ReminderThresholdCache {
             {INFLUENCER_PAYMENT_DUE, "TIER_OVERDUE_MAX_DAYS", "0天或已超期边界（红色，到了/超过预计付款日多少天内算这一档）", 0, "天", 1},
             {INFLUENCER_PAYMENT_DUE, "TIER_NEAR_MAX_DAYS", "临近提醒边界（距离预计付款日还剩多少天内算临近/橙色）", 3, "天", 2},
             {INFLUENCER_PAYMENT_DUE, "TIER_WINDOW_MAX_DAYS", "预告提醒边界（距离预计付款日还剩多少天内开始提醒/绿色）", 7, "天", 3},
+
+            {INFLUENCER_PAYMENT_RECEIPT_OVERDUE, "OVERDUE_THRESHOLD", "红人结款上传发票逾期阈值", 14, "工作日", 1},
+            {INFLUENCER_PAYMENT_RECEIPT_OVERDUE, "TIER_MILD_MAX_DAYS", "轻度提醒边界（超出阈值多少天内算轻度/黄色）", 3, "天", 2},
+            {INFLUENCER_PAYMENT_RECEIPT_OVERDUE, "TIER_MODERATE_MAX_DAYS", "中度提醒边界（超过则为重度/红色）", 7, "天", 3},
     };
 
     private volatile Map<String, Integer> values = new ConcurrentHashMap<>();

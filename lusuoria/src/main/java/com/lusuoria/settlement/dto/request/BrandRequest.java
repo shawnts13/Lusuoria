@@ -29,4 +29,7 @@ public class BrandRequest {
     private Boolean involvesClientOrderId;
     /** 是否涉及"客户方付款批次"（2026-08 新增），null 按"涉及"处理 */
     private Boolean involvesClientPaymentBatch;
+
+    /** "红人结款"上传公对公发票默认值（2026-08 新增），null 按"不涉及"处理（跟上面几个字段方向相反） */
+    private Boolean defaultInvolvesCorporateInvoice;
 }

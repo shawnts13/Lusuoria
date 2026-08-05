@@ -15,6 +15,9 @@ package com.lusuoria.settlement.enums;
  *   REQUIREMENT_CONTRACT_OVERDUE - 需求完成后长时间未上传合同（仅品牌方/团队"每次需求签一次合同"）
  *   CONTRACT_EXPIRING_SOON       - 合同即将到期/已过期（仅品牌方/团队"一年签一次合同"，按红人个人
  *                                  合同优先、团队兜底默认有效期次之判断当前生效合同的到期时间）
+ *   INFLUENCER_PAYMENT_RECEIPT_OVERDUE - 红人结款上传发票逾期（仅"涉及公对公发票"的品牌方-团队
+ *                                  组合，付款状态=已付款后长时间未上传发票，阈值口径跟
+ *                                  REQUIREMENT_CONTRACT_OVERDUE 一致）
  */
 public enum ReminderCategory {
     COLLAB_PAYMENT_DUE("红人合作跟踪临近结款"),
@@ -24,7 +27,8 @@ public enum ReminderCategory {
     FINANCE_PROGRESS_STALL("进度滞留-财务"),
     REQUIREMENT_INVOICE_OVERDUE("Invoice逾期"),
     REQUIREMENT_CONTRACT_OVERDUE("合同上传逾期"),
-    CONTRACT_EXPIRING_SOON("合同即将到期");
+    CONTRACT_EXPIRING_SOON("合同即将到期"),
+    INFLUENCER_PAYMENT_RECEIPT_OVERDUE("红人结款上传发票逾期");
 
     private final String label;
 

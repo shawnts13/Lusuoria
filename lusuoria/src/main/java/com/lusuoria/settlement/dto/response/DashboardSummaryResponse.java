@@ -38,6 +38,14 @@ public class DashboardSummaryResponse {
     /** 客户合作价格合计 */
     private BigDecimal totalClientPrice;
 
+    /**
+     * 客户已回款总金额（2026-08 新增）：本次汇总范围内（当前月份/日期区间），视频项目进度=
+     * "客户已结算"的记录的"客户合作价格"之和（跟 totalClientPrice 同一个字段来源，只是多了
+     * 进度=客户已结算这个过滤条件）。只出现在单月/日期区间的看板顶部汇总里，年度报告、
+     * 双月对比不展示这张卡片（getRangeSummary 等月度聚合路径不填这个字段，留空）。
+     */
+    private BigDecimal totalClientSettledAmount;
+
     /** 红人成本合计 */
     private BigDecimal totalInfluencerCost;
 

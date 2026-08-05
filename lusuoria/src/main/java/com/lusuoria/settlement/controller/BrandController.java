@@ -108,6 +108,7 @@ public class BrandController {
         brand.setContractCycleType(req.getContractCycleType());
         brand.setInvolvesClientOrderId(req.getInvolvesClientOrderId());
         brand.setInvolvesClientPaymentBatch(req.getInvolvesClientPaymentBatch());
+        brand.setDefaultInvolvesCorporateInvoice(req.getDefaultInvolvesCorporateInvoice());
         Brand saved = brandRepo.save(brand);
         brandCache.refresh();
         return ApiResponse.success(saved);

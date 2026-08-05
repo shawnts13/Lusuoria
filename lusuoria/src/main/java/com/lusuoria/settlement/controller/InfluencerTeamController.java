@@ -72,6 +72,9 @@ public class InfluencerTeamController {
         team.setBrandId(req.getBrandId());
         team.setForcePerRequirementContract(Boolean.TRUE.equals(req.getForcePerRequirementContract()));
         team.setDefaultContractEndDate(req.getDefaultContractEndDate());
+        // 三态字段，不像上面 forcePerRequirementContract 那样强制转成 false——null 就是"跟随品牌方默认"，
+        // 原样透传，不能用 Boolean.TRUE.equals(...) 强转，否则"跟随默认"这个状态就没法表达了
+        team.setInvolvesCorporateInvoice(req.getInvolvesCorporateInvoice());
         InfluencerTeam saved = teamRepo.save(team);
         teamCache.refresh();
         return ApiResponse.success(saved);

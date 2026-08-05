@@ -99,4 +99,14 @@ public class InfluencerPayment extends BaseEntity {
 
     @Column(name = "notes", columnDefinition = "TEXT")
     private String notes;
+
+    /**
+     * 公对公发票链接（2026-08 新增，"上传发票"功能，跟"红人需求管理"的Invoice是同一套
+     * "链接贴过来"机制——文件本身存在共享Google Drive文件夹里，这里只存最终的Google Drive链接，
+     * 命名规则用 receipt 而不是 invoice，见 PaymentReceiptModal.vue）。只有这条结款记录涉及的
+     * 品牌方-红人团队组合"涉及公对公发票"（InfluencerTeam.involvesCorporateInvoice()）时才有
+     * 意义；纯记录用途，上传后不会级联触发任何状态流转（跟Invoice上传会推动红人结款进度不同）。
+     */
+    @Column(name = "receipt_link", columnDefinition = "TEXT")
+    private String receiptLink;
 }

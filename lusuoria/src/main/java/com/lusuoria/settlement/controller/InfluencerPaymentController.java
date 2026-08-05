@@ -2,6 +2,7 @@ package com.lusuoria.settlement.controller;
 
 import com.lusuoria.settlement.dto.request.InfluencerPaymentRequest;
 import com.lusuoria.settlement.dto.request.InfluencerPaymentStatusRequest;
+import com.lusuoria.settlement.dto.request.ReceiptLinkRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.dto.response.PaymentCandidateItem;
 import com.lusuoria.settlement.entity.InfluencerPayment;
@@ -142,6 +143,14 @@ public class InfluencerPaymentController {
             @PathVariable Long id, @RequestBody InfluencerPaymentStatusRequest req) {
         if (!accessUtil.canManage()) return ApiResponse.error(403, "无权限修改红人结款状态");
         return ApiResponse.success(paymentService.updateStatus(id, req));
+    }
+
+    /** "上传发票"（公对公发票，2026-08 新增）：管理层/财务都能做，跟 canManage（仅管理层）不同 */
+    @PostMapping("/{id}/receipt-link")
+    public ApiResponse<InfluencerPayment> uploadReceiptLink(
+            @PathVariable Long id, @Valid @RequestBody ReceiptLinkRequest req) {
+        if (!accessUtil.canUploadReceipt()) return ApiResponse.error(403, "无权限上传发票");
+        return ApiResponse.success(paymentService.uploadReceiptLink(id, req.getReceiptLink()));
     }
 
     private Date parseDate(String str) {

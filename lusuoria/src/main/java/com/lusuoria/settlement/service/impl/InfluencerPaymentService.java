@@ -269,6 +269,8 @@ public class InfluencerPaymentService {
             }
         }
 
+        validateInvoiceTeamExclusivity(brand, realTeamIds, includeNoTeam);
+
         List<CollaborationTracking> items = loadAndValidateItems(
                 req.getCollaborationTrackingIds(), req.getBrandId(), realTeamIds, includeNoTeam, null);
 
@@ -446,6 +448,52 @@ public class InfluencerPaymentService {
         if (!info.isComplete()) {
             throw new RuntimeException("该需求尚未整体完成，暂时无法结款：" + reqNo);
         }
+    }
+
+    /**
+     * "涉及公对公发票"的团队不能跟其他团队合并结算（2026-08 新增，"上传发票"功能配套规则）：
+     * 只要这次选定的团队范围里，有任意一个团队（或"不选团队"落回品牌方默认值）解析出
+     * "涉及公对公发票"，那这次结款记录的团队范围就只能是这一个团队/这一项，不能再选其他团队
+     * （不管其他团队涉不涉及发票）——避免一条结款记录横跨"要开发票"和"不用开发票"两种场景，
+     * 导致"上传发票"这个动作语义不清。这个改动不涉及存量数据（上线时红人结款模块还没有
+     * 正式录入数据），也不影响 update()——团队范围创建后就锁定，不会再触发这条校验。
+     */
+    private void validateInvoiceTeamExclusivity(Brand brand, List<Long> realTeamIds, boolean includeNoTeam) {
+        int totalScopeCount = realTeamIds.size() + (includeNoTeam ? 1 : 0);
+        if (totalScopeCount <= 1) return;
+        boolean anyInvoiceInvolved = includeNoTeam && InfluencerTeam.involvesCorporateInvoice(brand, null);
+        if (!anyInvoiceInvolved) {
+            for (InfluencerTeam team : teamRepo.findAllById(realTeamIds)) {
+                if (InfluencerTeam.involvesCorporateInvoice(brand, team)) { anyInvoiceInvolved = true; break; }
+            }
+        }
+        if (anyInvoiceInvolved) {
+            throw new RuntimeException("勾选的团队里有涉及公对公发票的团队，这类团队的结款记录不能跟其他团队合并结算，请单独结款");
+        }
+    }
+
+    /** 这条结款记录整体是否涉及公对公发票：涉及范围内任意一个团队（含"不选团队"落回品牌方默认值）解析为 true 即算涉及。
+     *  受 validateInvoiceTeamExclusivity 约束，正常情况下命中的话这个范围只会有这一项，这里按"任意一项"写是防御性的写法。 */
+    private boolean resolveInvolvesCorporateInvoice(InfluencerPayment payment) {
+        Brand brand = brandCache.findById(payment.getBrandId());
+        List<InfluencerPaymentTeam> scopeRows = paymentTeamRepo.findByInfluencerPaymentIdAndIsDeletedFalse(payment.getId());
+        for (InfluencerPaymentTeam row : scopeRows) {
+            InfluencerTeam team = row.getTeamId() != null ? teamCache.findById(row.getTeamId()) : null;
+            if (InfluencerTeam.involvesCorporateInvoice(brand, team)) return true;
+        }
+        return false;
+    }
+
+    /** "上传发票"：把公对公发票的 Google Drive 链接存到这条结款记录上，纯记录用途，不触发任何联动 */
+    @Transactional
+    public InfluencerPayment uploadReceiptLink(Long id, String receiptLink) {
+        InfluencerPayment payment = paymentRepo.findByIdAndIsDeletedFalse(id)
+                .orElseThrow(() -> new RuntimeException("结款记录不存在"));
+        if (!resolveInvolvesCorporateInvoice(payment)) {
+            throw new RuntimeException("该结款记录不涉及公对公发票，无需上传");
+        }
+        payment.setReceiptLink(receiptLink);
+        return paymentRepo.save(payment);
     }
 
     /**

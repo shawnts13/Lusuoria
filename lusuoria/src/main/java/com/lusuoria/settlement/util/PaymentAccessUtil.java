@@ -19,6 +19,8 @@ public class PaymentAccessUtil {
 
     private static final Set<String> VIEW_ROLES = new HashSet<>(Arrays.asList("管理层", "财务", "法务"));
     private static final String MANAGE_ROLE = "管理层";
+    /** "上传发票"专用（2026-08 新增）：跟 canManage 不同，财务也能做，不是只有管理层 */
+    private static final Set<String> UPLOAD_RECEIPT_ROLES = new HashSet<>(Arrays.asList("管理层", "财务"));
 
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
@@ -30,5 +32,10 @@ public class PaymentAccessUtil {
     /** 是否可写（新增/编辑/状态流转/删除/强改汇率）：仅员工角色 = 管理层 */
     public boolean canManage() {
         return MANAGE_ROLE.equals(employeeRoleUtil.getCurrentEmployeeRole());
+    }
+
+    /** 是否可以"上传发票"：员工角色 = 管理层/财务（2026-08 新增） */
+    public boolean canUploadReceipt() {
+        return UPLOAD_RECEIPT_ROLES.contains(employeeRoleUtil.getCurrentEmployeeRole());
     }
 }

@@ -82,6 +82,7 @@ public class DashboardStatsService {
         List<CollaborationTracking> orders = excludeDamaged(allOrders);
 
         BigDecimal totalClientPrice = BigDecimal.ZERO;
+        BigDecimal totalClientSettledAmount = BigDecimal.ZERO;
         BigDecimal totalInfluencerCost = BigDecimal.ZERO;
         BigDecimal totalOtherCost = BigDecimal.ZERO;
         BigDecimal totalExecCost = BigDecimal.ZERO;
@@ -94,6 +95,9 @@ public class DashboardStatsService {
         for (CollaborationTracking o : orders) {
             Computed c = compute(o);
             totalClientPrice    = totalClientPrice.add(c.clientPrice);
+            if (o.getProgress() == CollaborationProgress.SETTLED) {
+                totalClientSettledAmount = totalClientSettledAmount.add(c.clientPrice);
+            }
             totalInfluencerCost = totalInfluencerCost.add(c.influencerCost);
             totalOtherCost      = totalOtherCost.add(c.otherExternalCost);
             totalExecCost       = totalExecCost.add(c.internalExecutionCost);
@@ -125,6 +129,7 @@ public class DashboardStatsService {
                 .videoProjectCount(videoCount)
                 .damagedVideoProjectCount(damagedVideoCount)
                 .totalClientPrice(convert(totalClientPrice, rate, toRmb))
+                .totalClientSettledAmount(convert(totalClientSettledAmount, rate, toRmb))
                 .totalInfluencerCost(convert(totalInfluencerCost, rate, toRmb))
                 .totalOtherExternalCost(convertFromRmb(totalOtherCost, rate, toRmb))
                 .totalInternalExecutionCost(convertFromRmb(totalExecCost, rate, toRmb))
@@ -162,6 +167,7 @@ public class DashboardStatsService {
         List<CollaborationTracking> orders = excludeDamaged(allOrders);
 
         BigDecimal totalClientPrice = BigDecimal.ZERO;
+        BigDecimal totalClientSettledAmount = BigDecimal.ZERO;
         BigDecimal totalInfluencerCost = BigDecimal.ZERO;
         BigDecimal totalOtherCost = BigDecimal.ZERO;
         BigDecimal totalExecCost = BigDecimal.ZERO;
@@ -174,6 +180,9 @@ public class DashboardStatsService {
         for (CollaborationTracking o : orders) {
             Computed c = compute(o);
             totalClientPrice    = totalClientPrice.add(c.clientPrice);
+            if (o.getProgress() == CollaborationProgress.SETTLED) {
+                totalClientSettledAmount = totalClientSettledAmount.add(c.clientPrice);
+            }
             totalInfluencerCost = totalInfluencerCost.add(c.influencerCost);
             totalOtherCost      = totalOtherCost.add(c.otherExternalCost);
             totalExecCost       = totalExecCost.add(c.internalExecutionCost);
@@ -207,6 +216,7 @@ public class DashboardStatsService {
                 .videoProjectCount(videoCount)
                 .damagedVideoProjectCount(damagedVideoCount)
                 .totalClientPrice(convert(totalClientPrice, rate, toRmb))
+                .totalClientSettledAmount(convert(totalClientSettledAmount, rate, toRmb))
                 .totalInfluencerCost(convert(totalInfluencerCost, rate, toRmb))
                 .totalOtherExternalCost(convertFromRmb(totalOtherCost, rate, toRmb))
                 .totalInternalExecutionCost(convertFromRmb(totalExecCost, rate, toRmb))
@@ -597,7 +607,15 @@ public class DashboardStatsService {
     public DashboardDrilldownResponse drilldownClientPrice(String startMonth, String endMonth,
                                                             String startDate, String endDate,
                                                             String currency, String dimension) {
-        return drilldownAmountByDimension(startMonth, endMonth, startDate, endDate, currency, dimension, c -> c.clientPrice);
+        return drilldownAmountByDimension(startMonth, endMonth, startDate, endDate, currency, dimension, c -> c.clientPrice, false);
+    }
+
+    // ============ 下钻：客户已回款总金额（同"客户合作价格"维度，只是多过滤 进度=客户已结算） ============
+
+    public DashboardDrilldownResponse drilldownClientSettledAmount(String startMonth, String endMonth,
+                                                                     String startDate, String endDate,
+                                                                     String currency, String dimension) {
+        return drilldownAmountByDimension(startMonth, endMonth, startDate, endDate, currency, dimension, c -> c.clientPrice, true);
     }
 
     // ============ 下钻：红人成本（按品牌方/团队/账号/类型） ============
@@ -605,7 +623,7 @@ public class DashboardStatsService {
     public DashboardDrilldownResponse drilldownInfluencerCost(String startMonth, String endMonth,
                                                                String startDate, String endDate,
                                                                String currency, String dimension) {
-        return drilldownAmountByDimension(startMonth, endMonth, startDate, endDate, currency, dimension, c -> c.influencerCost);
+        return drilldownAmountByDimension(startMonth, endMonth, startDate, endDate, currency, dimension, c -> c.influencerCost, false);
     }
 
     // ============ 下钻：项目毛利（按品牌方/团队/账号/类型） ============
@@ -613,7 +631,7 @@ public class DashboardStatsService {
     public DashboardDrilldownResponse drilldownGrossProfit(String startMonth, String endMonth,
                                                             String startDate, String endDate,
                                                             String currency, String dimension) {
-        return drilldownAmountByDimension(startMonth, endMonth, startDate, endDate, currency, dimension, c -> c.grossProfit);
+        return drilldownAmountByDimension(startMonth, endMonth, startDate, endDate, currency, dimension, c -> c.grossProfit, false);
     }
 
     // ============ 下钻：公司利润（美金/人民币，品牌方/团队/账号/类型/品牌方-团队 可切换） ============
@@ -621,7 +639,7 @@ public class DashboardStatsService {
     public DashboardDrilldownResponse drilldownCompanyProfit(String startMonth, String endMonth,
                                                               String startDate, String endDate,
                                                               String currency, String dimension) {
-        return drilldownAmountByDimension(startMonth, endMonth, startDate, endDate, currency, dimension, c -> c.companyProfit);
+        return drilldownAmountByDimension(startMonth, endMonth, startDate, endDate, currency, dimension, c -> c.companyProfit, false);
     }
 
     // ============ 下钻：内部执行人力成本（按项目负责人，或项目负责人-品牌方-团队） ============
@@ -1010,9 +1028,15 @@ public class DashboardStatsService {
 
     private DashboardDrilldownResponse drilldownAmountByDimension(
             String startMonth, String endMonth, String startDate, String endDate, String currency, String dimension,
-            java.util.function.Function<Computed, BigDecimal> extractor) {
+            java.util.function.Function<Computed, BigDecimal> extractor, boolean settledOnly) {
 
         List<CollaborationTracking> orders = excludeDamaged(fetchOrdersForPeriod(startMonth, endMonth, startDate, endDate));
+        // settledOnly=true 供"客户已回款总金额"下钻用：只统计视频项目进度=客户已结算的记录，
+        // 维度/口径其余部分完全跟"客户合作价格"下钻一致（复用同一份分组逻辑）
+        if (settledOnly) {
+            orders = orders.stream().filter(o -> o.getProgress() == CollaborationProgress.SETTLED)
+                    .collect(Collectors.toList());
+        }
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
         Map<String, BigDecimal> monthRateCache = buildMonthRateCache(orders);
 
