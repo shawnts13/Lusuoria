@@ -103,18 +103,25 @@ public class ExecutorPayRateController {
                 List<TierItem> tiers = entry.getValue();
                 if (tiers == null || tiers.isEmpty()) continue;
 
-                List<TierItem> sorted = tiers.stream()
-                        .sorted((a, b) -> a.getMinCount().compareTo(b.getMinCount()))
-                        .collect(Collectors.toList());
-                for (int i = 0; i < sorted.size(); i++) {
-                    TierItem item = sorted.get(i);
-                    boolean isLast = i == sorted.size() - 1;
+                // 必填字段（最低条数/单价）先校验完，再排序——下面排序用的 comparator 会直接对
+                // minCount 调用 compareTo()，缺了这个字段会先 NullPointerException，走不到
+                // 后面这些更友好的报错文案，报出一个用户看不懂的 500（2026-08 修复，同时前端
+                // ExecutorRateFields.vue 也不再允许把不完整的档位悄悄过滤掉再提交，这里是后端兜底）
+                for (TierItem item : tiers) {
                     if (item.getMinCount() == null || item.getMinCount() < 1) {
                         throw new RuntimeException(videoType.getLabel() + "：档位最低条数必须≥1");
                     }
                     if (item.getRate() == null) {
                         throw new RuntimeException(videoType.getLabel() + "：档位单价不能为空");
                     }
+                }
+
+                List<TierItem> sorted = tiers.stream()
+                        .sorted((a, b) -> a.getMinCount().compareTo(b.getMinCount()))
+                        .collect(Collectors.toList());
+                for (int i = 0; i < sorted.size(); i++) {
+                    TierItem item = sorted.get(i);
+                    boolean isLast = i == sorted.size() - 1;
                     if (item.getMaxCount() != null && item.getMaxCount() < item.getMinCount()) {
                         throw new RuntimeException(videoType.getLabel() + "：档位最高条数不能小于最低条数");
                     }
