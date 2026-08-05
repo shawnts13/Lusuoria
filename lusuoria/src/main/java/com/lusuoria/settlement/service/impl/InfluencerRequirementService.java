@@ -705,8 +705,13 @@ public class InfluencerRequirementService {
      * 品牌方-团队/项目视频类型/合作平台/红人视频制作与发布成本/客户合作价格都跟需求（以及
      * 需求某个条目）匹配的。同一个红人可能对应多个品牌方-团队组合，只按红人筛会把其他
      * 品牌方-团队下巧合金额一致的记录也混进来，所以必须先卡死品牌方-团队，2026-07 加上。
-     * 只是筛出候选给用户挑选，真正的名额/一致性校验在确认关联时（linkLegacyTrackings）走
-     * validateTrackingLinkage，这里不重复做名额判断。
+     *
+     * 2026-08 修复：之前这里只匹配 (videoType, platform, 两个单价) 到具体条目，没有排除
+     * "该条目名额已经被占满"的情况——即使需求还没100%完成（比如条目里的其他视频还在实施中，
+     * 没到"已发布"及以后），只要匹配到的这个条目本身已经被现有关联记录占满名额，继续把它的
+     * 候选记录展示出来也没有意义，用户选中确认时必然会被 validateTrackingLinkage() 拒绝。
+     * 现在改成复用 fulfilledCountByItemId() 同一套"名额校验"口径，提前把这些候选过滤掉，
+     * 跟确认关联时（linkLegacyTrackings）的判定保持一致，不会出现"能选但选了必然报错"的记录。
      */
     @Transactional(readOnly = true)
     public List<LegacyTrackingCandidateResponse> findLegacyCandidates(Long influencerId, String internalRequirementNo) {
@@ -717,6 +722,7 @@ public class InfluencerRequirementService {
             throw new RuntimeException("该内部需求编号不属于这个红人");
         }
         List<InfluencerRequirementItem> items = itemRepo.findByRequirementIdOrderByIdAsc(requirement.getId());
+        Map<Long, Integer> fulfilledByItemId = fulfilledCountByItemId(requirement);
         List<CollaborationTracking> unlinked =
                 trackingRepo.findByInfluencerIdAndInternalRequirementNoIsNullAndIsDeletedFalse(influencerId);
 
@@ -727,12 +733,15 @@ public class InfluencerRequirementService {
                 continue;
             }
             String canonicalPlatform = canonicalTrackingPlatform(t.getPlatform());
-            boolean matched = items.stream().anyMatch(item ->
-                    item.getVideoType() == t.getVideoType()
-                    && java.util.Objects.equals(item.getPlatform(), canonicalPlatform)
-                    && amountsEqual(item.getInfluencerUnitCostPrice(), t.getInfluencerCost())
-                    && amountsEqual(item.getClientUnitPrice(), t.getClientPrice()));
-            if (!matched) continue;
+            InfluencerRequirementItem matched = items.stream()
+                    .filter(item -> item.getVideoType() == t.getVideoType()
+                            && java.util.Objects.equals(item.getPlatform(), canonicalPlatform)
+                            && amountsEqual(item.getInfluencerUnitCostPrice(), t.getInfluencerCost())
+                            && amountsEqual(item.getClientUnitPrice(), t.getClientPrice()))
+                    .findFirst().orElse(null);
+            if (matched == null) continue;
+            int fulfilled = fulfilledByItemId.getOrDefault(matched.getId(), 0);
+            if (fulfilled >= matched.getVideoCount()) continue; // 该条目名额已满，不该出现在候选列表里
             LegacyTrackingCandidateResponse r = new LegacyTrackingCandidateResponse();
             r.setTrackingId(t.getId());
             r.setInternalProjectNo(t.getInternalProjectNo());
