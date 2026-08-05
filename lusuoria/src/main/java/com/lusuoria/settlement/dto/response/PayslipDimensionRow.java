@@ -10,7 +10,9 @@ import java.math.BigDecimal;
 /**
  * 工资单明细弹窗里的一行维度数据。三种角色复用同一个结构，具体哪些字段有值取决于
  * PayslipDetailResponse.type：
- *  - PROJECT_MANAGER：brandName/teamName/videoCount/amount（客户合作价格）
+ *  - PROJECT_MANAGER：brandName/teamName/videoCount/amount（客户合作价格）/amount2（红人成本，
+ *    2026-08 新增）/profit（利润=客户合作价格-红人成本-其他外部成本，2026-08 新增，含汇总行+
+ *    明细行；执行人员自己的工资单、以及本类型下面的 executorWageRows 都不涉及，恒为 null）
  *  - EXECUTOR：brandName/teamName/videoType/videoTypeLabel/videoCount/amount（薪酬金额），
  *    2026-07 新增 projectManagerName（这一行属于哪个项目负责人，每行都会标注）
  *  - MANAGEMENT：brandName/teamName/videoCount/amount（客户合作价格）/amount2（红人成本）
@@ -29,6 +31,14 @@ public class PayslipDimensionRow {
     private Long videoCount;
     private BigDecimal amount;
     private BigDecimal amount2;
+    /**
+     * 利润（2026-08 新增，仅 PROJECT_MANAGER 类型的 rows 使用）= 客户合作价格 − 红人成本 −
+     * 其他外部成本，即 DashboardStatsService.Computed.grossProfit——不进一步扣内部执行成本
+     * （那部分是项目负责人自己发给执行人员的，不影响这里展示给项目负责人看的利润口径，
+     * 也不影响提成计算：project负责人自己的订单 isManagementOrder() 恒为 false，可分配利润
+     * 和这里的项目毛利本来就相等）。
+     */
+    private BigDecimal profit;
     /** 是否是汇总行（前端展示上加粗/置底） */
     private Boolean isSummaryRow;
 

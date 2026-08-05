@@ -206,7 +206,9 @@ public class CollaborationTrackingService {
                 : null;
         // 单条保存走的是当前 HTTP 请求线程，SecurityContext 是完整的，这里直接现场取就是准的
         return doSave(req, allowStatusUpdateOnEdit, influencer, existing, new DbLookupContext(),
-                fieldVisibility.resolve().isFull());
+                fieldVisibility.resolve().isFull(),
+                RoleUtil.isAdmin() || "管理层".equals(employeeRoleUtil.getCurrentEmployeeRole()),
+                employeeRoleUtil.getCurrentEmployeeId());
     }
 
     /**
@@ -221,6 +223,8 @@ public class CollaborationTrackingService {
         requirementService.validateBatchLinkage(reqs);
         // 同样是当前 HTTP 请求线程，一次性现场取，不用每条都重新查
         boolean isFullAccess = fieldVisibility.resolve().isFull();
+        boolean isAdminOrManagement = RoleUtil.isAdmin() || "管理层".equals(employeeRoleUtil.getCurrentEmployeeRole());
+        Long currentEmployeeId = employeeRoleUtil.getCurrentEmployeeId();
         List<CollaborationTracking> results = new ArrayList<>();
         for (CollaborationTrackingRequest req : reqs) {
             if (req.getId() != null) {
@@ -228,7 +232,8 @@ public class CollaborationTrackingService {
             }
             Influencer influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getInfluencerId())
                     .orElseThrow(() -> new RuntimeException("红人不存在：" + req.getInfluencerId()));
-            results.add(doSave(req, false, influencer, null, new DbLookupContext(), isFullAccess));
+            results.add(doSave(req, false, influencer, null, new DbLookupContext(), isFullAccess,
+                    isAdminOrManagement, currentEmployeeId));
         }
         return results;
     }
@@ -238,16 +243,19 @@ public class CollaborationTrackingService {
      * 全部由调用方（CollaborationTrackingExcelHandler）提前批量查好传进来，
      * 这里不再逐行查数据库，只有最后落库这一步是真正的数据库写入。
      *
-     * canSetFinanceSettlementProgress：调用方（Controller）必须在派发异步导入任务*之前*、
-     * 还在真正的 HTTP 请求线程里就把这个值算好传进来——异步导入线程池（AsyncConfig.importTaskExecutor）
-     * 没有配置 SecurityContext 传递，这里如果现场调 fieldVisibility.resolve()，取到的登录态是空的，
-     * 会被误判成最低权限档（2026-08 修复的 bug，见 requireFinanceForSettlementProgress()）。
+     * canSetFinanceSettlementProgress/isAdminOrManagement/currentEmployeeId：调用方（Controller）
+     * 必须在派发异步导入任务*之前*、还在真正的 HTTP 请求线程里就把这几个值算好传进来——异步
+     * 导入线程池（AsyncConfig.importTaskExecutor）没有配置 SecurityContext 传递，这里如果现场
+     * 解析登录态只会拿到空的，会被误判成匿名/最低权限档（2026-08 修复的 bug，见
+     * requireFinanceForSettlementProgress() 和 doSave() 里"内部执行人员"那段校验的注释）。
      */
     @Transactional
     public CollaborationTracking saveBulk(CollaborationTrackingRequest req, Influencer influencer,
                                            CollaborationTracking existingOrNull, BulkLookupContext ctx,
-                                           boolean canSetFinanceSettlementProgress) {
-        CollaborationTracking saved = doSave(req, true, influencer, existingOrNull, ctx, canSetFinanceSettlementProgress);
+                                           boolean canSetFinanceSettlementProgress,
+                                           boolean isAdminOrManagement, Long currentEmployeeId) {
+        CollaborationTracking saved = doSave(req, true, influencer, existingOrNull, ctx, canSetFinanceSettlementProgress,
+                isAdminOrManagement, currentEmployeeId);
         // 增量维护批量上下文的索引，供同一批文件里后面的行查重/判断编号占用
         if (saved.getPublishLink() != null && saved.getPublishDate() != null) {
             ctx.dedupIndex.put(
@@ -265,13 +273,15 @@ public class CollaborationTrackingService {
      * 查重/团队校验/编号分配这几步"要问数据库的事"通过 ctx 抽象出去，
      * 不直接在这里查表，具体走数据库还是走内存，由调用方传的 ctx 决定。
      *
-     * canSetFinanceSettlementProgress：调用方现场算好的"当前操作人是否财务/管理层权限"，
-     * 不在这里面重新调 fieldVisibility.resolve()——Excel 批量导入走的是没有 SecurityContext
-     * 的异步线程，这里如果现场取会一直被误判成最低权限档，见 saveBulk() 的说明。
+     * canSetFinanceSettlementProgress/isAdminOrManagement/currentEmployeeId：都是调用方现场
+     * 算好传进来的"当前操作人是谁/什么权限"，不在这里面重新解析登录态——Excel 批量导入走的是
+     * 没有 SecurityContext 的异步线程，这里如果现场取会一直被误判成匿名/最低权限档，
+     * 见 saveBulk() 的说明。
      */
     private CollaborationTracking doSave(CollaborationTrackingRequest req, boolean allowStatusUpdateOnEdit,
                                           Influencer influencer, CollaborationTracking existingOrNull,
-                                          LookupContext ctx, boolean canSetFinanceSettlementProgress) {
+                                          LookupContext ctx, boolean canSetFinanceSettlementProgress,
+                                          boolean isAdminOrManagement, Long currentEmployeeId) {
         CollaborationTracking tracking;
 
         if (existingOrNull != null) {
@@ -489,13 +499,14 @@ public class CollaborationTrackingService {
         }
 
         // 内部执行人员：只有编辑且这个字段真的变了时才校验（新建记录不受限，还没有"该记录负责人"
-        // 这个概念）——ADMIN、员工角色=管理层、或改动前的项目负责人本人才能改，其余人报错
+        // 这个概念）——ADMIN、员工角色=管理层、或改动前的项目负责人本人才能改，其余人报错。
+        // isAdminOrManagement/currentEmployeeId 由调用方现场传入，不在这里现场调
+        // RoleUtil.isAdmin()/employeeRoleUtil.get*()——原因跟 requireFinanceForSettlementProgress()
+        // 一样：doSave() 走 Excel 批量导入这条路径时是在没有 SecurityContext 的异步线程里执行的，
+        // 现场解析永远拿到空登录态（2026-08 修复，同一次一起改的 bug）
         if (existingOrNull != null && !java.util.Objects.equals(oldExecutorId, req.getExecutorId())) {
-            boolean isAdmin = RoleUtil.isAdmin();
-            boolean isManagementEmployee = "管理层".equals(employeeRoleUtil.getCurrentEmployeeRole());
-            Long currentEmpId = employeeRoleUtil.getCurrentEmployeeId();
-            boolean isOwnManager = currentEmpId != null && currentEmpId.equals(oldProjectManagerId);
-            if (!isAdmin && !isManagementEmployee && !isOwnManager) {
+            boolean isOwnManager = currentEmployeeId != null && currentEmployeeId.equals(oldProjectManagerId);
+            if (!isAdminOrManagement && !isOwnManager) {
                 throw new RuntimeException("只有该记录的项目负责人或管理层可以更改内部执行人员");
             }
         }

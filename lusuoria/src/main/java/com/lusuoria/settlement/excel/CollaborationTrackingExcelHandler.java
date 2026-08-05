@@ -285,27 +285,32 @@ public class CollaborationTrackingExcelHandler {
 
     // ============ 导入 ============
     /** 保留 MultipartFile 入口，兼容以后可能需要同步调用的场景 */
-    public List<String> importData(MultipartFile file, boolean canViewSensitive, boolean canSetFinanceSettlementProgress) throws IOException {
-        return importData(file.getInputStream(), canViewSensitive, canSetFinanceSettlementProgress);
+    public List<String> importData(MultipartFile file, boolean canViewSensitive, boolean canSetFinanceSettlementProgress,
+                                    boolean isAdminOrManagement, Long currentEmployeeId) throws IOException {
+        return importData(file.getInputStream(), canViewSensitive, canSetFinanceSettlementProgress,
+                isAdminOrManagement, currentEmployeeId);
     }
 
     /**
      * 异步导入入口：立即返回，实际处理放到后台线程跑完再回填批次记录。
      * 用有界线程池（importTaskExecutor），避免服务器同时处理太多导入任务。
      *
-     * canSetFinanceSettlementProgress：调用方（Controller）必须在这次异步调度*之前*、还在
-     * 真正的 HTTP 请求线程里把这个值算好传进来——importTaskExecutor 这个线程池没有配置
-     * SecurityContext 传递，这里/往下传的 doSave() 里如果现场再去解析登录态，只会拿到空的，
-     * 见 CollaborationTrackingService.requireFinanceForSettlementProgress() 的注释。
+     * canSetFinanceSettlementProgress/isAdminOrManagement/currentEmployeeId：调用方（Controller）
+     * 必须在这次异步调度*之前*、还在真正的 HTTP 请求线程里把这几个值算好传进来——
+     * importTaskExecutor 这个线程池没有配置 SecurityContext 传递，这里/往下传的 doSave() 里
+     * 如果现场再去解析登录态，只会拿到空的，见
+     * CollaborationTrackingService.requireFinanceForSettlementProgress()、doSave() 里
+     * "内部执行人员"那段校验的注释。
      */
     @org.springframework.scheduling.annotation.Async("importTaskExecutor")
     public void importDataAsync(Long batchId, byte[] fileBytes, boolean canViewSensitive,
-                                 boolean canSetFinanceSettlementProgress) {
+                                 boolean canSetFinanceSettlementProgress,
+                                 boolean isAdminOrManagement, Long currentEmployeeId) {
         ImportBatch batch = importBatchRepo.findById(batchId).orElse(null);
         if (batch == null) return; // 理论上不会发生，防御性判断
         try {
             List<String> errors = importData(new java.io.ByteArrayInputStream(fileBytes), canViewSensitive,
-                    canSetFinanceSettlementProgress, (processed, total) -> {
+                    canSetFinanceSettlementProgress, isAdminOrManagement, currentEmployeeId, (processed, total) -> {
                         // 每处理一批就回写一次进度，前端"导入历史"页面轮询的时候就能看到实时进度
                         batch.setTotalRows(total);
                         batch.setProcessedCount(processed);
@@ -345,8 +350,10 @@ public class CollaborationTrackingExcelHandler {
      * MultipartFile 早就不能用了，只能先把文件内容读成字节数组存起来，后台线程处理时
      * 用 ByteArrayInputStream 包一层传进来。
      */
-    public List<String> importData(InputStream fileStream, boolean canViewSensitive, boolean canSetFinanceSettlementProgress) throws IOException {
-        return importData(fileStream, canViewSensitive, canSetFinanceSettlementProgress, (processed, total) -> {});
+    public List<String> importData(InputStream fileStream, boolean canViewSensitive, boolean canSetFinanceSettlementProgress,
+                                    boolean isAdminOrManagement, Long currentEmployeeId) throws IOException {
+        return importData(fileStream, canViewSensitive, canSetFinanceSettlementProgress,
+                isAdminOrManagement, currentEmployeeId, (processed, total) -> {});
     }
 
     /**
@@ -355,6 +362,7 @@ public class CollaborationTrackingExcelHandler {
      * 同步入口传一个空回调就行，不影响原来的行为。
      */
     public List<String> importData(InputStream fileStream, boolean canViewSensitive, boolean canSetFinanceSettlementProgress,
+                                    boolean isAdminOrManagement, Long currentEmployeeId,
                                     java.util.function.BiConsumer<Integer, Integer> progressCallback) throws IOException {
         List<String> errors = new ArrayList<String>();
         Workbook workbook = WorkbookFactory.create(fileStream);
@@ -683,7 +691,8 @@ public class CollaborationTrackingExcelHandler {
 
                 // 内部项目编号：新建时会自动生成一次（走内存里的编号池，不查库）；
                 // 命中更新分支时 id 不为空，会保留数据库里原有的编号，不会重新生成
-                trackingService.saveBulk(req, influencer, existingOrNull, bulkCtx, canSetFinanceSettlementProgress);
+                trackingService.saveBulk(req, influencer, existingOrNull, bulkCtx, canSetFinanceSettlementProgress,
+                        isAdminOrManagement, currentEmployeeId);
 
                 if (isUpdate) updatedCount++; else createdCount++;
             } catch (Exception e) {

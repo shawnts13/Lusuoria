@@ -28,6 +28,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -105,6 +106,7 @@ public class PayslipService {
         List<Employee> employees = employeeRepo.findByIsDeletedFalseOrderByNameAsc().stream()
                 .filter(e -> e.getResignDate() == null)
                 .filter(e -> !"管理层".equals(e.getRole()))
+                .filter(e -> !isBeforeHireMonth(e, yearMonth))
                 .filter(e -> roleFilter == null || roleFilter.trim().isEmpty() || matchesRoleFilter(e.getRole(), roleFilter))
                 .sorted(Comparator.comparingInt((Employee e) -> {
                     int idx = ROLE_DISPLAY_ORDER.indexOf(e.getRole());
@@ -390,7 +392,7 @@ public class PayslipService {
             if (!emp.getId().equals(o.getProjectManagerId())) continue;
             DashboardStatsService.Computed c = dashboardStatsService.compute(o);
             totalCommission = totalCommission.add(c.commissionAmount);
-            accumulatePmRow(grouped, o, c.clientPrice);
+            accumulatePmRow(grouped, o, c);
         }
         List<CommissionBonusTier> tiers = commissionBonusService
                 .findTiersByEmployeeIds(Collections.singletonList(emp.getId()))
@@ -562,7 +564,7 @@ public class PayslipService {
             if (mgrId != null && pmById.containsKey(mgrId)) {
                 DashboardStatsService.Computed c = dashboardStatsService.compute(o);
                 pmCommission.merge(mgrId, c.commissionAmount, BigDecimal::add);
-                accumulatePmRow(pmGrouped.computeIfAbsent(mgrId, k -> new LinkedHashMap<>()), o, c.clientPrice);
+                accumulatePmRow(pmGrouped.computeIfAbsent(mgrId, k -> new LinkedHashMap<>()), o, c);
             }
         }
 
@@ -626,14 +628,24 @@ public class PayslipService {
 
     // ================= 维度行累加 / 组装（单个员工、批量两条路径共用） =================
 
-    private void accumulatePmRow(Map<String, PayslipDimensionRow> grouped, CollaborationTracking o, BigDecimal clientPrice) {
+    /**
+     * 2026-08 新增：连带累加红人成本（amount2）、利润（profit=grossProfit），供项目负责人工资单
+     * 详情展示提成金额的计算依据——不能只看合计的提成金额，得让项目负责人看得到"利润是怎么
+     * 算出来的"。三个数字都取自同一个 Computed，跟 totalCommission 用的是同一份计算结果，
+     * 不会出现"分别现算导致对不上"的问题。
+     */
+    private void accumulatePmRow(Map<String, PayslipDimensionRow> grouped, CollaborationTracking o,
+                                  DashboardStatsService.Computed c) {
         String brandName = dashboardStatsService.brandNameOf(o.getBrandId());
         String teamName = dashboardStatsService.teamNameOf(o.getTeam());
         PayslipDimensionRow row = grouped.computeIfAbsent(brandName + "|" + teamName, k ->
                 PayslipDimensionRow.builder().brandName(brandName).teamName(teamName)
-                        .videoCount(0L).amount(BigDecimal.ZERO).isSummaryRow(false).build());
+                        .videoCount(0L).amount(BigDecimal.ZERO).amount2(BigDecimal.ZERO)
+                        .profit(BigDecimal.ZERO).isSummaryRow(false).build());
         row.setVideoCount(row.getVideoCount() + 1);
-        row.setAmount(row.getAmount().add(clientPrice));
+        row.setAmount(row.getAmount().add(c.clientPrice));
+        row.setAmount2(row.getAmount2().add(c.influencerCost));
+        row.setProfit(row.getProfit().add(c.grossProfit));
     }
 
     /**
@@ -1034,15 +1046,20 @@ public class PayslipService {
         long count = 0;
         BigDecimal amount = BigDecimal.ZERO;
         BigDecimal amount2 = BigDecimal.ZERO;
+        // profit 只有 PROJECT_MANAGER 的明细行会赋值（见 accumulatePmRow），其余类型的行这个
+        // 字段恒为 null，按0处理即可——这里统一汇总不区分调用方是哪个类型，无害
+        BigDecimal profit = BigDecimal.ZERO;
         for (PayslipDimensionRow r : rows) {
             count += r.getVideoCount() != null ? r.getVideoCount() : 0;
             amount = amount.add(r.getAmount() != null ? r.getAmount() : BigDecimal.ZERO);
             amount2 = amount2.add(r.getAmount2() != null ? r.getAmount2() : BigDecimal.ZERO);
+            profit = profit.add(r.getProfit() != null ? r.getProfit() : BigDecimal.ZERO);
         }
         return PayslipDimensionRow.builder()
                 .brandName("汇总").videoCount(count)
                 .amount(amount.setScale(SCALE, RoundingMode.HALF_UP))
                 .amount2(amount2.setScale(SCALE, RoundingMode.HALF_UP))
+                .profit(profit.setScale(SCALE, RoundingMode.HALF_UP))
                 .isSummaryRow(true)
                 .build();
     }
@@ -1149,6 +1166,7 @@ public class PayslipService {
                     .videoCount(r.getVideoCount())
                     .amount(convertAmount(r.getAmount(), amountIsRmb, rate, toRmb))
                     .amount2(convertAmount(r.getAmount2(), false, rate, toRmb))
+                    .profit(convertAmount(r.getProfit(), false, rate, toRmb))
                     .unitPrice(convertAmount(r.getUnitPrice(), amountIsRmb, rate, toRmb))
                     .isSummaryRow(r.getIsSummaryRow())
                     .isTierSummaryRow(r.getIsTierSummaryRow())
@@ -1180,6 +1198,19 @@ public class PayslipService {
     private boolean matchesRoleFilter(String role, String filter) {
         if ("财务和IT后勤".equals(filter)) return FIXED_SALARY_ROLES.contains(role);
         return filter.equals(role);
+    }
+
+    /**
+     * 2026-08 新增：该员工在"员工管理"标注的"入职时间"，是否晚于（按月比较）当前查询的这个
+     * 月份——是的话这个月的工资单列表不该包含这条员工记录（入职之前不该有工资单）。
+     * 没标注入职时间（历史遗留员工）时不过滤，保持原来的行为，不强行拦掉查不到入职时间的人。
+     * 用 yyyy-MM 字符串比较而不是 Date 比较，是因为只关心"月份"这个粒度，不关心具体哪一天
+     * 入职——同一个月入职的，这个月照常有工资单，不做按天折算。
+     */
+    private boolean isBeforeHireMonth(Employee e, String yearMonth) {
+        if (e.getHireDate() == null) return false;
+        String hireMonth = new SimpleDateFormat("yyyy-MM").format(e.getHireDate());
+        return yearMonth.compareTo(hireMonth) < 0;
     }
 
     private PayslipRowResponse toRowResponse(Employee emp, String yearMonth, String currency,
