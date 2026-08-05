@@ -464,10 +464,13 @@ public class PayslipService {
         rows.sort((a, b) -> b.getVideoCount().compareTo(a.getVideoCount()));
         rows.add(buildSummaryRow(rows));
 
-        // 内部其他员工成本：财务/IT后勤固定月薪合计（人民币），换算成美金扣减
+        // 内部其他员工成本：财务/IT后勤固定月薪合计（人民币），换算成美金扣减。
+        // 同样要按入职时间过滤（2026-08 修复，跟 listForMonth()/managementBlockReason() 保持
+        // 一致口径）——不然入职月份晚于 yearMonth 的财务/IT后勤员工，固定月薪会被提前算进
+        // 更早月份的公司利润扣减项里，把那些月份的公司利润少算了。
         BigDecimal otherStaffCostRmb = BigDecimal.ZERO;
         for (Employee e : employeeRepo.findByIsDeletedFalseOrderByNameAsc()) {
-            if (FIXED_SALARY_ROLES.contains(e.getRole())) {
+            if (FIXED_SALARY_ROLES.contains(e.getRole()) && !isBeforeHireMonth(e, yearMonth)) {
                 otherStaffCostRmb = otherStaffCostRmb.add(dashboardStatsService.safe(e.getFixedMonthlySalary()));
             }
         }
