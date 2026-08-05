@@ -960,20 +960,25 @@ public class CollaborationTrackingService {
 
         // 位次/笔数计算（2026-08 修复）：上面已经把这条记录自己从 costedSameType 里排除掉了
         // （见 costedAllTypes 那处 filter 的注释），但不能简单"排除自己后的数量 + 1"当成
-        // "最新一笔"来算位次——这个假设只在"这条记录恰好是这个月按id顺序最后一个被设置成本的"
-        // 时才成立。如果这条记录不是已知记录里id最大的那个（比如后来又有别的记录被设置了成本，
-        // id比它大，但这条记录本身id更早），"排除自己数量+1"会把它错误地推到序列末尾，导致
-        // "已经处理了111笔...该笔(第112笔)"这种笔数被多算1的错误——不管这条记录id实际排在
-        // 第几，永远显示成"最后一笔"（用户反馈：已经设置过执行成本的记录，笔数会多算1）。
-        // 正确做法：用它在"同类型已赋值成本名单（含它自己）"里按 id 升序排列的真实位次，
-        // 也就是"id 比它小的同类型已赋值记录数 + 1"——这样不管它在这个月的顺序中处于中间还是
-        // 末尾，位次都准确，且不受"后来又有别的记录被设置成本"影响。
+        // "最新一笔"来算位次——这个假设只在"这条记录恰好是这个月排在最后一个被设置成本的"
+        // 时才成立。如果这条记录不是排在最后（比如后来又有别的、排在它之前的记录被设置了
+        // 成本），"排除自己数量+1"会把它错误地推到序列末尾，导致"已经处理了111笔...该笔
+        // (第112笔)"这种笔数被多算1的错误——不管这条记录实际排第几，永远显示成"最后一笔"
+        // （用户反馈：已经设置过执行成本的记录，笔数会多算1）。
+        // 正确做法：用它在"同类型已赋值成本名单（含它自己）"里的真实位次，也就是
+        // "排在它之前的同类型已赋值记录数 + 1"。
+        // "排在它之前"用 publishDate 判断（同一天用 id 兜底），不能再用 id——findCostedOrdersForExecutorAndManager
+        // 已经改成按 publishDate 排序了，原因见那条查询的注释：id 只是"创建/导入顺序"，
+        // 不是"发布顺序"，批量导入的历史数据尤其容易错位，且用 id 判断"排在它之前"这个位次
+        // 本身还是会随着"后来又有别的、id 更小的记录被设置成本"而漂移，只是漂移方向不再永远
+        // 把自己推到最后而已，并没有真正稳定下来。发布时间是每条记录自己就带着、不会因为
+        // 别的记录变化而改变的客观事实，才是真正稳定的排位依据。
         // 还没设置过成本的记录（走 else 分支）本来就不在 costedSameType 里，"排除自己数量+1"
         // 对这种情况仍然是对的（它会成为下一个被处理的，也就是当前笔数+1）
         int countSoFar;
         int position;
         if (alreadySet) {
-            countSoFar = (int) costedSameType.stream().filter(c -> c.getId() < t.getId()).count();
+            countSoFar = (int) costedSameType.stream().filter(c -> isBeforeInCostOrder(c, t)).count();
             position = countSoFar + 1;
         } else {
             countSoFar = costedSameType.size();
@@ -1019,6 +1024,22 @@ public class CollaborationTrackingService {
             resp.setBreakdown(resp.getBreakdown() + "\n" + specialPayNote);
         }
         return resp;
+    }
+
+    /**
+     * "第几条"排位用：a 是否排在 b 之前——按 publishDate 比较，同一天（或极少数缺失发布时间
+     * 的脏数据兜底场景）用 id 比较，保证结果确定。必须跟 findCostedOrdersForExecutorAndManager
+     * 查询用的排序规则完全一致，否则这里现算出来的位次会跟那条查询返回的列表顺序对不上。
+     */
+    private boolean isBeforeInCostOrder(CollaborationTracking a, CollaborationTracking b) {
+        Date da = a.getPublishDate();
+        Date db = b.getPublishDate();
+        if (da != null && db != null && !da.equals(db)) {
+            return da.before(db);
+        }
+        if (da == null && db != null) return true;   // 缺失发布时间的排最前，纯兜底，正常业务流程走不到
+        if (da != null && db == null) return false;
+        return a.getId() < b.getId();
     }
 
     /** 按"这个月第几条"找到覆盖这个数字的档位，tiers 必须已经按 minCount 升序排好 */

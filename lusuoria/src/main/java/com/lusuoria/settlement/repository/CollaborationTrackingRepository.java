@@ -364,17 +364,30 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
 
     /**
      * 内部执行成本梯度分档计算专用：某执行人员在某"发布时间"月份下、某个具体项目负责人名下，
-     * 已经赋值过内部执行成本的全部记录（不分视频类型，按 id 升序排列，用 id 顺序近似代表实际
-     * 处理顺序）。2026-07 起四个视频类型统一走"按当月累计条数分档"的梯度结构
-     * （见 ExecutorPayRateTier），CollaborationTrackingService 在内存里按 videoType 再分桶，
-     * 分别判断第几笔、分档、以及"不封顶那档"的当月累计封顶金额，不需要针对某个视频类型
-     * 单独开一条查询。
+     * 已经赋值过内部执行成本的全部记录（不分视频类型，按 publishDate 升序排列，同一天的用 id
+     * 兜底排序保证结果确定）。
+     *
+     * 2026-08 修复：排序字段之前用的是 id（创建/导入进系统的先后），注释里当时也承认这只是
+     * "近似代表实际处理顺序"——批量 Excel 导入的历史数据尤其容易失真：一批记录几乎同一时刻
+     * 导入、id 连号，但它们真实的视频发布时间可能横跨好几周，而项目负责人设置内部执行成本的
+     * 先后顺序往往是跟着发布时间走的，不是跟着导入顺序走的。更麻烦的是"第几条"是每次现算的，
+     * 不是设置成本那一刻就固定下来的——后面只要又有别的、id 更小的记录被设置了成本，
+     * 前面已经设置过的记录重新计算出来的"第几条"就会跟着往后挪，掉进下一档，导致明明当初
+     * 填对了价格的记录，事后被 CollaborationTrackingService.computeSpecialPayNote() 误判成
+     * "特殊薪酬"（用户反馈：这类误判笔数在批量导入过的月份尤其多）。
+     * 改成按 publishDate 排序后，排位依据是每条记录自己就带着、发布之后不会再变的客观事实，
+     * 不会被后续别的记录是否设置了成本影响——不需要新增字段/不需要补历史数据，
+     * 存量记录和以后新记录用的是同一套排序逻辑，一次性都修好了。
+     *
+     * 2026-07 起四个视频类型统一走"按当月累计条数分档"的梯度结构（见 ExecutorPayRateTier），
+     * CollaborationTrackingService 在内存里按 videoType 再分桶，分别判断第几笔、分档、以及
+     * "不封顶那档"的当月累计封顶金额，不需要针对某个视频类型单独开一条查询。
      */
     @Query("SELECT c FROM CollaborationTracking c WHERE c.isDeleted = false " +
            "AND c.executorId = :executorId AND c.projectManagerId = :managerId " +
            "AND c.internalExecutionCost IS NOT NULL " +
            "AND FUNCTION('to_char', c.publishDate, 'YYYYMM') = :month " +
-           "ORDER BY c.id ASC")
+           "ORDER BY c.publishDate ASC, c.id ASC")
     List<CollaborationTracking> findCostedOrdersForExecutorAndManager(
             @Param("executorId") Long executorId, @Param("managerId") Long managerId, @Param("month") String month);
 
