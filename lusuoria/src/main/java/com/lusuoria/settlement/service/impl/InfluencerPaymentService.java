@@ -270,6 +270,7 @@ public class InfluencerPaymentService {
         }
 
         validateInvoiceTeamExclusivity(brand, realTeamIds, includeNoTeam);
+        validateReconcileDateIfNeeded(brand, req.getReconcileDate());
 
         List<CollaborationTracking> items = loadAndValidateItems(
                 req.getCollaborationTrackingIds(), req.getBrandId(), realTeamIds, includeNoTeam, null);
@@ -333,6 +334,8 @@ public class InfluencerPaymentService {
         for (InfluencerPaymentTeam row : paymentTeamRepo.findByInfluencerPaymentIdAndIsDeletedFalse(id)) {
             if (row.getTeamId() == null) includeNoTeam = true; else realTeamIds.add(row.getTeamId());
         }
+
+        validateReconcileDateIfNeeded(brandCache.findById(payment.getBrandId()), req.getReconcileDate());
 
         List<CollaborationTracking> newItems = loadAndValidateItems(
                 req.getCollaborationTrackingIds(), payment.getBrandId(), realTeamIds, includeNoTeam, payment.getId());
@@ -447,6 +450,19 @@ public class InfluencerPaymentService {
         if (info == null) throw new RuntimeException("需求不存在：" + reqNo);
         if (!info.isComplete()) {
             throw new RuntimeException("该需求尚未整体完成，暂时无法结款：" + reqNo);
+        }
+    }
+
+    /**
+     * 品牌方付款周期=月结（MONTH_END）时，"对账日期"是判断结款日的必要依据
+     * （expectedPaymentDate = 对账日期所在月底 + daysAfterMonthEnd，见 computeCycleInfo/
+     * PaymentFormModal.vue 的 brandCycleHint/tryAutoFillExpectedPaymentDate），必填；
+     * 其余付款周期（按红人成本阈值分档等）不依赖对账日期，保持可选，跟前端校验保持一致
+     * （2026-08 新增，新建/编辑都要校验——对账日期不像团队范围那样创建后锁定，编辑时仍可改）。
+     */
+    private void validateReconcileDateIfNeeded(Brand brand, Date reconcileDate) {
+        if (brand != null && brand.getPaymentCycleType() == PaymentCycleType.MONTH_END && reconcileDate == null) {
+            throw new RuntimeException("该品牌方为月结，请填写对账日期");
         }
     }
 
