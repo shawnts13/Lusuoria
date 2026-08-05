@@ -168,6 +168,13 @@ public class CollaborationTracking extends BaseEntity {
     /**
      * oldMaterialSourceLink 归一化后的版本，仅供后端查重用，不通过 API 暴露。
      * 由 CollaborationTrackingService 在保存时自动计算填充。
+     *
+     * 注意：这里的 unique=true 是数据库层面的物理唯一约束，不认"软删除"——记录被删除
+     * （isDeleted=true）后如果不清空这两个字段，它仍然占着这个值，后面别的记录想复用
+     * 同一条旧素材链接会在插入时直接撞上数据库约束（应用层查重都是按 isDeleted=false
+     * 过滤的，看不到软删除的记录，会误判"没人占用"）。所以 PendingApprovalService
+     * 执行删除时会顺带清空这两个字段，代表删除后这条旧素材链接允许被复用——不要在别处
+     * 加"跟软删除记录冲突"的特殊处理，从删除这个源头保证软删除记录不再占用这个值就够了。
      */
     @JsonIgnore
     @Column(name = "old_material_source_link_normalized", unique = true)

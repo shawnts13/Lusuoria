@@ -257,11 +257,24 @@ public class PendingApprovalService {
         return pendingApprovalRepo.save(p);
     }
 
-    /** 真正删除红人合作跟踪记录（"项目订单"模块已废弃，不再需要级联清理任何关联订单） */
+    /**
+     * 真正删除红人合作跟踪记录（"项目订单"模块已废弃，不再需要级联清理任何关联订单）。
+     *
+     * 2026-08 修复：old_material_source_link_normalized 这一列在数据库层面是全表唯一约束，
+     * 但这个约束不认"软删除"——只要值一样，哪怕占用它的那一行已经软删除了，插入新行照样会
+     * 被数据库拦下来，而应用层的查重逻辑（CollaborationTrackingService 的两处
+     * findOldMaterialLinkOwner）统一按 isDeleted=false 过滤，会认为这个链接"没人占用了"，
+     * 放行到插入才真正撞车，报出用户看不懂的原始 SQL 异常。按 Shawn 确认的口径——记录删除后，
+     * 它占用的旧素材链接应该释放、允许被别的记录复用——这里删除时顺带清空这两个字段，
+     * 从源头上让软删除的行不再占用这个唯一约束的槽位，不需要在查重逻辑那边特殊处理
+     * "跟软删除记录冲突"这种情况。
+     */
     private void executeTrackingDeletion(Long trackingId) {
         CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(trackingId)
                 .orElseThrow(() -> new RuntimeException("跟踪记录不存在或已被删除：" + trackingId));
         t.setIsDeleted(true);
+        t.setOldMaterialSourceLink(null);
+        t.setOldMaterialSourceLinkNormalized(null);
         trackingRepo.save(t);
     }
 
