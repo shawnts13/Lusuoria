@@ -471,8 +471,8 @@ public class InfluencerExcelHandler {
                 // 兼容"Excel 导出"生成的表头（没有"，多对用换行分隔"这半句），支持导出后原样再导入
                 if (brandTeamRaw == null) brandTeamRaw = getStr(row, colMap, "品牌方-团队(每行一对,格式:品牌方/团队,团队可省略)");
                 if (brandTeamRaw == null) brandTeamRaw = getStr(row, colMap, "品牌方(多个用换行分隔)"); // 兼容旧模板
+                Set<String> pairKeys = new java.util.LinkedHashSet<String>();
                 if (hasValue(brandTeamRaw)) {
-                    Set<String> pairKeys = new java.util.LinkedHashSet<String>();
                     List<String> notFound = new ArrayList<String>();
                     for (String line : brandTeamRaw.split("[\n\r]+")) {
                         String trimmed = line.trim();
@@ -504,6 +504,14 @@ public class InfluencerExcelHandler {
                     if (!pairKeys.isEmpty()) {
                         pendingBrandTeamPairs.put(nameKey(accountName), pairKeys);
                     }
+                }
+                // "品牌方-团队"至少要选一个（2026-08 新增，Shawn 反馈，跟红人管理页手动新建的
+                // 校验保持一致）：新建的红人这一列必须解析出至少一个有效的品牌方，否则会成为
+                // 在别的模块（红人合作跟踪新建等）选不了品牌方的半成品数据。已有红人这一列留空
+                // 表示"不改动现有关联"，不受此限制——见上面"以下所有字段：Excel 有值才更新"。
+                if (isNew && pairKeys.isEmpty()) {
+                    errors.add("第" + (i + 1) + "行：新建红人时必须填写\"品牌方-团队\"列（至少一个有效的品牌方），请核对");
+                    continue;
                 }
 
                 String countryMarketRaw = getStr(row, colMap, "服务国家/市场(多个用换行分隔)");

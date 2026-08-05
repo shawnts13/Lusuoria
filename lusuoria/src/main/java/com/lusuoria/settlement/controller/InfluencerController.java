@@ -213,6 +213,16 @@ public class InfluencerController {
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     @Transactional
     public ApiResponse<Influencer> save(@Valid @RequestBody InfluencerRequest req) {
+        // "品牌方-团队"至少要选一个（2026-08 新增，Shawn 反馈）：没有任何品牌关联的红人在
+        // 别的模块（红人合作跟踪新建、红人需求管理等）里选不了品牌方，是个没法正常使用的
+        // 半成品数据，新建/编辑都拦住，不能保存。团队本身仍然可以为空（该品牌下没配团队），
+        // 只要求至少有一条 brandId 有值的记录。
+        boolean hasAtLeastOneBrand = req.getBrandTeamPairs() != null
+                && req.getBrandTeamPairs().stream().anyMatch(p -> p.getBrandId() != null);
+        if (!hasAtLeastOneBrand) {
+            throw new RuntimeException("请至少选择一个\"品牌方-团队\"");
+        }
+
         Influencer inf;
         if (req.getId() != null) {
             inf = influencerRepo.findByIdAndIsDeletedFalse(req.getId())
