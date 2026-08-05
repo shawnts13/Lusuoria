@@ -595,6 +595,41 @@ public class InfluencerRequirementService {
     }
 
     /**
+     * "重新计算需求完成时间"按钮专用（2026-08 新增，善后用，仅 ADMIN）：批量重新判定所有
+     * 未删除需求的 completedAt。主要修复"存量记录关联需求"（linkLegacyTrackings）历史上
+     * 曾经漏调 refreshCompletedAt() 导致的遗留数据——关联时红人合作跟踪记录的视频项目进度
+     * 已经达到"已发布（未结算）"及以后（完成条件本来就已经满足），但需求完成时间一直没被
+     * 补上，只有这些记录后续再变化一次进度时才会顺带被修正。这个漏洞本身已经在
+     * linkLegacyTrackings() 里补上调用，这里只是给已经产生的历史数据一次性善后，
+     * 正常使用不需要点这个。
+     */
+    @Transactional
+    public String recomputeAllCompletedAt() {
+        List<InfluencerRequirement> all = requirementRepo.findByIsDeletedFalse();
+        List<String> nos = all.stream().map(InfluencerRequirement::getInternalRequirementNo).collect(Collectors.toList());
+        Map<String, Integer> completedByNo = completedCountByNos(nos);
+        List<InfluencerRequirement> toSave = new ArrayList<>();
+        int filledCount = 0, clearedCount = 0;
+        for (InfluencerRequirement r : all) {
+            int completed = completedByNo.getOrDefault(r.getInternalRequirementNo(), 0);
+            int total = r.getTotalItemCount() != null ? r.getTotalItemCount() : 0;
+            boolean isComplete = total > 0 && completed >= total;
+            if (isComplete && r.getCompletedAt() == null) {
+                r.setCompletedAt(new Date());
+                toSave.add(r);
+                filledCount++;
+            } else if (!isComplete && r.getCompletedAt() != null) {
+                r.setCompletedAt(null);
+                toSave.add(r);
+                clearedCount++;
+            }
+        }
+        if (!toSave.isEmpty()) requirementRepo.saveAll(toSave);
+        return "共扫描 " + all.size() + " 条需求，补上 " + filledCount + " 条的需求完成时间"
+                + (clearedCount > 0 ? "，清空 " + clearedCount + " 条（进度倒退导致不再满足完成条件）" : "") + "。";
+    }
+
+    /**
      * 需求完成进度点击详情：这条需求下所有已关联的红人合作跟踪记录（含折损）。
      * "需求条目"这一列（第几个条目）不落库，现算：按 (videoType, platform, 两个单价)
      * 精确匹配到需求条目列表里的第几个（1-based，按条目创建顺序），同一个大需求下
@@ -721,6 +756,12 @@ public class InfluencerRequirementService {
             t.setInternalRequirementNo(internalRequirementNo);
             trackingRepo.save(t);
         }
+        // 2026-08 修复：这里之前漏调 refreshCompletedAt()，导致存量记录关联需求后，即使关联的
+        // 记录视频项目进度本身早就达到"已发布（未结算）"及以后（完成条件已经满足），"红人需求
+        // 管理"的"需求完成时间"也不会被补上——只有后续这些记录的进度再变化一次时才会顺带触发
+        // CollaborationTrackingService 里的调用点，间接被修正。整批关联完之后统一判定一次即可，
+        // 不需要在循环内部每条都调用（一批关联的是同一个 internalRequirementNo）。
+        refreshCompletedAt(internalRequirementNo);
     }
 
     @Transactional

@@ -163,6 +163,17 @@ public class InfluencerRequirementController {
     }
 
     /**
+     * "重新计算需求完成时间"（仅 ADMIN，善后用）。用途见
+     * InfluencerRequirementService.recomputeAllCompletedAt() 的说明——主要是给
+     * "存量记录关联需求"历史上漏调 refreshCompletedAt() 导致的遗留数据做一次性修复。
+     */
+    @PostMapping("/recompute-completed-at")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ApiResponse<String> recomputeCompletedAt() {
+        return ApiResponse.success(requirementService.recomputeAllCompletedAt());
+    }
+
+    /**
      * 上传/修改 Invoice 链接：品牌方不需要 invoice、或需求完成进度未满 100% 时后端会拒绝
      * （前端按钮已经按同样的条件禁用，这里是兜底）。成功后级联更新对应"红人合作跟踪"记录的
      * 红人结款进度，见 InfluencerRequirementService.uploadInvoiceLink()。

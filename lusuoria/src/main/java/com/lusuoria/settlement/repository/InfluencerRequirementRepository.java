@@ -19,6 +19,9 @@ public interface InfluencerRequirementRepository extends JpaRepository<Influence
 
     Optional<InfluencerRequirement> findByInternalRequirementNoAndIsDeletedFalse(String internalRequirementNo);
 
+    /** "重新计算需求完成时间"善后用（2026-08 新增） */
+    List<InfluencerRequirement> findByIsDeletedFalse();
+
     /** 红人结款"选择涉及的红人视频项目"按需求编号批量取需求信息用（避免逐条查库） */
     List<InfluencerRequirement> findByInternalRequirementNoInAndIsDeletedFalse(List<String> internalRequirementNos);
 
