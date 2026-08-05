@@ -302,7 +302,20 @@ public class InfluencerRequirementService {
         return result;
     }
 
-    /** "关联红人需求"选择器第一步：某个红人名下"需求完成进度"未满的需求 */
+    /**
+     * "关联红人需求"选择器第一步 / "存量记录关联需求"第二步（byInfluencer 接口共用同一个方法）：
+     * 某个红人名下"需求完成进度"未满、且至少还有一个条目有剩余名额的需求。
+     *
+     * 2026-08 修复：之前只判断 completed<total，没有排除"所有条目名额都已经被现有关联记录
+     * 占满"的需求——即使整体还没100%完成（比如已实施的记录里有几条进度还在早期阶段，没到
+     * "已发布"及以后），只要每个条目的名额都已经占满，这个需求也没有空间再关联任何新/存量
+     * 记录了，继续让它出现在选择器里会误导用户白选一次（"存量记录关联需求"走到第三步必然是
+     * 空候选列表，"关联红人需求"走到确认那一步必然被 validateTrackingLinkage 拒绝）。
+     * 现在改成逐条目用 fulfilledCountByItemId() 同一套名额校验口径判断"是否还有剩余名额"，
+     * 不能只用"已建立跟踪记录总数 established >= totalItemCount"这种粗略的汇总比较——
+     * 如果存量脏数据导致某个条目已经超额、另一个条目还有空位，汇总数字可能掩盖后者真的有空位
+     * 这个事实。
+     */
     @Transactional(readOnly = true)
     public List<InfluencerRequirement> listIncompleteByInfluencer(Long influencerId) {
         List<InfluencerRequirement> all = requirementRepo.findByInfluencerIdAndIsDeletedFalse(influencerId);
@@ -313,9 +326,20 @@ public class InfluencerRequirementService {
             int completed = completedByNo.getOrDefault(r.getInternalRequirementNo(), 0);
             r.setCompletedCount(completed);
             int total = r.getTotalItemCount() != null ? r.getTotalItemCount() : 0;
-            if (completed < total) incomplete.add(r);
+            if (completed < total && hasRemainingCapacity(r)) incomplete.add(r);
         }
         return incomplete;
+    }
+
+    /** 这个需求是否至少有一个条目还有剩余名额（未被现有关联记录占满），逐条目精确判断，见 listIncompleteByInfluencer 的说明 */
+    private boolean hasRemainingCapacity(InfluencerRequirement requirement) {
+        if (requirement.getItems() == null || requirement.getItems().isEmpty()) return false;
+        Map<Long, Integer> fulfilledByItemId = fulfilledCountByItemId(requirement);
+        for (InfluencerRequirementItem item : requirement.getItems()) {
+            int cap = item.getVideoCount() != null ? item.getVideoCount() : 0;
+            if (fulfilledByItemId.getOrDefault(item.getId(), 0) < cap) return true;
+        }
+        return false;
     }
 
     /**
