@@ -417,6 +417,74 @@ public class InfluencerRequirementService {
         return new org.springframework.data.domain.PageImpl<>(pageContent, pageable, total);
     }
 
+    /**
+     * "需求列表页 - 查看未上传invoice的需求"按钮专用（2026-08 新增）：条件跟 findByFilters
+     * 一致，只额外要求需求已完成（completedAt有值）、品牌方涉及invoice上传
+     * （Brand.requiresInvoiceUpload()）、且还没上传invoice（invoiceLink为空）——口径完全对齐
+     * REQUIREMENT_INVOICE_OVERDUE 提醒批次（ProgressReminderService.runRequirementInvoiceOverdue），
+     * 只是不按"超出阈值天数"分档，只要没传就算命中，方便随时自查、不用等提醒真正超出阈值才触发。
+     * 这个模块数据量不大，全量查询+内存筛选+手动分页足够用（跟 pageIncomplete 同一个理由）。
+     */
+    @Transactional(readOnly = true)
+    public org.springframework.data.domain.Page<InfluencerRequirement> pageMissingInvoice(
+            Long brandId, Long teamId, String accountName, String requirementMonth,
+            String internalRequirementNo, org.springframework.data.domain.Pageable pageable) {
+        List<InfluencerRequirement> all = requirementRepo.findByFiltersNoPaging(
+                brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable.getSort());
+        List<InfluencerRequirement> missing = new ArrayList<>();
+        for (InfluencerRequirement r : all) {
+            if (r.getCompletedAt() == null) continue;
+            if (r.getInvoiceLink() != null && !r.getInvoiceLink().trim().isEmpty()) continue;
+            Brand brand = r.getBrandId() != null ? brandCache.findById(r.getBrandId()) : null;
+            if (brand != null && !brand.requiresInvoiceUpload()) continue;
+            missing.add(r);
+        }
+        return paginateAndEnrich(missing, pageable);
+    }
+
+    /**
+     * "需求列表页 - 查看未上传合同的需求"按钮专用（2026-08 新增）：条件跟 findByFilters
+     * 一致，只额外要求需求已完成（completedAt有值）、这个品牌方/团队组合是"每次需求签一次合同"
+     * （InfluencerTeam.isPerRequirementContract）、且还没上传合同（contractLink为空）——
+     * 口径完全对齐 REQUIREMENT_CONTRACT_OVERDUE 提醒批次
+     * （ProgressReminderService.runRequirementContractOverdue），只是不按"超出阈值天数"分档。
+     */
+    @Transactional(readOnly = true)
+    public org.springframework.data.domain.Page<InfluencerRequirement> pageMissingContract(
+            Long brandId, Long teamId, String accountName, String requirementMonth,
+            String internalRequirementNo, org.springframework.data.domain.Pageable pageable) {
+        List<InfluencerRequirement> all = requirementRepo.findByFiltersNoPaging(
+                brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable.getSort());
+        List<InfluencerRequirement> missing = new ArrayList<>();
+        for (InfluencerRequirement r : all) {
+            if (r.getCompletedAt() == null) continue;
+            if (r.getContractLink() != null && !r.getContractLink().trim().isEmpty()) continue;
+            Brand brand = r.getBrandId() != null ? brandCache.findById(r.getBrandId()) : null;
+            InfluencerTeam team = r.getTeamId() != null ? teamCache.findById(r.getTeamId()) : null;
+            if (!InfluencerTeam.isPerRequirementContract(brand, team)) continue;
+            missing.add(r);
+        }
+        return paginateAndEnrich(missing, pageable);
+    }
+
+    /** pageMissingInvoice/pageMissingContract 共用：内存筛选完的结果手动分页，
+     * 再批量补齐"需求完成进度"分子/"已建立跟踪记录数"（列表页展示用），避免逐条查库 */
+    private org.springframework.data.domain.Page<InfluencerRequirement> paginateAndEnrich(
+            List<InfluencerRequirement> filtered, org.springframework.data.domain.Pageable pageable) {
+        int total = filtered.size();
+        int start = Math.min((int) pageable.getOffset(), total);
+        int end = Math.min(start + pageable.getPageSize(), total);
+        List<InfluencerRequirement> pageContent = new ArrayList<>(filtered.subList(start, end));
+        List<String> nos = pageContent.stream().map(InfluencerRequirement::getInternalRequirementNo).collect(Collectors.toList());
+        Map<String, Integer> completedByNo = completedCountByNos(nos);
+        Map<String, Integer> establishedByNo = establishedCountByNos(nos);
+        for (InfluencerRequirement r : pageContent) {
+            r.setCompletedCount(completedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
+            r.setEstablishedCount(establishedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
+        }
+        return new org.springframework.data.domain.PageImpl<>(pageContent, pageable, total);
+    }
+
     /** 需求列表页用：按 internalRequirementNo 批量算"需求完成进度"分子，避免逐条查库 */
     @Transactional(readOnly = true)
     public Map<String, Integer> completedCountByNos(List<String> nos) {

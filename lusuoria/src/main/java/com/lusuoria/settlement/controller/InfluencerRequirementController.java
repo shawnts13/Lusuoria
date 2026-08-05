@@ -46,6 +46,8 @@ public class InfluencerRequirementController {
             @RequestParam(required = false) String requirementMonth,
             @RequestParam(required = false) String internalRequirementNo,
             @RequestParam(defaultValue = "false") boolean onlyIncomplete,
+            @RequestParam(defaultValue = "false") boolean onlyMissingInvoice,
+            @RequestParam(defaultValue = "false") boolean onlyMissingContract,
             @RequestParam(defaultValue = "id") String sortBy,
             @RequestParam(defaultValue = "desc") String sortDir,
             @RequestParam(defaultValue = "0")  int page,
@@ -57,9 +59,18 @@ public class InfluencerRequirementController {
                 : Sort.by(Sort.Direction.DESC, sortProperty);
         PageRequest pageable = PageRequest.of(page, size, sort);
 
-        // "查看未完成的需求"：走单独的全量查询+内存筛选+手动分页，见 pageIncomplete 的注释
+        // "查看未完成的需求"/"查看未上传invoice的需求"/"查看未上传合同的需求"：三个开关互斥
+        // （前端只会传其中一个true），都走单独的全量查询+内存筛选+手动分页，见各自方法的注释
         if (onlyIncomplete) {
             return ApiResponse.success(requirementService.pageIncomplete(
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable));
+        }
+        if (onlyMissingInvoice) {
+            return ApiResponse.success(requirementService.pageMissingInvoice(
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable));
+        }
+        if (onlyMissingContract) {
+            return ApiResponse.success(requirementService.pageMissingContract(
                     brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable));
         }
 
