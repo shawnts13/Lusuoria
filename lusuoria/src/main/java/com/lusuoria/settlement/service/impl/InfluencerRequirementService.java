@@ -596,29 +596,47 @@ public class InfluencerRequirementService {
 
     /**
      * "重新计算需求完成时间"按钮专用（2026-08 新增，善后用，仅 ADMIN）：批量重新判定所有
-     * 未删除需求的 completedAt。主要修复"存量记录关联需求"（linkLegacyTrackings）历史上
-     * 曾经漏调 refreshCompletedAt() 导致的遗留数据——关联时红人合作跟踪记录的视频项目进度
-     * 已经达到"已发布（未结算）"及以后（完成条件本来就已经满足），但需求完成时间一直没被
-     * 补上，只有这些记录后续再变化一次进度时才会顺带被修正。这个漏洞本身已经在
-     * linkLegacyTrackings() 里补上调用，这里只是给已经产生的历史数据一次性善后，
-     * 正常使用不需要点这个。
+     * 未删除需求的 completedAt。修复两类历史遗留问题：
+     *   1）"存量记录关联需求"（linkLegacyTrackings）历史上曾经漏调 refreshCompletedAt()
+     *      导致的遗留数据——关联时红人合作跟踪记录的视频项目进度已经达到"已发布（未结算）"
+     *      及以后（完成条件本来就已经满足），但需求完成时间一直没被补上；这个漏洞本身已经
+     *      在 linkLegacyTrackings() 里补上调用了，这里是给已经产生的历史数据一次性善后。
+     *   2）2026-08 起，"需求完成时间"统一订正成"该需求所有关联记录里最晚的视频发布时间"，
+     *      不是"系统检测到100%完成的那一刻"——存量/批量导入数据场景下，导入/首次跑这个
+     *      recompute 的时刻可能跟视频真正发布完成的时间相差很远，用最晚的视频发布时间
+     *      更准确。已经有值但不等于这个"正确值"的记录也会被订正（不只是补空）。
+     *      取不到任何发布时间时（理论上不会发生，防御性兜底）保留原逻辑，退回当前时间。
+     * 正常使用不需要点这个（正常的实时流转过程中，completedAt 一直是靠 refreshCompletedAt()
+     * 增量维护的，语义仍然是"系统检测到100%完成的那一刻"，这个按钮只对历史存量数据做订正）。
      */
     @Transactional
     public String recomputeAllCompletedAt() {
         List<InfluencerRequirement> all = requirementRepo.findByIsDeletedFalse();
         List<String> nos = all.stream().map(InfluencerRequirement::getInternalRequirementNo).collect(Collectors.toList());
         Map<String, Integer> completedByNo = completedCountByNos(nos);
+        Map<String, Date> maxPublishDateByNo = new HashMap<>();
+        for (Object[] row : trackingRepo.maxPublishDateByRequirementNos(
+                nos.stream().filter(java.util.Objects::nonNull).collect(Collectors.toList()))) {
+            maxPublishDateByNo.put((String) row[0], (Date) row[1]);
+        }
         List<InfluencerRequirement> toSave = new ArrayList<>();
-        int filledCount = 0, clearedCount = 0;
+        int filledCount = 0, correctedCount = 0, clearedCount = 0;
         for (InfluencerRequirement r : all) {
             int completed = completedByNo.getOrDefault(r.getInternalRequirementNo(), 0);
             int total = r.getTotalItemCount() != null ? r.getTotalItemCount() : 0;
             boolean isComplete = total > 0 && completed >= total;
-            if (isComplete && r.getCompletedAt() == null) {
-                r.setCompletedAt(new Date());
-                toSave.add(r);
-                filledCount++;
-            } else if (!isComplete && r.getCompletedAt() != null) {
+            if (isComplete) {
+                Date correctValue = maxPublishDateByNo.getOrDefault(r.getInternalRequirementNo(), new Date());
+                if (r.getCompletedAt() == null) {
+                    r.setCompletedAt(correctValue);
+                    toSave.add(r);
+                    filledCount++;
+                } else if (!r.getCompletedAt().equals(correctValue)) {
+                    r.setCompletedAt(correctValue);
+                    toSave.add(r);
+                    correctedCount++;
+                }
+            } else if (r.getCompletedAt() != null) {
                 r.setCompletedAt(null);
                 toSave.add(r);
                 clearedCount++;
@@ -626,6 +644,7 @@ public class InfluencerRequirementService {
         }
         if (!toSave.isEmpty()) requirementRepo.saveAll(toSave);
         return "共扫描 " + all.size() + " 条需求，补上 " + filledCount + " 条的需求完成时间"
+                + (correctedCount > 0 ? "，订正 " + correctedCount + " 条（原时间不等于该需求里最晚的视频发布时间）" : "")
                 + (clearedCount > 0 ? "，清空 " + clearedCount + " 条（进度倒退导致不再满足完成条件）" : "") + "。";
     }
 

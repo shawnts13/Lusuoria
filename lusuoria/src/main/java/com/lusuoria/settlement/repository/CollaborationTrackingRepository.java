@@ -437,6 +437,19 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     List<Object[]> countCompletedByRequirementNos(@Param("requirementNos") List<String> requirementNos);
 
     /**
+     * "重新计算需求完成时间"善后用（2026-08 新增）：按 internalRequirementNo 分组算出该需求下
+     * 所有关联记录（含折损，只要填过视频发布时间）里最晚的视频发布时间，供
+     * InfluencerRequirementService.recomputeAllCompletedAt() 把"需求完成时间"订正成
+     * "该需求里最晚的视频发布时间"，而不是"系统检测到100%完成的那一刻"——存量/批量导入数据
+     * 场景下，后者跟真实完成时间可能相差很远。
+     */
+    @Query("SELECT c.internalRequirementNo, MAX(c.publishDate) FROM CollaborationTracking c " +
+           "WHERE c.isDeleted = false AND c.internalRequirementNo IN :requirementNos " +
+           "AND c.publishDate IS NOT NULL " +
+           "GROUP BY c.internalRequirementNo")
+    List<Object[]> maxPublishDateByRequirementNos(@Param("requirementNos") List<String> requirementNos);
+
+    /**
      * 红人结款用：按 internalRequirementNo 分组统计"实际可结款成本"——只看 已发布(未结算)/
      * 已加入客户未结算列表/客户已结算 这三个"会真正付钱"的终态（不含折损），红人视频制作与发布
      * 成本(influencerCost)之和。2026-08 修复：之前直接用 InfluencerRequirement.totalInfluencerCost
