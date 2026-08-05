@@ -31,8 +31,17 @@ public class CollaborationTrackingStatusRequest {
     private String notes;
 
     /**
-     * 客户方付款批次单号：只有当 progress 是"客户已结算"、且操作人员工角色是"财务"时才需要填写，
-     * 直接覆盖更新到这条记录的 clientPaymentBatch 字段（2026-07 新增）。
+     * 客户方付款批次单号：只有当 progress 是"客户已结算"、且该品牌方涉及客户方付款批次
+     * （Brand.requiresClientPaymentBatch()）时才需要填写，直接覆盖更新到这条记录的
+     * clientPaymentBatch 字段（2026-07 新增；2026-08 起从"仅限财务角色"改成按品牌方配置判断，
+     * 财务/管理层/ADMIN 都受这条规则约束）。
      */
     private String clientPaymentBatch;
+
+    /**
+     * 客户方的项目订单：只有当 progress 是"已加入客户未结算列表"/"客户已结算"、且该品牌方
+     * 涉及客户方的项目订单（Brand.requiresClientOrderId()）时才需要填写，直接覆盖更新到
+     * 这条记录的 clientOrderId 字段（2026-08 新增）。
+     */
+    private String clientOrderId;
 }

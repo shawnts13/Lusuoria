@@ -24,4 +24,9 @@ public class BrandRequest {
 
     private Boolean requiresInvoice;
     private ContractCycleType contractCycleType;
+
+    /** 是否涉及"客户方的项目订单"（2026-08 新增），null 按"涉及"处理 */
+    private Boolean involvesClientOrderId;
+    /** 是否涉及"客户方付款批次"（2026-08 新增），null 按"涉及"处理 */
+    private Boolean involvesClientPaymentBatch;
 }

@@ -434,6 +434,31 @@ public class CollaborationTrackingService {
             }
         }
 
+        // 客户方的项目订单 / 客户方付款批次：品牌方标记"涉及"时（Brand.requiresClientOrderId()/
+        // requiresClientPaymentBatch()），进度落在对应阶段就必须已经填了值——2026-08 新增，
+        // 跟 updateStatus() 是同一条业务规则，这里覆盖"新建/Excel导入时进度直接就是达标阶段"
+        // 这种不经过状态流转的场景。故意嵌在跟"进度"赋值同一个 if 块里（只有新建、或明确允许
+        // 编辑时更新状态的 Excel 导入更新分支才会进来）——普通编辑表单不会碰进度，如果这里不
+        // 加这层限制，存量的、当初进度已经落在这两个阶段但还没填这两个字段的历史记录，
+        // 会因为这条新规则连备注这种不相关字段都改不了，一直卡到有人补上这两个字段为止，
+        // 跟"内部执行成本"那条硬性校验只在真正改动时触发是同一个道理。
+        if (existingOrNull == null || allowStatusUpdateOnEdit) {
+            CollaborationProgress finalProgress = tracking.getProgress();
+            boolean requiresOrderIdOnSave = tracking.getBrand() == null || tracking.getBrand().requiresClientOrderId();
+            boolean requiresPaymentBatchOnSave = tracking.getBrand() == null || tracking.getBrand().requiresClientPaymentBatch();
+            if ((finalProgress == CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST || finalProgress == CollaborationProgress.SETTLED)
+                    && requiresOrderIdOnSave
+                    && (req.getClientOrderId() == null || req.getClientOrderId().trim().isEmpty())) {
+                throw new RuntimeException("该品牌方涉及\"客户方的项目订单\"，视频项目进度为\""
+                        + finalProgress.getLabel() + "\"时必须填写\"客户方的项目订单\"");
+            }
+            if (finalProgress == CollaborationProgress.SETTLED
+                    && requiresPaymentBatchOnSave
+                    && (req.getClientPaymentBatch() == null || req.getClientPaymentBatch().trim().isEmpty())) {
+                throw new RuntimeException("该品牌方涉及\"客户方付款批次\"，视频项目进度为\"客户已结算\"时必须填写\"客户方付款批次\"");
+            }
+        }
+
         // 红人结款进度：2026-08 起完全由系统控制，单条保存/Excel 批量导入都不再接受请求体里的值
         // （前端表单已经把这个下拉框整个去掉，Excel 模板也去掉了这一列——即便有人手填了这一列
         // 重新上传，CollaborationTrackingExcelHandler 也不会再读它）。这里唯一要做的：这次保存后
@@ -835,12 +860,29 @@ public class CollaborationTrackingService {
             t.setNotes(req.getNotes().trim());
         }
 
-        // 财务流转到"客户已结算"：同步要求填客户方付款批次单号，直接更新到这条记录上（2026-07 新增）。
-        // 只针对员工角色精确是"财务"这一种情况，管理层/ADMIN 走这个接口流转到"客户已结算"不受此限——
-        // 跟 requireFinanceForSettlementProgress() 判定的"能不能流转进来"是两条独立的规则
-        if (newProgress == CollaborationProgress.SETTLED && "财务".equals(employeeRoleUtil.getCurrentEmployeeRole())) {
+        // 客户方的项目订单：品牌方涉及这个字段时（Brand.requiresClientOrderId()），流转到
+        // "已加入客户未结算列表"/"客户已结算"需要同步填写，直接更新到这条记录上（2026-08 新增）。
+        // 不看是不是真的发生了变化——已经在这两个状态之一的记录也可以借这个弹窗补填/改这个字段，
+        // 所以只要这次提交的目标落在这两个状态就校验
+        boolean requiresClientOrderId = t.getBrand() == null || t.getBrand().requiresClientOrderId();
+        if ((newProgress == CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST || newProgress == CollaborationProgress.SETTLED)
+                && requiresClientOrderId) {
+            if (req.getClientOrderId() == null || req.getClientOrderId().trim().isEmpty()) {
+                throw new RuntimeException("该品牌方涉及\"客户方的项目订单\"，流转到\""
+                        + newProgress.getLabel() + "\"状态需要填写客户方的项目订单");
+            }
+            t.setClientOrderId(req.getClientOrderId().trim());
+        }
+
+        // 客户方付款批次：品牌方涉及这个字段时（Brand.requiresClientPaymentBatch()），流转到
+        // "客户已结算"需要同步填写，直接更新到这条记录上（2026-07 新增；2026-08 起从"仅限
+        // 财务角色"改成按品牌方配置判断——能走到这个分支的只有财务/管理层/ADMIN，
+        // 跟 requireFinanceForSettlementProgress() 判定的"能不能流转进来"是两条独立的规则，
+        // 这里管的是"填没填这个字段"，不重复判断角色）
+        boolean requiresClientPaymentBatch = t.getBrand() == null || t.getBrand().requiresClientPaymentBatch();
+        if (newProgress == CollaborationProgress.SETTLED && requiresClientPaymentBatch) {
             if (req.getClientPaymentBatch() == null || req.getClientPaymentBatch().trim().isEmpty()) {
-                throw new RuntimeException("流转到\"客户已结算\"状态需要填写客户方付款批次单号");
+                throw new RuntimeException("该品牌方涉及\"客户方付款批次\"，流转到\"客户已结算\"状态需要填写客户方付款批次单号");
             }
             t.setClientPaymentBatch(req.getClientPaymentBatch().trim());
         }

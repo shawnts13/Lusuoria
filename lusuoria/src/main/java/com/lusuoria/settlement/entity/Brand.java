@@ -82,9 +82,37 @@ public class Brand extends BaseEntity {
     @Column(name = "contract_cycle_type")
     private ContractCycleType contractCycleType;
 
+    /**
+     * 是否涉及"客户方的项目订单"（2026-08 新增）。null/true 都按"涉及"处理，只有显式设成 false
+     * 才是"不涉及"，跟 requiresInvoiceUpload() 的 null 安全默认思路一致——新品牌方默认走更保守
+     * 的"涉及"分支。涉及时，红人合作跟踪记录的视频项目进度流转到"已加入客户未结算列表"/
+     * "客户已结算"这两个状态要求已经填写 CollaborationTracking.clientOrderId，
+     * 见 CollaborationTrackingService。
+     */
+    @Column(name = "involves_client_order_id")
+    private Boolean involvesClientOrderId;
+
+    /**
+     * 是否涉及"客户方付款批次"（2026-08 新增）。null/true 都按"涉及"处理，只有显式设成 false
+     * 才是"不涉及"。涉及时，红人合作跟踪记录的视频项目进度流转到"客户已结算"要求已经填写
+     * CollaborationTracking.clientPaymentBatch，见 CollaborationTrackingService。
+     */
+    @Column(name = "involves_client_payment_batch")
+    private Boolean involvesClientPaymentBatch;
+
     /** null 按"需要 invoice"处理，只有显式设成 false 才是"不涉及"——统一用这个方法判断，不要在别处重复 !Boolean.FALSE.equals(...) */
     public boolean requiresInvoiceUpload() {
         return !Boolean.FALSE.equals(requiresInvoice);
+    }
+
+    /** null 按"涉及"处理，只有显式设成 false 才是"不涉及"——统一用这个方法判断，不要在别处重复 !Boolean.FALSE.equals(...) */
+    public boolean requiresClientOrderId() {
+        return !Boolean.FALSE.equals(involvesClientOrderId);
+    }
+
+    /** null 按"涉及"处理，只有显式设成 false 才是"不涉及"——统一用这个方法判断，不要在别处重复 !Boolean.FALSE.equals(...) */
+    public boolean requiresClientPaymentBatch() {
+        return !Boolean.FALSE.equals(involvesClientPaymentBatch);
     }
 
     /**
