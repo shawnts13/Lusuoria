@@ -51,6 +51,7 @@ public class InfluencerPaymentController {
             @RequestParam(required = false) String internalRequirementNo,
             @RequestParam(required = false) InfluencerPaymentStatus paymentStatus,
             @RequestParam(required = false) String paymentNo,
+            @RequestParam(defaultValue = "false") boolean onlyMissingReceipt,
             @RequestParam(defaultValue = "settlementMonth") String sortBy,
             @RequestParam(defaultValue = "desc") String sortDir,
             @RequestParam(defaultValue = "0")  int page,
@@ -75,9 +76,18 @@ public class InfluencerPaymentController {
                 ? Sort.by(direction, "settlementMonth").and(Sort.by(Sort.Direction.ASC, "paymentNo"))
                 : Sort.by(direction, sortBy);
         PageRequest pageable = PageRequest.of(page, size, sort);
+        String trimmedPaymentNo = paymentNo != null && !paymentNo.trim().isEmpty() ? paymentNo.trim() : null;
+
+        // "查看未上传发票的记录"：走单独的全量查询+内存筛选+手动分页，见 pageMissingReceipt 的注释
+        if (onlyMissingReceipt) {
+            return ApiResponse.success(paymentService.pageMissingReceipt(
+                    settlementMonth, brandId, filterByTeam, matchingIds, filterByReqNo, reqMatchingIds,
+                    paymentStatus, trimmedPaymentNo, pageable));
+        }
+
         Page<InfluencerPayment> result = paymentRepo.findByFilters(
                 settlementMonth, brandId, filterByTeam, matchingIds, filterByReqNo, reqMatchingIds, paymentStatus,
-                paymentNo != null && !paymentNo.trim().isEmpty() ? paymentNo.trim() : null, pageable);
+                trimmedPaymentNo, pageable);
         paymentService.attachTeamIds(result.getContent());
         return ApiResponse.success(result);
     }

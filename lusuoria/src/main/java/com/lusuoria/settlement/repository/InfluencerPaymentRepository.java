@@ -4,6 +4,7 @@ import com.lusuoria.settlement.entity.InfluencerPayment;
 import com.lusuoria.settlement.enums.InfluencerPaymentStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -46,6 +47,32 @@ public interface InfluencerPaymentRepository extends JpaRepository<InfluencerPay
             @Param("paymentStatus") InfluencerPaymentStatus paymentStatus,
             @Param("paymentNo") String paymentNo,
             Pageable pageable);
+
+    /**
+     * "查看未上传发票的记录"按钮专用（2026-08 新增）：跟 findByFilters 完全同一套筛选条件，
+     * 只是不分页——是否"涉及公对公发票"要靠 Brand/InfluencerTeam 缓存解析，没法下推到 SQL
+     * WHERE，只能先按其余条件查出来，在内存里筛选+手动分页，见
+     * InfluencerPaymentService.pageMissingReceipt()。
+     */
+    @EntityGraph(attributePaths = {"brand"})
+    @Query("SELECT ip FROM InfluencerPayment ip " +
+           "WHERE ip.isDeleted = false " +
+           "AND (:settlementMonth IS NULL OR ip.settlementMonth = :settlementMonth) " +
+           "AND (:brandId IS NULL OR ip.brandId = :brandId) " +
+           "AND (:filterByTeam = false OR ip.id IN :matchingIds) " +
+           "AND (:filterByReqNo = false OR ip.id IN :reqMatchingIds) " +
+           "AND (:paymentStatus IS NULL OR ip.paymentStatus = :paymentStatus) " +
+           "AND (:paymentNo IS NULL OR ip.paymentNo = :paymentNo)")
+    List<InfluencerPayment> findByFiltersNoPaging(
+            @Param("settlementMonth") String settlementMonth,
+            @Param("brandId") Long brandId,
+            @Param("filterByTeam") boolean filterByTeam,
+            @Param("matchingIds") List<Long> matchingIds,
+            @Param("filterByReqNo") boolean filterByReqNo,
+            @Param("reqMatchingIds") List<Long> reqMatchingIds,
+            @Param("paymentStatus") InfluencerPaymentStatus paymentStatus,
+            @Param("paymentNo") String paymentNo,
+            Sort sort);
 
     @EntityGraph(attributePaths = {"brand"})
     List<InfluencerPayment> findBySettlementMonthAndIsDeletedFalse(String month);

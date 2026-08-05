@@ -493,8 +493,16 @@ public class InfluencerPaymentService {
     private boolean resolveInvolvesCorporateInvoice(InfluencerPayment payment) {
         Brand brand = brandCache.findById(payment.getBrandId());
         List<InfluencerPaymentTeam> scopeRows = paymentTeamRepo.findByInfluencerPaymentIdAndIsDeletedFalse(payment.getId());
-        for (InfluencerPaymentTeam row : scopeRows) {
-            InfluencerTeam team = row.getTeamId() != null ? teamCache.findById(row.getTeamId()) : null;
+        List<Long> teamIds = scopeRows.stream().map(InfluencerPaymentTeam::getTeamId).collect(Collectors.toList());
+        return resolveInvolvesCorporateInvoice(brand, teamIds);
+    }
+
+    /** 跟上面那个重载逻辑完全一致，只是团队范围直接传入——批量场景（attachTeamIds() 已经把
+     *  payment.teamIds 批量填好）下用这个重载可以省掉逐条再查一次 paymentTeamRepo，见 pageMissingReceipt() */
+    private boolean resolveInvolvesCorporateInvoice(Brand brand, List<Long> teamIds) {
+        if (teamIds == null) return false;
+        for (Long teamId : teamIds) {
+            InfluencerTeam team = teamId != null ? teamCache.findById(teamId) : null;
             if (InfluencerTeam.involvesCorporateInvoice(brand, team)) return true;
         }
         return false;
@@ -510,6 +518,36 @@ public class InfluencerPaymentService {
         }
         payment.setReceiptLink(receiptLink);
         return paymentRepo.save(payment);
+    }
+
+    /**
+     * "查看未上传发票的记录"按钮专用（2026-08 新增）：跟列表页 findByFilters 走同一套筛选条件，
+     * 只额外要求这条结款记录涉及公对公发票（resolveInvolvesCorporateInvoice）、且还没上传
+     * 发票（receiptLink为空）。是否涉及发票要靠 Brand/InfluencerTeam 缓存解析，没法下推到
+     * SQL WHERE，只能先按其余条件查出来，在内存里筛选+手动分页（这个模块数据量不大，
+     * 跟"红人需求管理"那几个"查看未上传XX"按钮同一个套路）。
+     */
+    @Transactional(readOnly = true)
+    public org.springframework.data.domain.Page<InfluencerPayment> pageMissingReceipt(
+            String settlementMonth, Long brandId, boolean filterByTeam, List<Long> matchingIds,
+            boolean filterByReqNo, List<Long> reqMatchingIds, InfluencerPaymentStatus paymentStatus,
+            String paymentNo, org.springframework.data.domain.Pageable pageable) {
+        List<InfluencerPayment> all = paymentRepo.findByFiltersNoPaging(
+                settlementMonth, brandId, filterByTeam, matchingIds, filterByReqNo, reqMatchingIds,
+                paymentStatus, paymentNo, pageable.getSort());
+        attachTeamIds(all);
+        List<InfluencerPayment> missing = new ArrayList<>();
+        for (InfluencerPayment p : all) {
+            if (p.getReceiptLink() != null && !p.getReceiptLink().trim().isEmpty()) continue;
+            Brand brand = brandCache.findById(p.getBrandId());
+            if (!resolveInvolvesCorporateInvoice(brand, p.getTeamIds())) continue;
+            missing.add(p);
+        }
+        int total = missing.size();
+        int start = Math.min((int) pageable.getOffset(), total);
+        int end = Math.min(start + pageable.getPageSize(), total);
+        List<InfluencerPayment> pageContent = missing.subList(start, end);
+        return new org.springframework.data.domain.PageImpl<>(pageContent, pageable, total);
     }
 
     /**
