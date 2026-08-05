@@ -246,9 +246,26 @@ public class CollaborationTracking extends BaseEntity {
     @Column(name = "other_external_cost_note", columnDefinition = "TEXT")
     private String otherExternalCostNote;
 
-    /** 内部执行成本（人民币）。FULL 都能看/改；项目负责人/执行人员仅自己相关的记录能看/改 */
+    /**
+     * 内部执行成本（人民币）。2026-08 起完全由系统按"执行人员管理"配置的费率梯度自动算出，
+     * 不再允许手动填一个跟梯度不一致的数字——唯一例外是 executorCostOverridden=true 这条
+     * "特批"通道，仅 ADMIN 能在编辑表单里手动改（见 executorCostOverridden 字段说明）。
+     */
     @Column(name = "internal_execution_cost", precision = 15, scale = 2)
     private java.math.BigDecimal internalExecutionCost;
+
+    /**
+     * 内部执行成本是否是 ADMIN 手动特批的值（2026-08 新增），跟系统按梯度算出来的不一致——
+     * 比如人情价、历史遗留的特殊安排。只有 ADMIN 通过"编辑"表单直接改这个字段才会置 true，
+     * 通过"选择执行人员"弹窗走系统自动计算路径（CollaborationTrackingService.setExecutorCost）
+     * 设置的值这个标记是 false/null。
+     * 用途：CollaborationTrackingService.recomputeAllProfits()（"重新计算利润"按钮）批量按
+     * 梯度重算内部执行成本时，会跳过这个标记为 true 的记录，不覆盖 ADMIN 的特批值——但这条
+     * 记录已经花掉的钱仍然会计入同组（项目负责人+执行人员+视频类型+发布月份）后续记录的
+     * "当月封顶金额"累计里，不会凭空多出预算。
+     */
+    @Column(name = "executor_cost_overridden")
+    private Boolean executorCostOverridden;
 
     /**
      * 该记录是否已确认"不涉及内部执行人员"（比如红人自己发布，不需要公司内部人员制作/发布）。

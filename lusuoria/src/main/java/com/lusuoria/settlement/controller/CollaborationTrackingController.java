@@ -422,8 +422,10 @@ public class CollaborationTrackingController {
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<ExecutorCostUpdateResult> setExecutorCost(
             @PathVariable Long id, @RequestBody ExecutorCostRequest req) {
+        // 2026-08 起金额不再由前端传入，服务层按费率梯度现场算，见
+        // CollaborationTrackingService.setExecutorCost() 的注释
         ExecutorCostUpdateResult result = trackingService.setExecutorCost(
-                id, req.getExecutorId(), req.getAmount(), req.isNotApplicable());
+                id, req.getExecutorId(), req.isNotApplicable());
         ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
         if (!ctx.isFull()) {
             result.setTracking(applyFieldVisibility(result.getTracking(), ctx));
@@ -434,7 +436,6 @@ public class CollaborationTrackingController {
     /** 内部执行成本保存请求体 */
     @lombok.Data
     public static class ExecutorCostRequest {
-        private java.math.BigDecimal amount;
         private Long executorId;
         private boolean notApplicable;
     }

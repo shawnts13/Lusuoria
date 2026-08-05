@@ -645,18 +645,12 @@ public class CollaborationTrackingExcelHandler {
                     req.setExecutorId(executor.getId());
                 }
 
-                // 2026-07 新增：项目负责人+内部执行人员+项目视频类型三者都填了的话，这个组合必须
-                // 已经在"员工管理"/"执行人员管理"配置过费率梯度——跟"红人合作跟踪"编辑表单提交前
-                // 的同一条校验保持一致，避免通过Excel批量导入绕开那边的拦截，留下一堆没有费率
-                // 依据的执行人员薪酬记录
-                if (req.getProjectManagerId() != null && req.getExecutorId() != null && req.getVideoType() != null
-                        && !trackingService.hasExecutorPayRateConfigured(
-                                req.getProjectManagerId(), req.getExecutorId(), req.getVideoType())) {
-                    errors.add("第" + (i + 1) + "行：内部执行人员 [" + executorRaw + "] 在项目负责人 [" + managerRaw
-                            + "] 名下还没有配置\"" + req.getVideoType().getLabel() + "\"这个视频类型的薪资费率梯度，"
-                            + "请先在\"员工管理\"/\"执行人员管理\"配置后再导入，跳过此行");
-                    continue;
-                }
+                // 注："项目负责人+内部执行人员+项目视频类型必须已配置费率梯度"这条校验 2026-08
+                // 起收进了 CollaborationTrackingService.doSave() 里（单条保存/Excel 导入共用
+                // 同一份逻辑），且只在这一行真的"新指定/改动"了执行人员或视频类型时才校验——
+                // 不再在这里单独查一遍。之前这里的写法是"三个字段都填了就每次都查"，跟单条保存
+                // 表单的校验口径不一致（那边只在改动时校验），已删除，统一交给 doSave() 判断，
+                // 校验失败会被下面的 try/catch 捕获，报"第N行导入失败：..."
 
                 // 敏感字段：2026-07 起这两个字段是严格数字，不再允许"价格待定"这类文本备注，
                 // 支持公式（只要算出来的结果是数字），单元格留空仍然允许（这两个字段本身选填）

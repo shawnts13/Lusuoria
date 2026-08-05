@@ -41,6 +41,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -446,6 +447,9 @@ public class CollaborationTrackingService {
                 && tracking.getProgress() != null && tracking.getProgress().allowsPaymentProgress()) {
             tracking.setInfluencerPaymentProgress(resolveInitialPaymentProgress(tracking.getBrand()));
         }
+        // 校验"执行人员+视频类型必须已配置费率梯度"要用到改动前的视频类型，必须在这里
+        // （覆盖成新值之前）捕获，用法跟下面 oldProjectManagerId/oldExecutorId 是同一个道理
+        VideoType oldVideoType = existingOrNull != null ? existingOrNull.getVideoType() : null;
         tracking.setVideoType(req.getVideoType());
         tracking.setClientPaymentBatch(req.getClientPaymentBatch());
         tracking.setNotes(req.getNotes());
@@ -527,6 +531,32 @@ public class CollaborationTrackingService {
             tracking.setExecutor(null);
         }
 
+        // 内部执行人员 + 项目视频类型：这个组合必须已经在"执行人员管理"配置过费率梯度才能保存
+        // （2026-08 新增，Shawn 反馈）——内部执行成本现在完全由系统按梯度价自动算（见
+        // setExecutorCost()），缺配置的组合系统根本算不出该给多少钱，不能让这种记录先保存下来
+        // 再说，Excel 导入走的也是这个 doSave()，同一条规则自动覆盖，不需要在 Excel handler
+        // 那边单独再判断一次。
+        // 只在这次保存"新指定/改动"了执行人员或视频类型的那一刻才校验——已经保存过的历史
+        // 记录，哪怕这个组合缺配置，只要这次没有改动这两个字段，仍然可以正常编辑其他字段
+        // （比如改备注），不会被这条新规则卡住，避免大量存量数据从此以后动弹不得。
+        // "折损"记录不参与利润/执行成本核算，豁免这条规则。
+        // 用 tracking.getExecutor()/getProjectManager() 取 id 而不是 getExecutorId()/
+        // getProjectManagerId()——后两个是 insertable=false/updatable=false 的镜像列，
+        // 刚 setExecutor()/setProjectManager() 之后不会立刻反映新值，跟上面 fvCtx 那段
+        // isOwnExecutor/isOwnManager 判断用的是同一个道理（见那段注释旁边的写法）。
+        Long newProjectManagerId = tracking.getProjectManager() != null ? tracking.getProjectManager().getId() : null;
+        Long newExecutorId = tracking.getExecutor() != null ? tracking.getExecutor().getId() : null;
+        boolean executorOrVideoTypeChanged = !java.util.Objects.equals(oldExecutorId, newExecutorId)
+                || oldVideoType != tracking.getVideoType();
+        if (executorOrVideoTypeChanged && newExecutorId != null && tracking.getVideoType() != null
+                && tracking.getProgress() != CollaborationProgress.DELAYED) {
+            if (!hasExecutorPayRateConfigured(newProjectManagerId, newExecutorId, tracking.getVideoType())) {
+                throw new RuntimeException("内部执行人员 [" + tracking.getExecutor().getName()
+                        + "] 在项目负责人名下还没有配置\"" + tracking.getVideoType().getLabel()
+                        + "\"这个视频类型的薪资费率梯度，无法保存，请先在\"员工管理\"/\"执行人员管理\"配置后再保存这条记录");
+            }
+        }
+
         // ===== 2026-07 从"项目订单"模块迁移过来的成本/利润字段，写权限沿用原来的分级规则 =====
         // 当前登录账号的字段可见/可编辑等级（FULL / 项目负责人 / 执行人员 / 基础），下面多处要用
         ProjectFieldVisibility.Context fvCtx = fieldVisibility.resolve();
@@ -576,16 +606,22 @@ public class CollaborationTrackingService {
             tracking.setExchangeRate(req.getExchangeRate());
         }
 
-        // 其他外部成本 / 内部执行成本：按角色 + 是否本人负责/执行 决定能不能改
+        // 其他外部成本：按角色 + 是否本人负责/执行 决定能不能改
         // （不满足条件时忽略请求体里的值，保留数据库原值，不报错，简单地"改了也不生效"）
         if (fvCtx.isFull() || (fvCtx.tier == ProjectFieldVisibility.Tier.PROJECT_MANAGER && isOwnManager)) {
             tracking.setOtherExternalCost(req.getOtherExternalCost());
             tracking.setOtherExternalCostNote(req.getOtherExternalCostNote());
         }
-        if (fvCtx.isFull()
-                || (fvCtx.tier == ProjectFieldVisibility.Tier.PROJECT_MANAGER && isOwnManager)
-                || (fvCtx.tier == ProjectFieldVisibility.Tier.EXECUTOR && isOwnExecutor)) {
+
+        // 内部执行成本：2026-08 起完全由系统按费率梯度自动算（见 setExecutorCost()），编辑表单
+        // 这条路径收窄成仅 ADMIN 能手动特批一个跟梯度不一致的值（人情价/历史遗留特殊安排），
+        // 不再看 fvCtx/isOwnManager/isOwnExecutor——那套"项目负责人/执行人员自己能改自己相关
+        // 记录"的规则是给"手动填多少钱"这件事设计的，现在正常路径根本不该手动填了，继续对
+        // 非 ADMIN 开放这个入口会绕开梯度计算。手动特批的记录标记 executorCostOverridden=true，
+        // "重新计算利润"批量重算时会跳过、不覆盖这个值，见 recomputeAllProfits()。
+        if (req.getInternalExecutionCost() != null && RoleUtil.isAdmin()) {
             tracking.setInternalExecutionCost(req.getInternalExecutionCost());
+            tracking.setExecutorCostOverridden(true);
         }
 
         if (RoleUtil.canViewBaselineFinancials()) {
@@ -931,7 +967,7 @@ public class CollaborationTrackingService {
             }
             StringBuilder sb = new StringBuilder();
             sb.append("该项目负责人尚未在\"执行人员管理\"模块为其设置\"").append(videoType.getLabel())
-                    .append("\"的薪资信息，请先进行设置后，再手动设置该视频条目的执行人员薪酬。");
+                    .append("\"的薪资费率梯度，无法保存——请先去\"员工管理\"/\"执行人员管理\"配置好这个视频类型的费率梯度后再回来选择执行人员。");
             // 换行：上面这句是"怎么办"，下面是"当前月的结算情况"，两句性质不同，挤一起容易看花
             sb.append("\n").append(monthLabel).append("该执行人员已为你结算：");
             if (countByType.isEmpty()) {
@@ -1001,18 +1037,29 @@ public class CollaborationTrackingService {
             resp.setBreakdown(monthLabel + "该执行人员共处理了" + totalSameType + "笔" + videoType.getLabel()
                     + "记录，这笔排第" + position + "位：目前已设置成 ¥" + fmtAmount(t.getInternalExecutionCost()));
         } else if (matched == null) {
-            // 配置了梯度，但档位没有覆盖到"这个月第几条"这个数字（比如只配了1-50条，这已经是第51条）
+            // 配置了梯度，但档位没有覆盖到"这个月第几条"这个数字（比如只配了1-50条，这已经是第51条，
+            // 又没有配一档"51及以上"兜底）——算不出来，不允许保存
             resp.setRateBasedSuggestion(true);
+            resp.setOutOfRange(true);
             resp.setSuggestedAmount(null);
             resp.setBreakdown(monthLabel + "该执行人员已经处理了" + countSoFar + "笔" + videoType.getLabel()
-                    + "记录，该笔(第" + position + "笔)超出了当前配置的梯度覆盖范围，请手动填写金额");
+                    + "记录，该笔(第" + position + "笔)超出了当前配置的梯度覆盖范围，无法保存——"
+                    + "请先去\"员工管理\"/\"执行人员管理\"补充覆盖这个条数的档位");
         } else {
             resp.setRateBasedSuggestion(true);
             java.math.BigDecimal rate = capAdjustedRate(matched, costedSameType);
             String rangeLabel = tiers.size() > 1 ? "(" + tierRangeLabel(matched) + ")" : "";
             resp.setSuggestedAmount(rate);
+            // 命中的档位配置了当月封顶金额、且这个类型当月累计已经花完了这笔预算：rate 会被
+            // capAdjustedRate() 截成 0，这不是"算不出来"，是正常业务结果，要跟用户说清楚
+            // 为什么是 0，不能让他们以为系统坏了
+            boolean cappedAtZero = matched.getMonthlyCap() != null && rate.compareTo(java.math.BigDecimal.ZERO) == 0;
+            resp.setCappedAtZero(cappedAtZero);
+            String suffix = cappedAtZero
+                    ? "：¥0.00（已达到当月封顶金额 ¥" + fmtAmount(matched.getMonthlyCap()) + "，本条不再计费）"
+                    : "：¥" + fmtAmount(rate);
             resp.setBreakdown(monthLabel + "该执行人员已经处理了" + countSoFar + "笔" + videoType.getLabel()
-                    + "记录，该笔(第" + position + "笔)" + rangeLabel + "：¥" + fmtAmount(rate));
+                    + "记录，该笔(第" + position + "笔)" + rangeLabel + suffix);
         }
 
         // 3f：特殊薪酬实时推算——按当前梯度重新推算这个月该负责人+该执行人员所有已确认金额
@@ -1060,22 +1107,27 @@ public class CollaborationTrackingService {
     }
 
     /**
-     * 命中档位后的实际单价：只有"不封顶数量"的那一档（maxCount 为空）才可能配置了当月封顶金额，
-     * 此时要看这一档在 sameTypeBefore 里已经挣到的钱，从封顶金额里扣掉剩多少，跟单价取小值。
-     * sameTypeBefore 是"这一笔之前"同类型已经赋值过内部执行成本的记录（按 id 升序，不含这一笔本身）。
+     * 命中档位后的实际单价：只有"不封顶数量"的那一档（maxCount 为空）才可能配置了当月封顶金额。
+     *
+     * 2026-08 修复（Shawn 反馈）：封顶金额指的是"这个视频类型"当月的累计封顶，不是"这一档"
+     * 单独的累计封顶——一个视频类型不管拆了几档、这一笔落在哪一档，只要这个类型当月累计挣到的
+     * 钱到了封顶金额，后面属于这一档（能设置封顶金额的只有最后这一档）的记录就不再计费。
+     * 之前的写法只统计 sameTypeBefore 里"位次落在这一档范围内"的记录，如果同一个类型配置了
+     * 多档（比如 1-50 一个价、51 及以上另一个价+封顶），前面那些档位的收入不会计入封顶累计，
+     * 封顶金额实际上只在管这一档自己的收入，跟"这个类型当月封顶"的本意不符。
+     * 现在改成不分档位、对 sameTypeBefore 里这个类型当月已经赋值过内部执行成本的全部记录求和。
+     * sameTypeBefore 是"这一笔之前"同类型已经赋值过内部执行成本的记录（按发布时间升序，
+     * 不含这一笔本身）。
      */
     private java.math.BigDecimal capAdjustedRate(ExecutorPayRateTier tier, List<CollaborationTracking> sameTypeBefore) {
         java.math.BigDecimal rate = tier.getRate();
         if (tier.getMonthlyCap() == null || rate == null) return rate;
-        java.math.BigDecimal earnedInTier = java.math.BigDecimal.ZERO;
-        for (int idx = 0; idx < sameTypeBefore.size(); idx++) {
-            int p = idx + 1;
-            if (p >= tier.getMinCount() && (tier.getMaxCount() == null || p <= tier.getMaxCount())) {
-                java.math.BigDecimal c = sameTypeBefore.get(idx).getInternalExecutionCost();
-                if (c != null) earnedInTier = earnedInTier.add(c);
-            }
+        java.math.BigDecimal earnedSoFar = java.math.BigDecimal.ZERO;
+        for (CollaborationTracking c : sameTypeBefore) {
+            java.math.BigDecimal cost = c.getInternalExecutionCost();
+            if (cost != null) earnedSoFar = earnedSoFar.add(cost);
         }
-        java.math.BigDecimal remaining = tier.getMonthlyCap().subtract(earnedInTier);
+        java.math.BigDecimal remaining = tier.getMonthlyCap().subtract(earnedSoFar);
         if (remaining.compareTo(java.math.BigDecimal.ZERO) < 0) remaining = java.math.BigDecimal.ZERO;
         return rate.compareTo(remaining) > 0 ? remaining : rate;
     }
@@ -1130,11 +1182,18 @@ public class CollaborationTrackingService {
 
     /**
      * 保存内部执行成本（跟状态流转分开，是独立的一步操作）。
-     * notApplicable=true：确认"不涉及内部执行人员"，忽略 executorId/amount，只置标记位，
+     * notApplicable=true：确认"不涉及内部执行人员"，忽略 executorId，只置标记位，
      * 以后这条记录不会再自动弹出这个弹窗（后续如果真的需要，直接去编辑表单手动设置）。
      * notApplicable=false：executorId 非空时顺带把执行人员也定下来（弹窗允许在这条记录
      * 还没选执行人员的情况下现场选人）；executorId 和记录里已有的执行人员必须至少有一个非空，
-     * 否则拒绝——不能在没有执行人员的情况下直接填一个金额。
+     * 否则拒绝。
+     *
+     * 2026-08 起金额不再由调用方传入——完全按 suggestExecutorCost() 同一套费率梯度逻辑现场
+     * 算出来，算不出来（没配置费率梯度，或配置了但档位覆盖不到这个月第几条）直接拒绝保存，
+     * 不再退回"手动填"；算出来是 0（命中了配置了当月封顶金额的档位、这个视频类型当月预算
+     * 花完了）是正常业务结果，照样保存。这里落库的值 executorCostOverridden 恒为 false——
+     * 唯一能把这个字段设成手动特批值的入口是 CollaborationTrackingService.doSave()（ADMIN
+     * 在"编辑"表单里改），不是这个方法。
      *
      * "二次修改需审核"（2026-07 新增）：这条记录的内部执行成本只要成功保存过一次
      * （executorCostEverSet=true，不管那一次是金额还是"不涉及执行人员"），之后任何改动
@@ -1142,11 +1201,13 @@ public class CollaborationTrackingService {
      * 提交一条待审核事项，由该记录的项目负责人在"待处理"模块同意后才真正落地
      * （管理层/ADMIN 提交修改也不例外，不享受直接生效特权）。返回结果用
      * ExecutorCostUpdateResult 区分这两种情况，跟"状态流转"里"进度倒退需要审核"的
-     * CollaborationStatusUpdateResult 是同一个思路。
+     * CollaborationStatusUpdateResult 是同一个思路。这条路径下执行人员早就定下来了
+     * （isFirstTime=false 意味着已经成功保存过一次），不接受这次请求顺带改动执行人员本身，
+     * 直接用记录当前已有的执行人员现算金额。
      */
     @Transactional
     public com.lusuoria.settlement.dto.response.ExecutorCostUpdateResult setExecutorCost(
-            Long id, Long executorId, java.math.BigDecimal amount, boolean notApplicable) {
+            Long id, Long executorId, boolean notApplicable) {
         CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));
 
@@ -1159,17 +1220,26 @@ public class CollaborationTrackingService {
 
         if (!isFirstTime && !isProjectManagerSelf) {
             // 非首次修改、操作人又不是这条记录的项目负责人本人：不直接生效，提交审核。
-            // 这条路径下这条记录必然已经有过一次成功保存（isFirstTime=false），executorId
-            // 早就定下来了，不需要也不接受这次请求顺带改动执行人员本身。
             if (t.getProjectManagerId() == null) {
                 throw new RuntimeException("该记录还没有项目负责人，无法提交内部执行成本修改审核，请先在编辑表单里设置项目负责人");
+            }
+            java.math.BigDecimal requestedAmount = null;
+            if (!notApplicable) {
+                if (t.getExecutor() == null) {
+                    throw new RuntimeException("该记录还没有内部执行人员，无法提交修改审核");
+                }
+                ExecutorCostSuggestionResponse suggestion = suggestExecutorCost(t.getId(), t.getExecutor().getId());
+                if (suggestion.getSuggestedAmount() == null) {
+                    throw new RuntimeException(suggestion.getBreakdown());
+                }
+                requestedAmount = suggestion.getSuggestedAmount();
             }
             String summary = (t.getBrand() != null ? t.getBrand().getName() : "未知品牌")
                     + " - " + (t.getInfluencer() != null ? t.getInfluencer().getAccountName() : "未知红人");
             pendingApprovalService.requestExecutorCostModify(
                     t.getId(), t.getInternalProjectNo(), summary,
                     t.getInternalExecutionCost(), t.getExecutorCostNotApplicable(),
-                    amount, notApplicable);
+                    requestedAmount, notApplicable);
             result.setTracking(t);
             result.setPendingApproval(true);
             return result;
@@ -1186,8 +1256,13 @@ public class CollaborationTrackingService {
             if (t.getExecutor() == null) {
                 throw new RuntimeException("请先选择内部执行人员，或选择\"不涉及执行人员\"");
             }
+            ExecutorCostSuggestionResponse suggestion = suggestExecutorCost(t.getId(), t.getExecutor().getId());
+            if (suggestion.getSuggestedAmount() == null) {
+                throw new RuntimeException(suggestion.getBreakdown());
+            }
             t.setExecutorCostNotApplicable(false);
-            t.setInternalExecutionCost(amount);
+            t.setInternalExecutionCost(suggestion.getSuggestedAmount());
+            t.setExecutorCostOverridden(false);
             // 内部执行成本变了，项目毛利往下的可分配利润/负责人提成/公司利润这些都要跟着重新算一遍
             profitCalculator.calculate(t);
         }
@@ -1248,12 +1323,81 @@ public class CollaborationTrackingService {
      * 是否已经配置了汇率，配置了就直接回填；发布时间为空、或者对应月份汇率压根没配置过，
      * 没法自动判断该用哪个汇率，跳过不动，计入"仍然缺失"数量里，由调用方决定要不要提示。
      *
-     * @return 一句人类可读的处理结果摘要，包含处理总数、自动补上汇率的条数、仍然缺失的条数
+     * 2026-08 新增：顺带按费率梯度重新计算所有符合条件记录的内部执行成本——内部执行成本
+     * 2026-08 起完全由系统按梯度价算（见 setExecutorCost()），存量数据里有不少是当初手动填的、
+     * 或者是旧的排位算法（按 id 顺序而不是发布时间）算出来的，跟现在的规则对不上，需要一次性
+     * 批量按新规则重新计算一遍。按 (项目负责人,执行人员,视频类型,发布月份) 分组，组内按发布
+     * 时间从早到晚依次计算，保证"当月封顶金额"的累计口径跟实际保存时完全一致——不能把这个
+     * 组合下的记录混在一起各自独立算，那样"当月已经花了多少"这个累计数字会算错。
+     * 不会动的记录：
+     *   - executorCostOverridden=true（ADMIN 在编辑表单手动特批的值，见 doSave()）——尊重
+     *     这个特批，不覆盖；但它已经花的钱仍然计入同组后续记录的当月封顶累计，不会凭空
+     *     多出预算
+     *   - 已确认"不涉及内部执行人员"、或"折损"记录（本来就不参与执行成本核算）
+     *   - 缺执行人员/视频类型/发布时间/项目负责人任意一项的（没法归组计算）
+     *   - 这个 (项目负责人,执行人员,视频类型) 组合完全没有配置过费率梯度的——整组跳过，
+     *     不强行清零、也不中断整个操作，汇总在返回文案里告诉调用方跳过了哪些组合，
+     *     需要去补配置或者手动处理
+     *
+     * @return 一句人类可读的处理结果摘要，包含处理总数、自动补上汇率的条数、仍然缺失的条数、
+     *         内部执行成本重新计算的条数、因缺费率梯度配置跳过的组合
      */
     @Transactional
     public String recomputeAllProfits() {
         List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
         SimpleDateFormat monthFormat = new SimpleDateFormat("yyyyMM");
+
+        // ---- 内部执行成本：按费率梯度分组重新计算，必须先算完再进下面的利润重算循环，
+        // 这样 profitCalculator.calculate() 才能用上更新后的金额 ----
+        Map<String, List<CollaborationTracking>> execCostGroups = new LinkedHashMap<>();
+        for (CollaborationTracking t : all) {
+            if (t.getExecutor() == null || t.getVideoType() == null || t.getPublishDate() == null
+                    || t.getProjectManager() == null) continue;
+            if (t.getProgress() == CollaborationProgress.DELAYED) continue;
+            if (Boolean.TRUE.equals(t.getExecutorCostNotApplicable())) continue;
+            String month = monthFormat.format(t.getPublishDate());
+            String key = t.getProjectManager().getId() + "|" + t.getExecutor().getId() + "|" + t.getVideoType() + "|" + month;
+            execCostGroups.computeIfAbsent(key, k -> new ArrayList<>()).add(t);
+        }
+        int recomputedExecutorCostCount = 0;
+        int overriddenSkippedCount = 0;
+        int outOfRangeSkippedCount = 0;
+        int noRateSkippedCount = 0;
+        Set<String> noRateSkippedCombos = new java.util.TreeSet<>();
+        for (List<CollaborationTracking> group : execCostGroups.values()) {
+            group.sort((a, b) -> {
+                int cmp = a.getPublishDate().compareTo(b.getPublishDate());
+                if (cmp != 0) return cmp;
+                return a.getId().compareTo(b.getId());
+            });
+            CollaborationTracking first = group.get(0);
+            List<ExecutorPayRateTier> tiers = executorPayRateTierRepo
+                    .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(
+                            first.getProjectManager().getId(), first.getExecutor().getId(), first.getVideoType());
+            if (tiers.isEmpty()) {
+                noRateSkippedCount += group.size();
+                noRateSkippedCombos.add(first.getExecutor().getName() + " / " + first.getVideoType().getLabel());
+                continue;
+            }
+            List<CollaborationTracking> processed = new ArrayList<>();
+            for (CollaborationTracking t : group) {
+                if (Boolean.TRUE.equals(t.getExecutorCostOverridden())) {
+                    overriddenSkippedCount++;
+                    processed.add(t); // 已花的钱仍然占用这个类型当月的封顶预算
+                    continue;
+                }
+                int position = processed.size() + 1;
+                ExecutorPayRateTier matched = findMatchingTier(tiers, position);
+                if (matched == null) {
+                    outOfRangeSkippedCount++;
+                } else {
+                    t.setInternalExecutionCost(capAdjustedRate(matched, processed));
+                    recomputedExecutorCostCount++;
+                }
+                processed.add(t);
+            }
+        }
+
         int fixedExchangeRateCount = 0;
         int stillMissingExchangeRateCount = 0;
         for (CollaborationTracking t : all) {
@@ -1288,6 +1432,21 @@ public class CollaborationTrackingService {
         }
         if (fixedExchangeRateCount == 0 && stillMissingExchangeRateCount == 0) {
             msg.append("，没有发现汇率异常（0或缺失）的记录");
+        }
+
+        msg.append("\n内部执行成本：已按费率梯度重新计算 ").append(recomputedExecutorCostCount).append(" 条");
+        if (overriddenSkippedCount > 0) {
+            msg.append("；").append(overriddenSkippedCount).append(" 条是 ADMIN 手动特批的值，未覆盖");
+        }
+        if (outOfRangeSkippedCount > 0) {
+            msg.append("；").append(outOfRangeSkippedCount)
+               .append(" 条超出了当前配置的梯度覆盖范围，未改动，需要去补充档位配置");
+        }
+        if (noRateSkippedCount > 0) {
+            msg.append("；另有 ").append(noRateSkippedCount)
+               .append(" 条因为以下组合还没配置过费率梯度、跳过未处理：")
+               .append(String.join("、", noRateSkippedCombos))
+               .append("，需要先去\"员工管理\"/\"执行人员管理\"配置后再点一次\"重新计算利润\"补算");
         }
         return msg.toString();
     }

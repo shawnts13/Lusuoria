@@ -316,6 +316,9 @@ public class PendingApprovalService {
         } else {
             t.setExecutorCostNotApplicable(false);
             t.setInternalExecutionCost(p.getRequestedExecutorCostAmount());
+            // 申请提交时就是按系统梯度现算的值（见 CollaborationTrackingService.setExecutorCost()
+            // 的"非首次修改"分支），不是 ADMIN 手动特批，标记成 false
+            t.setExecutorCostOverridden(false);
             profitCalculator.calculate(t);
         }
         trackingRepo.save(t);
