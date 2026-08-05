@@ -43,6 +43,15 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     List<CollaborationTracking> findByOldMaterialSourceLinkNormalized(
             @Param("normalized") String normalized, @Param("excludeId") Long excludeId);
 
+    /**
+     * Excel 批量导入优化专用（2026-08 新增）：一次性取出全表所有已填写"采买旧视频的原链接"的
+     * 记录，用于预建查重索引。这个字段全表唯一、不分红人，不能像 dedupIndex 那样只按这批
+     * 文件涉及的红人查——那样会漏掉"占用链接的是文件外其他红人的记录"这种情况，导致
+     * 应用层的友好报错形同虚设，最终插到数据库时才撞上唯一约束，报出一坨用户看不懂的
+     * Hibernate 异常（历史 bug，2026-08 修复）。
+     */
+    List<CollaborationTracking> findByOldMaterialSourceLinkNormalizedIsNotNullAndIsDeletedFalse();
+
     /** 内部项目编号分配用：统计某"品牌-月份-账号-"前缀已用了多少个（作为序号起点估算） */
     @Query("SELECT COUNT(c) FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false AND c.internalProjectNo LIKE :prefixPattern")

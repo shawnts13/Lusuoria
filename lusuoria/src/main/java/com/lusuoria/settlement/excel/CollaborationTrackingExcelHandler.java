@@ -334,6 +334,21 @@ public class CollaborationTrackingExcelHandler {
         }
     }
 
+    /**
+     * 把这一行导入报错转成非技术人员能看懂的一句话（2026-08 新增）。Excel 异步导入是按行
+     * 收集错误列表展示给用户看的，不会经过 GlobalExceptionHandler（那个只处理同步 HTTP
+     * 请求），数据库层面的异常（唯一约束冲突等）message 经常直接带表名/字段名/约束名甚至
+     * 完整 SQL 报错原文，不能直接展示——这里参照 GlobalExceptionHandler.handleDataAccessException()
+     * 同样的处理原则：技术细节打日志（调用方已经打过了），这里只返回一句业务人员能理解的话。
+     * 其余业务校验抛出的 RuntimeException（"品牌方不存在"这类）message 本身就是可读的，原样展示。
+     */
+    private String friendlyErrorMessage(Exception e) {
+        if (e instanceof org.springframework.dao.DataAccessException) {
+            return "这一行的数据跟系统里已有的记录冲突（比如重复关联了同一条已存在的记录），请核对后重新导入";
+        }
+        return e.getMessage() != null ? e.getMessage() : e.toString();
+    }
+
     /** 从汇总文字里用正则挖出具体数字，挖不到就给 0（不影响主流程，只是统计数字不准） */
     private int parseIntFromSummary(String summary, String pattern) {
         try {
@@ -420,7 +435,8 @@ public class CollaborationTrackingExcelHandler {
                         .computeIfAbsent(rel.getBrandId(), k -> new ArrayList<InfluencerBrandTeam>())
                         .add(rel);
             }
-            // 2. 这批红人名下已有的跟踪记录，建好查重索引 + 旧素材链接占用索引
+            // 2. 这批红人名下已有的跟踪记录，建好查重索引（发布链接+发布时间查重只在同一个红人
+            //    名下才有意义，按这批红人查没问题）
             for (CollaborationTracking existing : trackingRepo.findByInfluencerIdInAndIsDeletedFalse(allInfluencerIds)) {
                 if (existing.getPublishLink() != null && existing.getPublishDate() != null) {
                     bulkCtx.dedupIndex.put(
@@ -428,13 +444,18 @@ public class CollaborationTrackingExcelHandler {
                                     existing.getInfluencerId(), existing.getPublishLink(), existing.getPublishDate()),
                             existing);
                 }
-                if (existing.getOldMaterialSourceLinkNormalized() != null) {
-                    bulkCtx.normalizedLinkOwner.put(existing.getOldMaterialSourceLinkNormalized(), existing);
-                }
             }
         }
         // 3. 全表已用的内部项目编号（只是字符串，量不大，一次性查出来放内存里）
         bulkCtx.usedProjectNos.addAll(trackingRepo.findAllInternalProjectNos());
+
+        // 4. 旧素材链接占用索引：这个字段全表唯一、不分红人，必须全表查，不能像上面 dedupIndex
+        //    那样只按这批文件涉及的红人查——否则占用链接的记录如果属于文件外的其他红人，
+        //    这里会漏查，前面 doSave() 里友好的"旧素材已采买过"报错就形同虚设，最终插入时
+        //    才撞上数据库唯一约束，冒出一坨用户看不懂的 Hibernate 异常（2026-08 修复的 bug）
+        for (CollaborationTracking existing : trackingRepo.findByOldMaterialSourceLinkNormalizedIsNotNullAndIsDeletedFalse()) {
+            bulkCtx.normalizedLinkOwner.put(existing.getOldMaterialSourceLinkNormalized(), existing);
+        }
 
         // 预加载员工列表，供"项目负责人"列模糊匹配
         List<Employee> allEmployees = employeeCache.getAll();
@@ -697,7 +718,7 @@ public class CollaborationTrackingExcelHandler {
                 if (isUpdate) updatedCount++; else createdCount++;
             } catch (Exception e) {
                 log.error("合作跟踪导入第{}行失败：{}", (i + 1), e.getMessage(), e);
-                errors.add("第" + (i + 1) + "行导入失败：" + e.getMessage());
+                errors.add("第" + (i + 1) + "行导入失败：" + friendlyErrorMessage(e));
             }
         }
 
