@@ -84,7 +84,7 @@ public class CollaborationTrackingExcelHandler {
         {"视频发布链接",               "0", "0"},
         {"视频发布时间",               "0", "0"},  // 原名"发布时间"，导入时仍兼容旧列名"发布时间"
         {"视频项目进度",               "0", "0"},  // 原名"进度"，导入时仍兼容旧列名"进度"
-        {"红人结款进度",               "0", "0"},  // 默认空，只有"视频项目进度"达到前置条件才允许设置
+        {"红人结款进度",               "0", "1"},  // 2026-08 起完全由系统控制，模板不再提供这一列，仅导出展示
         {"项目视频类型",               "0", "0"},
         {"采买旧视频的原链接",         "0", "0"},
         {"项目负责人",                 "0", "0"},
@@ -119,20 +119,6 @@ public class CollaborationTrackingExcelHandler {
         "待草稿", "待红人修改", "待发布",
         "已发布（未结算）", "已加入客户未结算列表", "客户已结算", "折损"
     };
-
-    /**
-     * "已纳入红人结款批次"/"已纳入红人结款批次（缺少invoice）"这两个状态只能由红人结款模块内部
-     * 设置（见 InfluencerPaymentProgress.isSystemManagedOnly()），模板下拉框不提供这两个选项，
-     * 就算手填了这两个文本值，导入时也会被 isSystemManagedOnly() 校验拦下来
-     */
-    private static final String[] PAYMENT_PROGRESS_LABELS = {
-        "待红人发送invoice", "红人已提供invoice", "待结款（不涉及invoice）"
-    };
-
-    /** 模板里"红人结款进度"表头的提示语（Excel 原生批注，鼠标悬停可见） */
-    private static final String PAYMENT_PROGRESS_HINT =
-        "该字段默认为空，且只有当\"视频项目进度\"为\"已发布（未结算）\"、\"已加入客户未结算列表\"、"
-        + "\"客户已结算\"时，该字段才会被启用";
 
     /** 模板里"视频发布时间"表头的提示语（Excel 原生批注，鼠标悬停可见） */
     private static final String PUBLISH_DATE_HINT =
@@ -254,14 +240,12 @@ public class CollaborationTrackingExcelHandler {
             hc++;
         }
 
-        // 视频项目进度 / 红人结款进度 下拉
+        // 视频项目进度 / 项目视频类型 下拉（"红人结款进度"2026-08 起完全由系统控制，不再放进模板）
         DataValidationHelper dv = sheet.getDataValidationHelper();
         addDropdown(sheet, dv, colIdxMap, "视频项目进度", PROGRESS_LABELS);
-        addDropdown(sheet, dv, colIdxMap, "红人结款进度", PAYMENT_PROGRESS_LABELS);
         addDropdown(sheet, dv, colIdxMap, "项目视频类型", VIDEO_TYPE_LABELS);
 
-        // "红人结款进度"/"视频发布时间"表头各加一条批注提示前置条件，避免误填
-        addHeaderComment(sheet, wb, colIdxMap, "红人结款进度", PAYMENT_PROGRESS_HINT);
+        // "视频发布时间"表头加一条批注提示前置条件，避免误填
         addHeaderComment(sheet, wb, colIdxMap, "视频发布时间", PUBLISH_DATE_HINT);
         // 两个金额列加批注提示必须是数字，避免误填文本备注
         addHeaderComment(sheet, wb, colIdxMap, "红人视频制作与发布成本（美金）", MONEY_FIELD_HINT);
@@ -276,7 +260,6 @@ public class CollaborationTrackingExcelHandler {
         ex.put("视频发布链接", "https://instagram.com/p/xxx");
         ex.put("视频发布时间", "2026-04-09");
         ex.put("视频项目进度", "已发布（未结算）");
-        ex.put("红人结款进度", "");  // 默认留空，只有视频项目进度达到前置条件才启用，具体见表头批注
         ex.put("项目视频类型", "实拍新视频");
         ex.put("采买旧视频的原链接", "");  // 仅"项目视频类型"为"旧素材重发"时才填写，其余情况留空
         ex.put("项目负责人", "梁珈绫 Charlene");
@@ -539,7 +522,7 @@ public class CollaborationTrackingExcelHandler {
                 Date publishDate = parseDate(row, colMap, dateFormats);
                 req.setPublishDate(publishDate);
 
-                // 视频项目进度、红人结款进度、项目视频类型：Excel 导入无论新建还是更新已有记录，都允许带状态
+                // 视频项目进度、项目视频类型：Excel 导入无论新建还是更新已有记录，都允许带状态
                 // 填了但匹配不到有效选项时要报错，不能像以前那样静默地变成空值
                 String progressRaw = firstNonNull(
                         getStr(row, colMap, "视频项目进度"),
@@ -577,21 +560,10 @@ public class CollaborationTrackingExcelHandler {
                         continue;
                     }
                 }
-                // 红人结款进度：默认空，只有上面解析出来的视频项目进度达到前置条件才允许设置值，
-                // 不满足条件时直接报错（不像其他字段那样静默跳过），跟单条保存/状态流转共用同一句错误文案
-                String paymentProgressRaw = getStr(row, colMap, "红人结款进度");
-                if (paymentProgressRaw != null && !paymentProgressRaw.trim().isEmpty()) {
-                    InfluencerPaymentProgress paymentProgress = InfluencerPaymentProgress.fromLabel(paymentProgressRaw);
-                    if (paymentProgress == null) {
-                        errors.add("第" + (i + 1) + "行：红人结款进度 [" + paymentProgressRaw + "] 不是有效选项，请核对");
-                        continue;
-                    }
-                    if (req.getProgress() == null || !req.getProgress().allowsPaymentProgress()) {
-                        errors.add("第" + (i + 1) + "行：" + InfluencerPaymentProgress.PRECONDITION_ERROR);
-                        continue;
-                    }
-                    req.setInfluencerPaymentProgress(paymentProgress);
-                }
+                // 红人结款进度：2026-08 起完全由系统控制，不再是导入模板里的一列，这里不解析——
+                // 即便有人手动往表头加回这一列重新上传，也不会被读取。落库时若这一行让"视频项目
+                // 进度"达到前置条件、且这条记录当前还没有值，CollaborationTrackingService.doSave()
+                // 会按品牌方是否需要 invoice 自动补一个初始值，见那边的注释
                 String videoTypeRaw = getStr(row, colMap, "项目视频类型");
                 if (videoTypeRaw != null && !videoTypeRaw.trim().isEmpty()) {
                     VideoType videoType = VideoType.fromLabel(videoTypeRaw);
@@ -687,19 +659,10 @@ public class CollaborationTrackingExcelHandler {
                 // 注："客户方的项目订单"现在就是一个普通的录入字段（"项目订单"模块已废弃），
                 // 改这个字段不再有任何联动限制
 
-                // ---- "已纳入红人结款批次"这两个状态只能由红人结款模块内部设置——不管是这一行想把
-                //      它改成这两个值之一，还是这一行对应的已有记录本来就是这两个值之一、这一行
-                //      想把它改离开（比如列清空了），都拒绝；值没变（比如重新导入同一批已经纳入
-                //      结款批次的数据，这一列还是原来的文案）不算，放行，否则已纳入批次的记录会连
-                //      别的字段都没法再通过Excel更新。必须放在查重之后，因为要跟已有记录的原值比较 ----
-                InfluencerPaymentProgress currentPayment = existingOrNull != null ? existingOrNull.getInfluencerPaymentProgress() : null;
-                InfluencerPaymentProgress requestedPayment = req.getInfluencerPaymentProgress();
-                boolean currentIsManaged = currentPayment != null && currentPayment.isSystemManagedOnly();
-                boolean requestedIsManaged = requestedPayment != null && requestedPayment.isSystemManagedOnly();
-                if ((currentIsManaged || requestedIsManaged) && requestedPayment != currentPayment) {
-                    errors.add("第" + (i + 1) + "行：" + InfluencerPaymentProgress.SYSTEM_MANAGED_ERROR);
-                    continue;
-                }
+                // 注："已纳入红人结款批次"这两个状态只能由红人结款模块内部设置——2026-08 起
+                // "红人结款进度"整体不再从 Excel 读取（req 上这个字段永远是 null），CollaborationTrackingService
+                // .doSave() 也只在这个字段当前是 null 时才会自动补值，已经是这两个系统值的记录不会被
+                // Excel 导入碰到，不需要在这里单独校验了
 
                 // ---- 视频项目进度"倒退"保护：这条记录红人结款进度已有值，且这行想把视频项目进度
                 //      改成不满足前置条件的另一个状态 —— 这种改动必须走"状态流转"功能提交管理员审核，
@@ -863,7 +826,7 @@ public class CollaborationTrackingExcelHandler {
             {"视频发布链接", "发布链接(IG reel)", "发布链接", "主页link"},
             {"视频发布时间", "发布时间"},   // 兼容改名前的旧列名"发布时间"
             {"视频项目进度", "进度"},   // 兼容改名前的旧列名"进度"
-            {"红人结款进度"},
+            // "红人结款进度"2026-08 起完全由系统控制，不再是导入模板的一列，不要求表头存在
             {"项目视频类型"},
             {"采买旧视频的原链接"},
             {"项目负责人"},

@@ -49,8 +49,10 @@ public class CollaborationTrackingRequest {
     private CollaborationProgress progress;
 
     /**
-     * 红人结款进度。默认空，只有当上面的 progress 达到前置条件（已发布(未结算)/
-     * 已加入客户未结算列表/客户已结算）时才允许设置值，由 service 层统一校验。
+     * 红人结款进度。2026-08 起完全由系统控制（CollaborationTrackingService 自动补值 +
+     * InfluencerRequirementService/InfluencerPaymentService 内部流转），前端不再提交这个字段，
+     * CollaborationTrackingService.doSave() 也不再读取它——留着这个字段只是避免旧客户端/
+     * 缓存的前端构建产物仍带着它提交时报"未知字段"，不代表还能通过它改动这个值。
      */
     private InfluencerPaymentProgress influencerPaymentProgress;
 

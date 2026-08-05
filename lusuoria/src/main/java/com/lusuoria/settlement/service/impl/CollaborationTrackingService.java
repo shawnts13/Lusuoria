@@ -405,23 +405,18 @@ public class CollaborationTrackingService {
             }
         }
 
-        // 红人结款进度：跟"进度"字段一样的编辑权限规则——只有新建，或明确允许时（Excel 导入更新分支）
-        // 才能改；且只有上面刚设置好的"进度"达到前置条件（已发布(未结算)/已加入客户未结算列表/
-        // 客户已结算）时，才允许设置这个字段的值，否则直接拒绝（Excel 导入报错文案见 handler，
-        // 这里是单条保存/批量落库共用的最终防线）
-        if (existingOrNull == null || allowStatusUpdateOnEdit) {
-            InfluencerPaymentProgress newPayment = req.getInfluencerPaymentProgress();
-            // 拒绝任何会改动这两个系统值的操作——不管是"改成"这两个值，还是记录当前已经是
-            // 这两个值之一、想手动"改离开"（那样会跟红人结款那边的批次记录对不上）。
-            // 唯一放行的例外：值压根没变（比如 Excel 重新导入同一批已经纳入结款批次的记录，
-            // 或者这次保存根本没碰这个字段），不然已纳入批次的记录会连别的字段都没法再更新了
-            if (isSystemManagedChange(tracking.getInfluencerPaymentProgress(), newPayment)) {
-                throw new RuntimeException(InfluencerPaymentProgress.SYSTEM_MANAGED_ERROR);
-            }
-            if (newPayment != null && (tracking.getProgress() == null || !tracking.getProgress().allowsPaymentProgress())) {
-                throw new RuntimeException(InfluencerPaymentProgress.PRECONDITION_ERROR);
-            }
-            tracking.setInfluencerPaymentProgress(newPayment);
+        // 红人结款进度：2026-08 起完全由系统控制，单条保存/Excel 批量导入都不再接受请求体里的值
+        // （前端表单已经把这个下拉框整个去掉，Excel 模板也去掉了这一列——即便有人手填了这一列
+        // 重新上传，CollaborationTrackingExcelHandler 也不会再读它）。这里唯一要做的：这次保存后
+        // "进度"落在达标阶段（已发布(未结算)/已加入客户未结算列表/客户已结算），但这个字段当前
+        // 还没有值时，按品牌方是否需要 invoice 自动补一个初始值——跟 updateStatus() 里"首次进入
+        // 已发布(未结算)"用的是同一套 resolveInitialPaymentProgress() 逻辑，覆盖的是"新建/Excel
+        // 新增时进度直接就是达标阶段"（跳过前期制作流程直接补录历史数据）这种两个自动触发点
+        // （doSave() 里的"编辑时自动流转"、updateStatus() 里的"状态流转"）都覆盖不到的场景。
+        // 已经有值的记录（不管是系统批次值还是之前自动赋的值）不会被这里改动或清空。
+        if (tracking.getInfluencerPaymentProgress() == null
+                && tracking.getProgress() != null && tracking.getProgress().allowsPaymentProgress()) {
+            tracking.setInfluencerPaymentProgress(resolveInitialPaymentProgress(tracking.getBrand()));
         }
         tracking.setVideoType(req.getVideoType());
         tracking.setClientPaymentBatch(req.getClientPaymentBatch());
