@@ -104,8 +104,10 @@ public class CollaborationTrackingService {
         List<InfluencerBrandTeam> getTeamOptions(Long influencerId, Long brandId);
         /** 查重命中的那一条（没命中返回 null），excludeId 用于编辑时排除自身 */
         CollaborationTracking findDuplicate(Long influencerId, String publishLink, Date publishDate, Long excludeId);
-        /** 这个归一化后的旧素材链接是否已经被别的记录占用（excludeId 排除自身） */
-        boolean isOldMaterialLinkTaken(String normalizedLink, Long excludeId);
+        /** 这个归一化后的旧素材链接如果已经被别的记录占用，返回占用它的那条记录（excludeId
+         * 排除自身），没被占用返回 null——2026-08 起返回整条记录而不是单纯的 boolean，
+         * 是为了报错文案能带上占用者的内部项目编号，方便核对是不是真的重复采买 */
+        CollaborationTracking findOldMaterialLinkOwner(String normalizedLink, Long excludeId);
         /** 分配一个没被占用的内部项目编号 */
         String allocateInternalProjectNo(String brandName, String teamName, String month, String accountName);
     }
@@ -119,8 +121,9 @@ public class CollaborationTrackingService {
             List<CollaborationTracking> dups = trackingRepo.findDuplicates(influencerId, publishLink, publishDate, excludeId);
             return dups.isEmpty() ? null : dups.get(0);
         }
-        public boolean isOldMaterialLinkTaken(String normalizedLink, Long excludeId) {
-            return !trackingRepo.findByOldMaterialSourceLinkNormalized(normalizedLink, excludeId).isEmpty();
+        public CollaborationTracking findOldMaterialLinkOwner(String normalizedLink, Long excludeId) {
+            List<CollaborationTracking> hits = trackingRepo.findByOldMaterialSourceLinkNormalized(normalizedLink, excludeId);
+            return hits.isEmpty() ? null : hits.get(0);
         }
         public String allocateInternalProjectNo(String brandName, String teamName, String month, String accountName) {
             return projectNoAllocator.allocate(brandName, teamName, month, accountName);
@@ -139,8 +142,9 @@ public class CollaborationTrackingService {
         public Map<Long, Map<Long, List<InfluencerBrandTeam>>> brandTeamMap = new HashMap<>();
         /** 查重索引：key 见 dedupKey()，value 是已存在的跟踪记录 */
         public Map<String, CollaborationTracking> dedupIndex = new HashMap<>();
-        /** 归一化后的旧素材链接 -> 占用这个链接的跟踪记录 id */
-        public Map<String, Long> normalizedLinkOwner = new HashMap<>();
+        /** 归一化后的旧素材链接 -> 占用这个链接的跟踪记录（2026-08 起存整条记录而不是只存 id，
+         * 报重复采买错误时要带上占用者的内部项目编号） */
+        public Map<String, CollaborationTracking> normalizedLinkOwner = new HashMap<>();
         /** 已经被使用的内部项目编号（分配新编号时会持续往里加，避免同批文件内部撞号） */
         public Set<String> usedProjectNos = new HashSet<>();
 
@@ -161,9 +165,9 @@ public class CollaborationTrackingService {
         }
 
         @Override
-        public boolean isOldMaterialLinkTaken(String normalizedLink, Long excludeId) {
-            Long ownerId = normalizedLinkOwner.get(normalizedLink);
-            return ownerId != null && !ownerId.equals(excludeId);
+        public CollaborationTracking findOldMaterialLinkOwner(String normalizedLink, Long excludeId) {
+            CollaborationTracking owner = normalizedLinkOwner.get(normalizedLink);
+            return (owner != null && !java.util.Objects.equals(owner.getId(), excludeId)) ? owner : null;
         }
 
         @Override
@@ -263,7 +267,7 @@ public class CollaborationTrackingService {
                     saved);
         }
         if (saved.getOldMaterialSourceLinkNormalized() != null) {
-            ctx.normalizedLinkOwner.put(saved.getOldMaterialSourceLinkNormalized(), saved.getId());
+            ctx.normalizedLinkOwner.put(saved.getOldMaterialSourceLinkNormalized(), saved);
         }
         return saved;
     }
@@ -468,8 +472,13 @@ public class CollaborationTrackingService {
             throw new RuntimeException("只有\"项目视频类型\"为\"旧素材重发\"时才能填写\"采买旧视频的原链接\"");
         }
         String normalizedLink = UrlNormalizer.normalize(sourceLink);
-        if (normalizedLink != null && ctx.isOldMaterialLinkTaken(normalizedLink, existingOrNull != null ? existingOrNull.getId() : null)) {
-            throw new DuplicateOldMaterialLinkException("旧素材已采买过，请确认是否重复采买");
+        if (normalizedLink != null) {
+            CollaborationTracking linkOwner = ctx.findOldMaterialLinkOwner(
+                    normalizedLink, existingOrNull != null ? existingOrNull.getId() : null);
+            if (linkOwner != null) {
+                throw new DuplicateOldMaterialLinkException(
+                        "旧素材已采买过（内部项目编号：" + linkOwner.getInternalProjectNo() + "），请确认是否重复采买");
+            }
         }
         tracking.setOldMaterialSourceLink(sourceLink);
         tracking.setOldMaterialSourceLinkNormalized(normalizedLink);

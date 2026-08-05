@@ -429,7 +429,7 @@ public class CollaborationTrackingExcelHandler {
                             existing);
                 }
                 if (existing.getOldMaterialSourceLinkNormalized() != null) {
-                    bulkCtx.normalizedLinkOwner.put(existing.getOldMaterialSourceLinkNormalized(), existing.getId());
+                    bulkCtx.normalizedLinkOwner.put(existing.getOldMaterialSourceLinkNormalized(), existing);
                 }
             }
         }
