@@ -1204,12 +1204,18 @@ public class PayslipService {
      * 2026-08 新增：该员工在"员工管理"标注的"入职时间"，是否晚于（按月比较）当前查询的这个
      * 月份——是的话这个月的工资单列表不该包含这条员工记录（入职之前不该有工资单）。
      * 没标注入职时间（历史遗留员工）时不过滤，保持原来的行为，不强行拦掉查不到入职时间的人。
-     * 用 yyyy-MM 字符串比较而不是 Date 比较，是因为只关心"月份"这个粒度，不关心具体哪一天
-     * 入职——同一个月入职的，这个月照常有工资单，不做按天折算。
+     *
+     * 用字符串比较而不是 Date 比较，是因为只关心"月份"这个粒度，不关心具体哪一天入职——
+     * 同一个月入职的，这个月照常有工资单，不做按天折算。格式必须是 yyyyMM（不带"-"），
+     * 跟这个模块/CollaborationTracking 那边 publishMonth 的口径统一——前端月份选择器
+     * value-format 就是 "YYYYMM"（见 PayslipListPage.vue），Payslip.yearMonth 这一列
+     * 存的也是这个格式。2026-08 刚上线时这里手滑写成了 "yyyy-MM"，导致字符串比较整个失效
+     * （"202606".compareTo("2026-07") 因为 '0' 的 ASCII 比 '-' 大，永远判定不成立），
+     * 7月入职的员工照样出现在6月工资单列表里——这里改回 yyyyMM 就是修这个问题。
      */
     private boolean isBeforeHireMonth(Employee e, String yearMonth) {
         if (e.getHireDate() == null) return false;
-        String hireMonth = new SimpleDateFormat("yyyy-MM").format(e.getHireDate());
+        String hireMonth = new SimpleDateFormat("yyyyMM").format(e.getHireDate());
         return yearMonth.compareTo(hireMonth) < 0;
     }
 
