@@ -3,6 +3,7 @@ package com.lusuoria.settlement.dto.response;
 import lombok.Data;
 
 import java.math.BigDecimal;
+import java.util.Date;
 
 /**
  * "需求完成进度"点击详情用：某条需求下已关联的红人合作跟踪记录简略信息
@@ -21,6 +22,12 @@ public class RequirementTrackingSummaryResponse {
     private String progressLabel;
     /** 视频项目进度的原始枚举值（前端按值上色用，progressLabel 只是显示文案） */
     private String progress;
+    /**
+     * 视频发布时间（2026-08 新增，排查"需求完成时间"跟"这个需求里最晚的视频发布时间"对不上
+     * 的问题时，方便管理层直接在这个详情列表里对照每条记录自己的发布时间，不用跳去合作跟踪
+     * 模块逐条查）。可能为空——还没发布的记录本来就没有这个值。
+     */
+    private Date publishDate;
     /**
      * 这条记录对应需求里的第几个条目（1-based，按条目在需求里的创建顺序编号），
      * 不落库、现算——按 (videoType, platform, 两个单价) 精确匹配到具体条目，跟

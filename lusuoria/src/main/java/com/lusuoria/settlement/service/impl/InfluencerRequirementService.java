@@ -720,14 +720,25 @@ public class InfluencerRequirementService {
     }
 
     /**
-     * 维护 completedAt（需求完成进度达到100%的时间，2026-07 新增，供"Invoice逾期"提醒批次/
-     * 红人结款阈值分档用）。由 CollaborationTrackingService 在每次某条关联记录的 progress
-     * 真正发生变化后调用；2026-08 起 save()（本类自己，编辑需求条目导致 totalItemCount
-     * 变化时）也会调用——"是否100%完成"不只取决于关联记录的进度，也取决于需求自己的条目
-     * 总数，两边任意一个变了都要重新判定一次，不能只覆盖前者。
-     * 达到100%且当前为空 → 设置成当前时间；没达到100%但当前有值（说明是被"进度倒退"审批
-     * 通过拉回去的、或者需求条目被改多了）→ 清空。internalRequirementNo 为空或查不到需求时
-     * 直接忽略。
+     * 维护 completedAt（供"Invoice逾期"提醒批次/红人结款阈值分档用）。由
+     * CollaborationTrackingService 在每次某条关联记录的 progress 真正发生变化后调用；
+     * 2026-08 起 save()（本类自己，编辑需求条目导致 totalItemCount 变化时）也会调用——
+     * "是否100%完成"不只取决于关联记录的进度，也取决于需求自己的条目总数，两边任意一个变了
+     * 都要重新判定一次，不能只覆盖前者。
+     *
+     * 2026-08 bug 修复：这里之前达到100%时把 completedAt 设成 new Date()（"系统检测到100%
+     * 完成的那一刻"），但这个字段真正的语义早就订正成"该需求所有关联记录里最晚的视频发布
+     * 时间"了（见下面 recomputeAllCompletedAt() 的说明）——只有那个一次性善后按钮改成了
+     * 按这个新语义算，这个增量维护方法一直没跟着改，导致日常新增/完成需求时 completedAt
+     * 仍然是"今天"，不是真实的最晚视频发布时间（比如今天触发了100%完成判定，但这条需求
+     * 里最晚的视频其实是上个月发布的，completedAt 却显示成今天所在的月份）。现在改成
+     * 跟 recomputeAllCompletedAt() 同一套查询/同一个"正确值"，取不到任何发布时间时
+     * （理论上不会发生，因为进入终态必须先填视频发布时间，防御性兜底）才退回当前时间。
+     *
+     * 达到100%时：如果当前值为空、或者不等于这个正确值，就设置/订正成正确值（不只是补空，
+     * 已经有值但不准确时也会被订正，比如某条记录的视频发布时间后来被改了）。没达到100%但
+     * 当前有值（说明是被"进度倒退"审批通过拉回去的、或者需求条目被改多了）→ 清空。
+     * internalRequirementNo 为空或查不到需求时直接忽略。
      */
     @Transactional
     public void refreshCompletedAt(String internalRequirementNo) {
@@ -739,10 +750,15 @@ public class InfluencerRequirementService {
                 .getOrDefault(internalRequirementNo, 0);
         int total = requirement.getTotalItemCount() != null ? requirement.getTotalItemCount() : 0;
         boolean isComplete = total > 0 && completed >= total;
-        if (isComplete && requirement.getCompletedAt() == null) {
-            requirement.setCompletedAt(new Date());
-            requirementRepo.save(requirement);
-        } else if (!isComplete && requirement.getCompletedAt() != null) {
+        if (isComplete) {
+            Date correctValue = trackingRepo
+                    .maxPublishDateByRequirementNos(java.util.Collections.singletonList(internalRequirementNo))
+                    .stream().findFirst().map(row -> (Date) row[1]).orElse(new Date());
+            if (requirement.getCompletedAt() == null || !requirement.getCompletedAt().equals(correctValue)) {
+                requirement.setCompletedAt(correctValue);
+                requirementRepo.save(requirement);
+            }
+        } else if (requirement.getCompletedAt() != null) {
             requirement.setCompletedAt(null);
             requirementRepo.save(requirement);
         }
@@ -790,18 +806,20 @@ public class InfluencerRequirementService {
 
     /**
      * "重新计算需求完成时间"按钮专用（2026-08 新增，善后用，仅 ADMIN）：批量重新判定所有
-     * 未删除需求的 completedAt。修复两类历史遗留问题：
+     * 未删除需求的 completedAt。修复三类历史遗留问题：
      *   1）"存量记录关联需求"（linkLegacyTrackings）历史上曾经漏调 refreshCompletedAt()
      *      导致的遗留数据——关联时红人合作跟踪记录的视频项目进度已经达到"已发布（未结算）"
      *      及以后（完成条件本来就已经满足），但需求完成时间一直没被补上；这个漏洞本身已经
      *      在 linkLegacyTrackings() 里补上调用了，这里是给已经产生的历史数据一次性善后。
-     *   2）2026-08 起，"需求完成时间"统一订正成"该需求所有关联记录里最晚的视频发布时间"，
-     *      不是"系统检测到100%完成的那一刻"——存量/批量导入数据场景下，导入/首次跑这个
-     *      recompute 的时刻可能跟视频真正发布完成的时间相差很远，用最晚的视频发布时间
-     *      更准确。已经有值但不等于这个"正确值"的记录也会被订正（不只是补空）。
+     *   2）"需求完成时间"的语义是"该需求所有关联记录里最晚的视频发布时间"，不是"系统检测到
+     *      100%完成的那一刻"——已经有值但不等于这个"正确值"的记录也会被订正（不只是补空）。
      *      取不到任何发布时间时（理论上不会发生，防御性兜底）保留原逻辑，退回当前时间。
-     * 正常使用不需要点这个（正常的实时流转过程中，completedAt 一直是靠 refreshCompletedAt()
-     * 增量维护的，语义仍然是"系统检测到100%完成的那一刻"，这个按钮只对历史存量数据做订正）。
+     *   3）2026-08 bug：refreshCompletedAt() 之前一直没跟上第2点这个语义订正，日常新增/
+     *      完成需求时 completedAt 被设成"今天"而不是真实的最晚视频发布时间，导致看到的
+     *      需求完成月份对不上系统里任何一条视频的实际发布月份。这个 bug 本身已经在
+     *      refreshCompletedAt() 里修复，这里是给 bug 修复之前已经产生的历史脏数据一次性善后。
+     * 正常使用不需要点这个（bug 修复后，正常的实时流转过程中 completedAt 已经靠
+     * refreshCompletedAt() 增量维护成正确值了）——除非怀疑还有历史数据没订正过，才需要跑一次。
      */
     @Transactional
     public String recomputeAllCompletedAt() {
@@ -867,6 +885,7 @@ public class InfluencerRequirementService {
             r.setDemandContent(t.getDemandContent());
             r.setProgressLabel(t.getProgress() != null ? t.getProgress().getLabel() : null);
             r.setProgress(t.getProgress() != null ? t.getProgress().name() : null);
+            r.setPublishDate(t.getPublishDate());
             r.setItemIndex(matchItemIndex(items, t));
             r.setInfluencerUnitCostPrice(t.getInfluencerCost());
             r.setClientUnitPrice(t.getClientPrice());
