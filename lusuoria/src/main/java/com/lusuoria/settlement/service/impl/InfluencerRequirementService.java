@@ -368,11 +368,11 @@ public class InfluencerRequirementService {
     @Transactional(readOnly = true)
     public org.springframework.data.domain.Page<InfluencerRequirement> pageIncomplete(
             Long brandId, Long teamId, String accountName, String requirementMonth,
-            String internalRequirementNo, Date completedMonthStart, Date completedMonthEnd,
+            String internalRequirementNo, String completedMonth,
             org.springframework.data.domain.Pageable pageable) {
         List<Object[]> liteRows = requirementRepo.findLiteProjectionByFilters(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo,
-                completedMonthStart, completedMonthEnd, pageable.getSort());
+                completedMonth, pageable.getSort());
         List<String> nos = liteRows.stream().map(row -> (String) row[1]).collect(Collectors.toList());
         Map<String, Integer> completedByNo = completedCountByNos(nos);
         Map<String, Integer> establishedByNo = establishedCountByNos(nos);
@@ -417,11 +417,11 @@ public class InfluencerRequirementService {
     @Transactional(readOnly = true)
     public org.springframework.data.domain.Page<InfluencerRequirement> listIncompleteFirst(
             Long brandId, Long teamId, String accountName, String requirementMonth,
-            String internalRequirementNo, Date completedMonthStart, Date completedMonthEnd,
+            String internalRequirementNo, String completedMonth,
             org.springframework.data.domain.Pageable pageable) {
         List<Object[]> liteRows = requirementRepo.findLiteProjectionByFilters(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo,
-                completedMonthStart, completedMonthEnd, pageable.getSort());
+                completedMonth, pageable.getSort());
         List<String> nos = liteRows.stream().map(row -> (String) row[1]).collect(Collectors.toList());
         Map<String, Integer> completedByNo = completedCountByNos(nos);
 
@@ -469,11 +469,11 @@ public class InfluencerRequirementService {
     @Transactional(readOnly = true)
     public org.springframework.data.domain.Page<InfluencerRequirement> pageMissingInvoice(
             Long brandId, Long teamId, String accountName, String requirementMonth,
-            String internalRequirementNo, Date completedMonthStart, Date completedMonthEnd,
+            String internalRequirementNo, String completedMonth,
             org.springframework.data.domain.Pageable pageable) {
         List<InfluencerRequirement> all = requirementRepo.findByFiltersNoPaging(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo,
-                completedMonthStart, completedMonthEnd, pageable.getSort());
+                completedMonth, pageable.getSort());
         List<InfluencerRequirement> missing = new ArrayList<>();
         for (InfluencerRequirement r : all) {
             if (r.getCompletedAt() == null) continue;
@@ -502,11 +502,11 @@ public class InfluencerRequirementService {
     @Transactional(readOnly = true)
     public org.springframework.data.domain.Page<InfluencerRequirement> pageMissingContract(
             Long brandId, Long teamId, String accountName, String requirementMonth,
-            String internalRequirementNo, Date completedMonthStart, Date completedMonthEnd,
+            String internalRequirementNo, String completedMonth,
             org.springframework.data.domain.Pageable pageable) {
         List<InfluencerRequirement> all = requirementRepo.findByFiltersNoPaging(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo,
-                completedMonthStart, completedMonthEnd, pageable.getSort());
+                completedMonth, pageable.getSort());
         List<Long> influencerIds = all.stream().map(InfluencerRequirement::getInfluencerId)
                 .filter(java.util.Objects::nonNull).distinct().collect(Collectors.toList());
         Map<Long, List<InfluencerContract>> contractsByInfluencerId = influencerIds.isEmpty()
@@ -568,11 +568,11 @@ public class InfluencerRequirementService {
     @Transactional(readOnly = true)
     public org.springframework.data.domain.Page<InfluencerRequirement> pageUnsettled(
             Long brandId, Long teamId, String accountName, String requirementMonth,
-            String internalRequirementNo, Date completedMonthStart, Date completedMonthEnd,
+            String internalRequirementNo, String completedMonth,
             org.springframework.data.domain.Pageable pageable) {
         List<InfluencerRequirement> all = requirementRepo.findByFiltersNoPaging(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo,
-                completedMonthStart, completedMonthEnd, pageable.getSort());
+                completedMonth, pageable.getSort());
         List<InfluencerRequirement> unsettled = all.stream()
                 .filter(r -> r.getSettlementStatus() == null)
                 .collect(Collectors.toList());
