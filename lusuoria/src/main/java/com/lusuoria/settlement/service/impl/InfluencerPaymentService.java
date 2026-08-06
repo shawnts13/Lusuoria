@@ -307,7 +307,15 @@ public class InfluencerPaymentService {
         payment = paymentRepo.save(payment);
         linkItems(payment, items);
         saveTeamScope(payment.getId(), req.getTeamIds());
+        refreshSettlementStatusFor(items);
         return payment;
+    }
+
+    /** 按 internalRequirementNo 去重后逐个调用 InfluencerRequirementService.refreshSettlementStatus() */
+    private void refreshSettlementStatusFor(List<CollaborationTracking> items) {
+        Set<String> reqNos = items.stream().map(CollaborationTracking::getInternalRequirementNo)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+        for (String reqNo : reqNos) requirementService.refreshSettlementStatus(reqNo);
     }
 
     /** 创建时选定的团队范围落库，去重后一个团队（或"不选团队"）存一行 */
@@ -370,7 +378,13 @@ public class InfluencerPaymentService {
         }
         recomputeRmb(payment);
 
-        return paymentRepo.save(payment);
+        InfluencerPayment saved = paymentRepo.save(payment);
+        // 结款状态要同时覆盖"移出批次的旧记录"和"新纳入的记录"各自涉及的需求编号——
+        // 移出的那些可能因此要从"已添加结款记录"退回空，新纳入的要补上
+        List<CollaborationTracking> affected = new ArrayList<>(toUnlink);
+        affected.addAll(newItems);
+        refreshSettlementStatusFor(affected);
+        return saved;
     }
 
     @Transactional
@@ -385,19 +399,34 @@ public class InfluencerPaymentService {
             payment.setActualPaymentDate(null);
         }
         payment.setPaymentStatus(req.getPaymentStatus());
-        return paymentRepo.save(payment);
+        InfluencerPayment saved = paymentRepo.save(payment);
+        // 付款状态在"待付款"/"已付款"之间流转，直接影响这批记录关联的需求"结款状态"该显示哪个值
+        refreshSettlementStatusForNos(payment.getInvolvedRequirementNos());
+        return saved;
     }
 
     @Transactional
     public void delete(Long id) {
         InfluencerPayment payment = paymentRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("结款记录不存在"));
+        String involvedNos = payment.getInvolvedRequirementNos();
         unlinkItems(trackingRepo.findByInfluencerPaymentIdAndIsDeletedFalse(id));
         List<InfluencerPaymentTeam> scopeRows = paymentTeamRepo.findByInfluencerPaymentIdAndIsDeletedFalse(id);
         for (InfluencerPaymentTeam row : scopeRows) row.setIsDeleted(true);
         paymentTeamRepo.saveAll(scopeRows);
         payment.setIsDeleted(true);
         paymentRepo.save(payment);
+        // 整条结款记录被删除，涉及的需求要重新判定"结款状态"（这批记录已经在上面 unlinkItems()
+        // 里恢复成纳入批次前的红人结款进度了，删除后应该退回空、或者退回它们在其他批次里的状态）
+        refreshSettlementStatusForNos(involvedNos);
+    }
+
+    /** involvedRequirementNos 是换行拼接的多值文本，拆开后逐个刷新（跟 MultiValueUtil 同样的约定） */
+    private void refreshSettlementStatusForNos(String involvedRequirementNos) {
+        if (involvedRequirementNos == null || involvedRequirementNos.trim().isEmpty()) return;
+        for (String reqNo : involvedRequirementNos.split("\n")) {
+            if (!reqNo.trim().isEmpty()) requirementService.refreshSettlementStatus(reqNo.trim());
+        }
     }
 
     // ============ 内部辅助 ============
@@ -424,7 +453,39 @@ public class InfluencerPaymentService {
             }
         }
         validateSingleRequirementIfNeeded(items, brandId);
+        validateNoPartialRequirement(items, excludePaymentId);
         return items;
+    }
+
+    /**
+     * 通用校验（2026-08 新增，不限品牌方付款周期类型）：同一个内部需求编号下的记录不能被拆分到
+     * 多个结款批次里——如果这次提交的记录里包含某个需求编号的部分记录，但这个需求还有其他
+     * "可结款"（红人结款进度非空，即视频项目进度已经到达允许结款的终态）、且没有纳入本次
+     * 结款批次（不属于正在编辑的这条结款记录本身）的记录没有一并勾选，直接拒绝。
+     *
+     * 前端"选择涉及的红人视频项目"弹窗已经把"勾选一条就带上同一需求下其他候选记录"这个交互
+     * 做成所有品牌方通用（不再只是"按红人成本阈值分档+需要invoice"专属），正常操作不会触发
+     * 这条校验，这里是服务端兜底，防止绕过前端直接调接口。
+     *
+     * 已经属于"其他"结款批次的同需求记录不算"遗漏"——那条记录纳入那个批次时，如果这条规则
+     * 还没上线，可能本来就是历史遗留的拆分，这里只管"这一次提交本身是否完整"，不追溯修正历史。
+     */
+    private void validateNoPartialRequirement(List<CollaborationTracking> items, Long excludePaymentId) {
+        Set<String> reqNos = items.stream().map(CollaborationTracking::getInternalRequirementNo)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+        if (reqNos.isEmpty()) return;
+        Set<Long> submittedIds = items.stream().map(CollaborationTracking::getId).collect(Collectors.toSet());
+        for (String reqNo : reqNos) {
+            for (CollaborationTracking sibling : trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(reqNo)) {
+                if (submittedIds.contains(sibling.getId())) continue;
+                if (sibling.getInfluencerPaymentProgress() == null) continue; // 还没到能结款的阶段，不算"遗漏"
+                boolean belongsToThisPayment = excludePaymentId != null && excludePaymentId.equals(sibling.getInfluencerPaymentId());
+                if (belongsToThisPayment) continue;
+                if (sibling.getInfluencerPaymentProgress().isIncludedInBatch()) continue; // 已经在其他批次里，历史数据不追溯
+                throw new RuntimeException("内部需求编号 [" + reqNo + "] 下还有其他可结款的记录（"
+                        + sibling.getInternalProjectNo() + "）没有一起勾选，同一个需求的记录不能拆分到不同的结款批次里");
+            }
+        }
     }
 
     /**

@@ -32,4 +32,18 @@ public class WorkdayUtil {
         }
         return count;
     }
+
+    /**
+     * 某个日期当天或往前最近的一个工作日（同样的口径：只有周六算休息日）。
+     * "红人需求管理 - 查看未结款的需求"排序用：月结品牌方还没有真正的结款记录（也就没有
+     * 真实的"对账日期"）时，用"需求完成时间所在月份的月底最后一个工作日"估算对账日期
+     * （2026-08 跟用户确认过的口径——财务对账习惯上就是月底最后一个工作日做）。
+     */
+    public static LocalDate lastWorkdayOnOrBefore(LocalDate date) {
+        LocalDate d = date;
+        while (d.getDayOfWeek() == DayOfWeek.SATURDAY) {
+            d = d.minusDays(1);
+        }
+        return d;
+    }
 }

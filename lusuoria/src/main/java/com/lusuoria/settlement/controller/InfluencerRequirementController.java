@@ -13,6 +13,7 @@ import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.excel.InfluencerRequirementExcelHandler;
 import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
 import com.lusuoria.settlement.service.impl.InfluencerRequirementService;
+import com.lusuoria.settlement.util.PaymentAccessUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -37,6 +38,7 @@ public class InfluencerRequirementController {
     @Autowired private InfluencerRequirementRepository requirementRepo;
     @Autowired private InfluencerRequirementService requirementService;
     @Autowired private InfluencerRequirementExcelHandler excelHandler;
+    @Autowired private PaymentAccessUtil paymentAccessUtil;
 
     @GetMapping
     public ApiResponse<Page<InfluencerRequirement>> list(
@@ -48,6 +50,7 @@ public class InfluencerRequirementController {
             @RequestParam(defaultValue = "false") boolean onlyIncomplete,
             @RequestParam(defaultValue = "false") boolean onlyMissingInvoice,
             @RequestParam(defaultValue = "false") boolean onlyMissingContract,
+            @RequestParam(defaultValue = "false") boolean onlyUnsettled,
             @RequestParam(defaultValue = "id") String sortBy,
             @RequestParam(defaultValue = "desc") String sortDir,
             @RequestParam(defaultValue = "0")  int page,
@@ -59,8 +62,8 @@ public class InfluencerRequirementController {
                 : Sort.by(Sort.Direction.DESC, sortProperty);
         PageRequest pageable = PageRequest.of(page, size, sort);
 
-        // "查看未完成的需求"/"查看未上传invoice的需求"/"查看未上传合同的需求"：三个开关互斥
-        // （前端只会传其中一个true），都走单独的全量查询+内存筛选+手动分页，见各自方法的注释
+        // "查看未完成的需求"/"查看未上传invoice的需求"/"查看未上传合同的需求"/"查看未结款的需求"：
+        // 四个开关互斥（前端只会传其中一个true），都走单独的全量查询+内存筛选+手动分页，见各自方法的注释
         if (onlyIncomplete) {
             return ApiResponse.success(requirementService.pageIncomplete(
                     brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable));
@@ -71,6 +74,14 @@ public class InfluencerRequirementController {
         }
         if (onlyMissingContract) {
             return ApiResponse.success(requirementService.pageMissingContract(
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable));
+        }
+        // "查看未结款的需求"（2026-08 新增）：只有员工角色=管理层才能看，前端按钮本身也只对
+        // 管理层展示，这里是后端兜底——跟"红人结款"模块权限判定同一套（PaymentAccessUtil），
+        // 因为这个筛选本质上是给管理层安排结款用的
+        if (onlyUnsettled) {
+            if (!paymentAccessUtil.canManage()) return ApiResponse.error(403, "无权限查看未结款的需求");
+            return ApiResponse.success(requirementService.pageUnsettled(
                     brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable));
         }
 

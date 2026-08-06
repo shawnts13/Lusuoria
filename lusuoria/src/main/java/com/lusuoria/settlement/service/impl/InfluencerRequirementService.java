@@ -18,18 +18,24 @@ import com.lusuoria.settlement.entity.InfluencerBrandTeam;
 import com.lusuoria.settlement.entity.InfluencerContract;
 import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.InfluencerRequirementItem;
+import com.lusuoria.settlement.entity.InfluencerPayment;
 import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
+import com.lusuoria.settlement.enums.InfluencerPaymentStatus;
+import com.lusuoria.settlement.enums.PaymentCycleType;
+import com.lusuoria.settlement.enums.RequirementSettlementStatus;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerContractRepository;
+import com.lusuoria.settlement.repository.InfluencerPaymentRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementItemRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
 import com.lusuoria.settlement.util.MultiValueUtil;
 import com.lusuoria.settlement.util.RequirementContentParser;
 import com.lusuoria.settlement.util.RequirementNoAllocator;
+import com.lusuoria.settlement.util.WorkdayUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -69,6 +75,7 @@ public class InfluencerRequirementService {
     @Autowired private RequirementContentParser contentParser;
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private InfluencerContractRepository influencerContractRepo;
+    @Autowired private InfluencerPaymentRepository paymentRepo;
 
     @Transactional
     public InfluencerRequirement save(InfluencerRequirementRequest req) {
@@ -540,6 +547,80 @@ public class InfluencerRequirementService {
         return new java.sql.Date(date.getTime()).toLocalDate();
     }
 
+    /**
+     * "需求列表页 - 查看未结款的需求"按钮专用（2026-08 新增，仅管理层可见，前端/后端都做了
+     * 角色校验）：条件跟 findByFilters 一致，只额外要求这条需求的"结款状态"（settlementStatus）
+     * 为空——即还没有任何红人结款记录关联过它，不要求需求必须100%完成（未完成的需求也会
+     * 出现在这个列表里，方便管理层提前掌握全貌，只是排序上靠后）。
+     *
+     * 排序：需求完成进度=100%的排最前；组内再按"预计付款日"从近到远排（越紧迫越靠前），算不出
+     * 预计付款日的排最后。这个"预计付款日"是估算值，供管理层判断优先级用，不是红人结款记录里
+     * 那个由真实"对账日期"算出来的准确值，具体口径见 estimateDeadlineForSorting()。
+     */
+    @Transactional(readOnly = true)
+    public org.springframework.data.domain.Page<InfluencerRequirement> pageUnsettled(
+            Long brandId, Long teamId, String accountName, String requirementMonth,
+            String internalRequirementNo, org.springframework.data.domain.Pageable pageable) {
+        List<InfluencerRequirement> all = requirementRepo.findByFiltersNoPaging(
+                brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable.getSort());
+        List<InfluencerRequirement> unsettled = all.stream()
+                .filter(r -> r.getSettlementStatus() == null)
+                .collect(Collectors.toList());
+
+        List<String> nos = unsettled.stream().map(InfluencerRequirement::getInternalRequirementNo)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toList());
+        Map<String, RequirementPaymentInfo> infoByNo = fetchPaymentInfo(nos);
+
+        List<InfluencerRequirement> sorted = unsettled.stream()
+                .sorted((a, b) -> {
+                    RequirementPaymentInfo infoA = infoByNo.get(a.getInternalRequirementNo());
+                    RequirementPaymentInfo infoB = infoByNo.get(b.getInternalRequirementNo());
+                    boolean completeA = infoA != null && infoA.isComplete();
+                    boolean completeB = infoB != null && infoB.isComplete();
+                    if (completeA != completeB) return completeA ? -1 : 1;
+                    Date deadlineA = estimateDeadlineForSorting(a, infoA);
+                    Date deadlineB = estimateDeadlineForSorting(b, infoB);
+                    long millisA = deadlineA != null ? deadlineA.getTime() : Long.MAX_VALUE;
+                    long millisB = deadlineB != null ? deadlineB.getTime() : Long.MAX_VALUE;
+                    return Long.compare(millisA, millisB);
+                })
+                .collect(Collectors.toList());
+
+        return paginateAndEnrich(sorted, pageable);
+    }
+
+    /**
+     * "查看未结款的需求"排序专用的"预计付款日"估算（2026-08 新增，跟用户确认过口径）：
+     *   - 品牌方月结（MONTH_END）：这个需求还没有真正的结款记录，也就没有真实的"对账日期"，
+     *     用"需求完成时间所在月份的月底最后一个工作日"估算对账日期（财务对账习惯上就是月底
+     *     最后一个工作日做），"工作日"沿用 WorkdayUtil 现有定义（只有周六算休息日）。
+     *   - 品牌方按红人成本阈值分档 + 需要invoice：直接复用需求完成时间起算，逻辑口径跟
+     *     InfluencerPaymentService.computeCycleInfo() 需要invoice的分支完全一致。
+     *   - 其余情况（品牌方未配置付款周期规则、需求还没100%完成导致 completedAt 为空、或者
+     *     "按成本阈值分档但不需要invoice"这种目前没有实际品牌方使用的组合）：算不出预计付款日，
+     *     返回 null，排序时当成"无穷大"排到最后。
+     */
+    private Date estimateDeadlineForSorting(InfluencerRequirement r, RequirementPaymentInfo info) {
+        if (r.getBrandId() == null || r.getCompletedAt() == null) return null;
+        Brand brand = brandCache.findById(r.getBrandId());
+        if (brand == null || brand.getPaymentCycleType() == null) return null;
+
+        if (brand.getPaymentCycleType() == PaymentCycleType.MONTH_END) {
+            if (brand.getDaysAfterMonthEnd() == null) return null;
+            LocalDate monthEnd = YearMonth.from(toLocalDate(r.getCompletedAt())).atEndOfMonth();
+            LocalDate lastWorkday = WorkdayUtil.lastWorkdayOnOrBefore(monthEnd);
+            return java.sql.Date.valueOf(lastWorkday.plusDays(brand.getDaysAfterMonthEnd()));
+        }
+        if (brand.getPaymentCycleType() == PaymentCycleType.COST_THRESHOLD && brand.requiresInvoiceUpload()) {
+            if (info == null || info.payableCost == null || brand.getCostThresholdAmount() == null
+                    || brand.getDaysWithinThreshold() == null || brand.getDaysAboveThreshold() == null) return null;
+            int days = info.payableCost.compareTo(brand.getCostThresholdAmount()) <= 0
+                    ? brand.getDaysWithinThreshold() : brand.getDaysAboveThreshold();
+            return java.sql.Date.valueOf(toLocalDate(r.getCompletedAt()).plusDays(days));
+        }
+        return null;
+    }
+
     /** pageMissingInvoice/pageMissingContract 共用：内存筛选完的结果手动分页，
      * 再批量补齐"需求完成进度"分子/"已建立跟踪记录数"（列表页展示用），避免逐条查库 */
     private org.springframework.data.domain.Page<InfluencerRequirement> paginateAndEnrich(
@@ -663,6 +744,46 @@ public class InfluencerRequirementService {
             requirementRepo.save(requirement);
         } else if (!isComplete && requirement.getCompletedAt() != null) {
             requirement.setCompletedAt(null);
+            requirementRepo.save(requirement);
+        }
+    }
+
+    /**
+     * 维护"结款状态"（2026-08 新增）：不管品牌方付款周期类型，凡是有任意一条红人结款记录
+     * 关联了这个内部需求编号下的红人合作跟踪记录，就算"已添加结款记录"；这些结款记录里只要
+     * 有任意一条已经是"已付款"，就升级成"已付款"。判断关联关系走
+     * CollaborationTracking.influencerPaymentId 这条真正的外键（trackingRepo.
+     * findPaymentIdsByRequirementNo），不是靠 InfluencerPayment.involvedRequirementNos
+     * 那个换行拼接的冗余文本字段去反查，更可靠。一条结款记录都没有时清空（null，前端展示"-"）。
+     *
+     * "已付款优先于待付款"只是防止历史遗留数据不一致时的兜底——正常情况下同一个需求的记录
+     * 不会被拆分到多个结款批次里（见 InfluencerPaymentService.validateNoPartialRequirement()
+     * 这条 2026-08 新增的硬性校验，选择涉及的红人视频项目时同一个需求的记录会作为整体一起
+     * 勾选/取消）。
+     *
+     * 由 InfluencerPaymentService 在新建/编辑（调整了勾选的红人视频项目）/状态流转/删除
+     * 结款记录时调用，对受影响的每一个 internalRequirementNo 各调一次。
+     */
+    @Transactional
+    public void refreshSettlementStatus(String internalRequirementNo) {
+        if (internalRequirementNo == null || internalRequirementNo.trim().isEmpty()) return;
+        InfluencerRequirement requirement = requirementRepo
+                .findByInternalRequirementNoAndIsDeletedFalse(internalRequirementNo).orElse(null);
+        if (requirement == null) return;
+
+        List<Long> paymentIds = trackingRepo.findPaymentIdsByRequirementNo(internalRequirementNo);
+        RequirementSettlementStatus newStatus = null;
+        if (!paymentIds.isEmpty()) {
+            List<InfluencerPayment> payments = paymentRepo.findAllById(paymentIds).stream()
+                    .filter(p -> !Boolean.TRUE.equals(p.getIsDeleted()))
+                    .collect(Collectors.toList());
+            boolean anyPaid = payments.stream().anyMatch(p -> p.getPaymentStatus() == InfluencerPaymentStatus.PAID);
+            boolean anyPending = payments.stream().anyMatch(p -> p.getPaymentStatus() == InfluencerPaymentStatus.PENDING);
+            if (anyPaid) newStatus = RequirementSettlementStatus.PAID;
+            else if (anyPending) newStatus = RequirementSettlementStatus.ADDED_TO_PAYMENT;
+        }
+        if (!java.util.Objects.equals(requirement.getSettlementStatus(), newStatus)) {
+            requirement.setSettlementStatus(newStatus);
             requirementRepo.save(requirement);
         }
     }

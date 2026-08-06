@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.lusuoria.settlement.enums.RequirementSettlementStatus;
 import lombok.*;
 
 import javax.persistence.*;
@@ -128,6 +129,15 @@ public class InfluencerRequirement extends BaseEntity {
     @Temporal(TemporalType.TIMESTAMP)
     @Column(name = "completed_at")
     private java.util.Date completedAt;
+
+    /**
+     * 结款状态（2026-08 新增）：null（还没有任何结款记录关联这个需求）/ 已添加结款记录
+     * （关联的结款记录里最高只到"待付款"）/ 已付款（关联的结款记录里有任意一条已经"已付款"）。
+     * 由 InfluencerRequirementService.refreshSettlementStatus() 统一维护，不要在别处直接设置。
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "settlement_status", length = 30)
+    private RequirementSettlementStatus settlementStatus;
 
     /**
      * 需求条目集合，仅供 service 层落库时的级联增删改使用（在事务内操作）。

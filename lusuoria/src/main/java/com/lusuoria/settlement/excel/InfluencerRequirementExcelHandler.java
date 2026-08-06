@@ -69,6 +69,8 @@ public class InfluencerRequirementExcelHandler {
         // 完成时间未完成时导出"-"，跟前端展示口径一致
         cols.add("需求完成进度");
         cols.add("需求完成时间");
+        // 2026-08 新增：结款状态，紧跟在"需求完成时间"后面，前端列顺序也是这样
+        cols.add("结款状态");
         cols.add("创建时间");
         cols.add("Invoice链接");
         cols.add("合同链接");
@@ -131,6 +133,7 @@ public class InfluencerRequirementExcelHandler {
             setCellStr(row, c++, (r.getCompletedCount() != null ? r.getCompletedCount() : 0)
                     + "/" + (r.getTotalItemCount() != null ? r.getTotalItemCount() : 0), nor);
             setCellStr(row, c++, r.getCompletedAt() != null ? dtf.format(r.getCompletedAt()) : "-", nor);
+            setCellStr(row, c++, r.getSettlementStatus() != null ? r.getSettlementStatus().getLabel() : "-", nor);
             setCellStr(row, c++, r.getCreatedAt() != null ? dtf.format(r.getCreatedAt()) : "", nor);
             setCellStr(row, c++, invoiceCell(r, brand), wrap);
             setCellStr(row, c++, contractCell(r, brand, team, contractsByInfluencerId), wrap);
