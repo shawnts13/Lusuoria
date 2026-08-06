@@ -9,6 +9,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 
@@ -38,13 +39,16 @@ public interface InfluencerRequirementRepository extends JpaRepository<Influence
            "AND (:teamId IS NULL OR r.teamId = :teamId) " +
            "AND (:accountName IS NULL OR r.influencer.accountName LIKE %:accountName%) " +
            "AND (:requirementMonth IS NULL OR r.requirementMonth = :requirementMonth) " +
-           "AND (:internalRequirementNo IS NULL OR r.internalRequirementNo LIKE %:internalRequirementNo%)")
+           "AND (:internalRequirementNo IS NULL OR r.internalRequirementNo LIKE %:internalRequirementNo%) " +
+           "AND (:completedMonthStart IS NULL OR (r.completedAt >= :completedMonthStart AND r.completedAt < :completedMonthEnd))")
     Page<InfluencerRequirement> findByFilters(
             @Param("brandId") Long brandId,
             @Param("teamId") Long teamId,
             @Param("accountName") String accountName,
             @Param("requirementMonth") String requirementMonth,
             @Param("internalRequirementNo") String internalRequirementNo,
+            @Param("completedMonthStart") Date completedMonthStart,
+            @Param("completedMonthEnd") Date completedMonthEnd,
             Pageable pageable);
 
     /**
@@ -60,13 +64,16 @@ public interface InfluencerRequirementRepository extends JpaRepository<Influence
            "AND (:teamId IS NULL OR r.teamId = :teamId) " +
            "AND (:accountName IS NULL OR r.influencer.accountName LIKE %:accountName%) " +
            "AND (:requirementMonth IS NULL OR r.requirementMonth = :requirementMonth) " +
-           "AND (:internalRequirementNo IS NULL OR r.internalRequirementNo LIKE %:internalRequirementNo%)")
+           "AND (:internalRequirementNo IS NULL OR r.internalRequirementNo LIKE %:internalRequirementNo%) " +
+           "AND (:completedMonthStart IS NULL OR (r.completedAt >= :completedMonthStart AND r.completedAt < :completedMonthEnd))")
     List<InfluencerRequirement> findByFiltersNoPaging(
             @Param("brandId") Long brandId,
             @Param("teamId") Long teamId,
             @Param("accountName") String accountName,
             @Param("requirementMonth") String requirementMonth,
             @Param("internalRequirementNo") String internalRequirementNo,
+            @Param("completedMonthStart") Date completedMonthStart,
+            @Param("completedMonthEnd") Date completedMonthEnd,
             Sort sort);
 
     /**
@@ -82,13 +89,16 @@ public interface InfluencerRequirementRepository extends JpaRepository<Influence
            "AND (:teamId IS NULL OR r.teamId = :teamId) " +
            "AND (:accountName IS NULL OR r.influencer.accountName LIKE %:accountName%) " +
            "AND (:requirementMonth IS NULL OR r.requirementMonth = :requirementMonth) " +
-           "AND (:internalRequirementNo IS NULL OR r.internalRequirementNo LIKE %:internalRequirementNo%)")
+           "AND (:internalRequirementNo IS NULL OR r.internalRequirementNo LIKE %:internalRequirementNo%) " +
+           "AND (:completedMonthStart IS NULL OR (r.completedAt >= :completedMonthStart AND r.completedAt < :completedMonthEnd))")
     List<Object[]> findLiteProjectionByFilters(
             @Param("brandId") Long brandId,
             @Param("teamId") Long teamId,
             @Param("accountName") String accountName,
             @Param("requirementMonth") String requirementMonth,
             @Param("internalRequirementNo") String internalRequirementNo,
+            @Param("completedMonthStart") Date completedMonthStart,
+            @Param("completedMonthEnd") Date completedMonthEnd,
             Sort sort);
 
     /** "关联红人需求"选择器第一步：某个红人名下的所有未删除需求（前端再按"需求完成进度"过滤掉已满的） */

@@ -24,6 +24,7 @@ import org.springframework.web.bind.annotation.*;
 import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
 import java.io.IOException;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -47,6 +48,9 @@ public class InfluencerRequirementController {
             @RequestParam(required = false) String accountName,
             @RequestParam(required = false) String requirementMonth,
             @RequestParam(required = false) String internalRequirementNo,
+            // 需求完成月份（'yyyyMM'，2026-08 新增）：按 completedAt 落在这个月筛选，见
+            // completedMonthRange() 的换算逻辑
+            @RequestParam(required = false) String completedMonth,
             @RequestParam(defaultValue = "false") boolean onlyIncomplete,
             @RequestParam(defaultValue = "false") boolean onlyMissingInvoice,
             @RequestParam(defaultValue = "false") boolean onlyMissingContract,
@@ -61,20 +65,25 @@ public class InfluencerRequirementController {
                 ? Sort.by(Sort.Direction.ASC, sortProperty)
                 : Sort.by(Sort.Direction.DESC, sortProperty);
         PageRequest pageable = PageRequest.of(page, size, sort);
+        Date[] completedRange = completedMonthRange(completedMonth);
+        Date completedMonthStart = completedRange[0], completedMonthEnd = completedRange[1];
 
         // "查看未完成的需求"/"查看未上传invoice的需求"/"查看未上传合同的需求"/"查看未结款的需求"：
         // 四个开关互斥（前端只会传其中一个true），都走单独的全量查询+内存筛选+手动分页，见各自方法的注释
         if (onlyIncomplete) {
             return ApiResponse.success(requirementService.pageIncomplete(
-                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable));
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo,
+                    completedMonthStart, completedMonthEnd, pageable));
         }
         if (onlyMissingInvoice) {
             return ApiResponse.success(requirementService.pageMissingInvoice(
-                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable));
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo,
+                    completedMonthStart, completedMonthEnd, pageable));
         }
         if (onlyMissingContract) {
             return ApiResponse.success(requirementService.pageMissingContract(
-                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable));
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo,
+                    completedMonthStart, completedMonthEnd, pageable));
         }
         // "查看未结款的需求"（2026-08 新增）：只有员工角色=管理层才能看，前端按钮本身也只对
         // 管理层展示，这里是后端兜底——跟"红人结款"模块权限判定同一套（PaymentAccessUtil），
@@ -82,18 +91,21 @@ public class InfluencerRequirementController {
         if (onlyUnsettled) {
             if (!paymentAccessUtil.canManage()) return ApiResponse.error(403, "无权限查看未结款的需求");
             return ApiResponse.success(requirementService.pageUnsettled(
-                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable));
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo,
+                    completedMonthStart, completedMonthEnd, pageable));
         }
 
         // "全部需求"视角下的默认排序（前端没有点过别的列头，还是初始的按 id）：未完成的排在
         // 已完成的前面，见 listIncompleteFirst 的注释。用户主动点了别的列头排序时不做这层重排。
         if ("id".equals(sortBy)) {
             return ApiResponse.success(requirementService.listIncompleteFirst(
-                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable));
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo,
+                    completedMonthStart, completedMonthEnd, pageable));
         }
 
         Page<InfluencerRequirement> result = requirementRepo.findByFilters(
-                brandId, teamId, accountName, requirementMonth, internalRequirementNo, pageable);
+                brandId, teamId, accountName, requirementMonth, internalRequirementNo,
+                completedMonthStart, completedMonthEnd, pageable);
 
         // "需求完成进度"分子、"已建立跟踪记录数"（"新建合作跟踪"按钮判断用）批量查出来再赋值，避免逐条查库
         List<String> nos = result.getContent().stream()
@@ -208,6 +220,24 @@ public class InfluencerRequirementController {
         return ApiResponse.success(requirementService.uploadContractLink(id, req.getContractLink()));
     }
 
+    /**
+     * 需求完成月份（'yyyyMM'）换算成 completedAt 落在这个月的 [start, end) 半开区间——
+     * completedAt 是 TIMESTAMP，没法直接按字符串等值匹配，用日期范围表达"这个月里的任意时刻"。
+     * 传空/格式不对时返回 {null, null}，调用方据此判断这个筛选条件不生效。
+     */
+    private Date[] completedMonthRange(String yyyyMM) {
+        if (yyyyMM == null || yyyyMM.trim().isEmpty()) return new Date[]{null, null};
+        try {
+            java.time.YearMonth ym = java.time.YearMonth.parse(
+                    yyyyMM.trim(), java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
+            Date start = java.sql.Date.valueOf(ym.atDay(1));
+            Date end = java.sql.Date.valueOf(ym.plusMonths(1).atDay(1));
+            return new Date[]{start, end};
+        } catch (Exception e) {
+            return new Date[]{null, null};
+        }
+    }
+
     @GetMapping("/export/excel")
     public void exportExcel(
             @RequestParam(required = false) Long brandId,
@@ -215,10 +245,13 @@ public class InfluencerRequirementController {
             @RequestParam(required = false) String accountName,
             @RequestParam(required = false) String requirementMonth,
             @RequestParam(required = false) String internalRequirementNo,
+            @RequestParam(required = false) String completedMonth,
             HttpServletResponse response) throws IOException {
         PageRequest all = PageRequest.of(0, Integer.MAX_VALUE, Sort.by(Sort.Direction.DESC, "id"));
+        Date[] completedRange = completedMonthRange(completedMonth);
         List<InfluencerRequirement> list = requirementRepo.findByFilters(
-                brandId, teamId, accountName, requirementMonth, internalRequirementNo, all).getContent();
+                brandId, teamId, accountName, requirementMonth, internalRequirementNo,
+                completedRange[0], completedRange[1], all).getContent();
         // "需求完成进度"分子是瞬态字段，findByFilters 查出来的实体不会自动带上，导出前批量补一次
         // （口径/写法跟 InfluencerRequirementService 分页接口给列表页用的完全一致）
         List<String> nos = list.stream().map(InfluencerRequirement::getInternalRequirementNo)
