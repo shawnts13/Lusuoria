@@ -764,7 +764,12 @@ public class InfluencerRequirementService {
             Date correctValue = trackingRepo
                     .maxPublishDateByRequirementNos(java.util.Collections.singletonList(internalRequirementNo))
                     .stream().findFirst().map(row -> (Date) row[1]).orElse(new Date());
-            if (requirement.getCompletedAt() == null || !requirement.getCompletedAt().equals(correctValue)) {
+            // 注意：不能用 .equals() 比较——completedAt 是 @Temporal(TIMESTAMP)，读出来是
+            // java.sql.Timestamp；correctValue 来自 publishDate（@Temporal(DATE)），读出来是
+            // java.sql.Date。Timestamp.equals() 只要参数不是 Timestamp 类型就恒返回 false
+            // （哪怕毫秒值完全相同），用 .equals() 会导致已经正确的值被误判成"不等于"、每次
+            // 都重新保存。改成比较 getTime()（都是"自 epoch 以来的毫秒数"）才是真正的等值比较。
+            if (requirement.getCompletedAt() == null || requirement.getCompletedAt().getTime() != correctValue.getTime()) {
                 requirement.setCompletedAt(correctValue);
                 requirementRepo.save(requirement);
             }
@@ -853,7 +858,9 @@ public class InfluencerRequirementService {
                     r.setCompletedAt(correctValue);
                     toSave.add(r);
                     filledCount++;
-                } else if (!r.getCompletedAt().equals(correctValue)) {
+                    // 同上——不能用 .equals()，Timestamp/Date 子类不对称比较会恒为 true，
+                    // 导致每次点这个按钮都把已经正确的记录重新判定成"需要订正"，见 refreshCompletedAt() 的注释
+                } else if (r.getCompletedAt().getTime() != correctValue.getTime()) {
                     r.setCompletedAt(correctValue);
                     toSave.add(r);
                     correctedCount++;
