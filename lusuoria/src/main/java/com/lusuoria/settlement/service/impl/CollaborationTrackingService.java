@@ -359,13 +359,10 @@ public class CollaborationTrackingService {
         boolean isSingleEdit = existingOrNull != null && !isBulkImport;
         boolean publishLinkChanged = isSingleEdit && !java.util.Objects.equals(oldPublishLink, newPublishLink);
 
-        // 视频发布时间：Excel 批量导入允许直接填写（是否符合"视频项目进度"前置条件由
-        // CollaborationTrackingExcelHandler 逐行校验报错，这里不重复校验）；单条保存
-        // （新建/编辑表单提交）只有 ADMIN 能编辑，其他角色提交的值直接忽略、保留数据库原值——
-        // 其他角色只能通过"状态流转"在进度进入符合条件的状态时被系统自动填上，见 updateStatus()
-        if (isBulkImport || RoleUtil.canEditPublishDate()) {
-            tracking.setPublishDate(req.getPublishDate());
-        }
+        // 视频发布时间：2026-08 起不再限定"仅 ADMIN 能编辑"——这条限制是 2026-07-10 那次
+        // 引入"状态流转自动补填发布时间"机制时顺带加上的附带限制，并不是一条独立需求；
+        // 现在改成所有角色都能在编辑表单里直接填/改这个字段，跟"视频发布链接"权限对齐。
+        tracking.setPublishDate(req.getPublishDate());
 
         // 2026-07：单条编辑时，如果这次改动涉及"视频发布链接"，说明视频事实上已经发布了——
         // 不管是哪个角色在编辑、也不管"视频项目进度"锁在哪个阶段，都自动：
