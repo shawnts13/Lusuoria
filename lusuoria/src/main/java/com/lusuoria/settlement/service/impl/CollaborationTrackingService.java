@@ -841,13 +841,43 @@ public class CollaborationTrackingService {
         // 需要单独走别的渠道修复，不该被这里的校验卡死。
         boolean progressActuallyChangedForPublishCheck = !java.util.Objects.equals(oldProgress, newProgress);
         if (progressActuallyChangedForPublishCheck && newProgress != null && newProgress.allowsPaymentProgress()) {
+            // 2026-08 新增：这次请求如果带了视频发布链接/视频发布时间，直接写入这条记录——
+            // 专门为"状态流转到已发布未结算等三个阶段"这个动作开的口子，不受 doSave()（编辑表单）
+            // 那边"仅 ADMIN 能改视频发布时间"的角色限制约束，见 CollaborationTrackingStatusRequest
+            // 里 publishLink/publishDate 两个字段的说明。财务角色到不了这里（卡在上面
+            // withinSettlementZone 那关），所以实际能用这个口子的就是管理层/项目负责人/执行人员
+            // 等普通员工账号，符合"这个状态所有非财务角色都能自己操作"的预期。
+            String oldPublishLinkForDup = t.getPublishLink();
+            Date oldPublishDateForDup = t.getPublishDate();
+            String reqPublishLink = req.getPublishLink() != null ? req.getPublishLink().trim() : null;
+            if (reqPublishLink != null && !reqPublishLink.isEmpty()) {
+                t.setPublishLink(reqPublishLink);
+            }
+            if (req.getPublishDate() != null) {
+                t.setPublishDate(req.getPublishDate());
+            }
+
             boolean missingLink = t.getPublishLink() == null || t.getPublishLink().trim().isEmpty();
             boolean missingDate = t.getPublishDate() == null;
             if (missingLink || missingDate) {
                 String missingFields = missingLink && missingDate ? "视频发布时间和视频发布链接"
                         : missingLink ? "视频发布链接" : "视频发布时间";
                 throw new RuntimeException("该记录还没有填写" + missingFields + "，无法流转到\""
-                        + newProgress.getLabel() + "\"，请先通过\"编辑\"功能填写后再进行状态流转");
+                        + newProgress.getLabel() + "\"，请先在上方填写后再保存");
+            }
+            // 这次状态流转真的改动了发布链接/发布时间时，跟 doSave() 同一套去重规则查一遍——
+            // 避免通过这个新口子把同一条视频重复录入两次（比如误触了两条不同的跟踪记录，
+            // 都填了同一个发布链接+同一天）
+            boolean publishInfoChangedForDup = !java.util.Objects.equals(oldPublishLinkForDup, t.getPublishLink())
+                    || !java.util.Objects.equals(oldPublishDateForDup, t.getPublishDate());
+            if (publishInfoChangedForDup) {
+                List<CollaborationTracking> dups = trackingRepo.findDuplicates(
+                        t.getInfluencerId(), t.getPublishLink(), t.getPublishDate(), t.getId());
+                if (!dups.isEmpty()) {
+                    throw new RuntimeException("已存在相同记录：红人在 "
+                            + new SimpleDateFormat("yyyy-MM-dd").format(t.getPublishDate())
+                            + " 发布的该链接已录入，无法重复添加");
+                }
             }
         }
 
