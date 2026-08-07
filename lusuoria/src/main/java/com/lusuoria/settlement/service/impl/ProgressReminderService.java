@@ -293,7 +293,7 @@ public class ProgressReminderService {
     }
 
     /**
-     * Part A：品牌方付款周期=按红人成本阈值分档。
+     * Part A：品牌方付款周期=按红人成本阈值分档，或=月结。
      *
      * 2026-08 起按品牌方是否需要invoice分两套口径计算，跟 InfluencerPaymentService.
      * computeCycleInfo 保持一致（实际计算也共用同一个 InfluencerRequirementService.
@@ -304,22 +304,34 @@ public class ProgressReminderService {
      *     （粒度跟"选择涉及的红人视频项目"弹窗一致），但共享同一组 cycleDays/deadlineDate。
      *     "折损"状态的记录本身不生成提醒（不会真正付款，提醒没有意义）。
      *   - 不需要invoice：保持原来的按单笔成本+发布时间计算，行为不变。
+     *
+     * 2026-08 新增第三档，覆盖月结（MONTH_END）品牌方：这类品牌方允许一个需求分批结款，
+     * 不要求需求整体完成，所以按单条记录（不按需求）处理，跟"不需要invoice"那档同一个粒度。
+     * 没有真实"对账日期"可用（这条记录还没被拉进任何结款批次），用"视频发布日期所在月份的
+     * 最后一个工作日"模拟对账日（跟 InfluencerRequirementService.estimateDeadlineForSorting()/
+     * "去结款"自动预填对账日期用的是同一套口径），再加上品牌方配置的"月底对账日后N天内结款"，
+     * 算出模拟的最迟结款日。"折损"同样不提醒。
      */
     private void runCollabPaymentDue(LocalDate today, Date batchDate) {
-        Map<Long, Brand> qualifyingBrands = new HashMap<>();
+        Map<Long, Brand> costThresholdBrands = new HashMap<>();
+        Map<Long, Brand> monthEndBrands = new HashMap<>();
         for (Brand b : brandCache.getAll()) {
             if (b.getPaymentCycleType() == PaymentCycleType.COST_THRESHOLD
                     && b.getCostThresholdAmount() != null
                     && b.getDaysWithinThreshold() != null
                     && b.getDaysAboveThreshold() != null) {
-                qualifyingBrands.put(b.getId(), b);
+                costThresholdBrands.put(b.getId(), b);
+            } else if (b.getPaymentCycleType() == PaymentCycleType.MONTH_END
+                    && b.getDaysAfterMonthEnd() != null) {
+                monthEndBrands.put(b.getId(), b);
             }
         }
-        if (qualifyingBrands.isEmpty()) return;
+        if (costThresholdBrands.isEmpty() && monthEndBrands.isEmpty()) return;
 
         List<CollaborationTracking> allCandidates = new ArrayList<>();
         for (CollaborationTracking t : trackingRepo.findByIsDeletedFalse()) {
-            if (t.getBrandId() == null || !qualifyingBrands.containsKey(t.getBrandId())) continue;
+            if (t.getBrandId() == null) continue;
+            if (!costThresholdBrands.containsKey(t.getBrandId()) && !monthEndBrands.containsKey(t.getBrandId())) continue;
             if (t.getPublishDate() == null) continue;
             if (t.getInfluencerPaymentProgress() != null && t.getInfluencerPaymentProgress().isIncludedInBatch()) continue;
             allCandidates.add(t);
@@ -328,15 +340,20 @@ public class ProgressReminderService {
 
         List<CollaborationTracking> perItemCandidates = new ArrayList<>();
         List<CollaborationTracking> perRequirementCandidates = new ArrayList<>();
+        List<CollaborationTracking> monthEndCandidates = new ArrayList<>();
         for (CollaborationTracking t : allCandidates) {
-            Brand brand = qualifyingBrands.get(t.getBrandId());
-            if (brand.requiresInvoiceUpload()) {
-                perRequirementCandidates.add(t);
-            } else if (t.getInfluencerCost() != null) { // 没有成本没法判断走哪个天数档位，跳过
-                perItemCandidates.add(t);
+            Brand brand = costThresholdBrands.get(t.getBrandId());
+            if (brand != null) {
+                if (brand.requiresInvoiceUpload()) {
+                    perRequirementCandidates.add(t);
+                } else if (t.getInfluencerCost() != null) { // 没有成本没法判断走哪个天数档位，跳过
+                    perItemCandidates.add(t);
+                }
+            } else if (t.getProgress() != CollaborationProgress.DELAYED) { // 折损不会真正付款，不提醒
+                monthEndCandidates.add(t);
             }
         }
-        if (perItemCandidates.isEmpty() && perRequirementCandidates.isEmpty()) return;
+        if (perItemCandidates.isEmpty() && perRequirementCandidates.isEmpty() && monthEndCandidates.isEmpty()) return;
 
         List<String> requirementNos = perRequirementCandidates.stream()
                 .map(CollaborationTracking::getInternalRequirementNo).collect(Collectors.toList());
@@ -361,7 +378,7 @@ public class ProgressReminderService {
         Map<ReminderUrgency, List<ProgressReminderDetail>> byUrgency = new EnumMap<>(ReminderUrgency.class);
 
         for (CollaborationTracking t : perItemCandidates) {
-            Brand brand = qualifyingBrands.get(t.getBrandId());
+            Brand brand = costThresholdBrands.get(t.getBrandId());
             int cycleDays = t.getInfluencerCost().compareTo(brand.getCostThresholdAmount()) <= 0
                     ? brand.getDaysWithinThreshold() : brand.getDaysAboveThreshold();
             LocalDate deadlineLocalDate = toLocalDate(t.getPublishDate()).plusDays(cycleDays);
@@ -374,12 +391,25 @@ public class ProgressReminderService {
             String reqNo = t.getInternalRequirementNo();
             InfluencerRequirementService.RequirementPaymentInfo info = reqNo != null ? requirementByNo.get(reqNo) : null;
             if (info == null || !info.isComplete() || info.payableCost == null || info.completedAt == null) continue;
-            Brand brand = qualifyingBrands.get(t.getBrandId());
+            Brand brand = costThresholdBrands.get(t.getBrandId());
             int cycleDays = info.payableCost.compareTo(brand.getCostThresholdAmount()) <= 0
                     ? brand.getDaysWithinThreshold() : brand.getDaysAboveThreshold();
             LocalDate deadlineLocalDate = toLocalDate(info.completedAt).plusDays(cycleDays);
             addCollabPaymentDueDetail(byUrgency, today, overdueMaxDays, nearMaxDays, windowMaxDays,
                     t, brand, accountNameById, cycleDays, deadlineLocalDate, info.completedAt);
+        }
+
+        // 月结品牌方：按单条记录处理，用"视频发布月份的最后一个工作日"模拟对账日期
+        // （这条记录还没被拉进任何结款批次，没有真实对账日期可用），cycleDays 复用成
+        // "月底对账日后N天内结款"这个配置值，跟前端"结款周期"列（N天）的展示口径保持一致。
+        for (CollaborationTracking t : monthEndCandidates) {
+            Brand brand = monthEndBrands.get(t.getBrandId());
+            LocalDate publishMonthEnd = YearMonth.from(toLocalDate(t.getPublishDate())).atEndOfMonth();
+            LocalDate simulatedReconcileDate = WorkdayUtil.lastWorkdayOnOrBefore(publishMonthEnd);
+            int cycleDays = brand.getDaysAfterMonthEnd();
+            LocalDate deadlineLocalDate = simulatedReconcileDate.plusDays(cycleDays);
+            addCollabPaymentDueDetail(byUrgency, today, overdueMaxDays, nearMaxDays, windowMaxDays,
+                    t, brand, accountNameById, cycleDays, deadlineLocalDate, null);
         }
 
         for (ReminderUrgency urgency : ReminderUrgency.values()) {
