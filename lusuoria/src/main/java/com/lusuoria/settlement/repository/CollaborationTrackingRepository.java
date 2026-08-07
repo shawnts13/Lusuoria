@@ -113,6 +113,11 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      * onlyIncomplete：前端"查看未完成的记录"按钮用，硬筛选出视频项目进度不是"客户已结算"
      * 也不是"折损"的记录（这两个是终态，不需要再跟进）。为 false/null 时完全不影响原有筛选结果。
      *
+     * onlyUnpublished（2026-08 新增）：前端"查看视频未发布的记录"按钮用，硬筛选出"视频发布
+     * 链接"还是空的记录，但排除"折损"——折损是终态，代表这条记录已经作废，不算"还没发布"，
+     * 不需要再跟进。为 false/null 时完全不影响原有筛选结果，可以跟 onlyIncomplete/
+     * onlyMyResponsibility 同时生效（互不影响，纯 AND 叠加）。
+     *
      * influencerId（2026-07 新增）：红人管理模块"合作中项目/已完结项目"下钻的"查看全部"
      * 精确跳转用——accountName 是模糊匹配（LIKE），账号名互为子串的两个红人会串号，
      * influencerId 是精确匹配，不受文本子串影响。两者可以同时传（一般只会传一个）。
@@ -143,7 +148,9 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "           com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST))) " +
            "AND (:onlyIncomplete = false OR c.progress IS NULL OR c.progress NOT IN (" +
            "     com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
-           "     com.lusuoria.settlement.enums.CollaborationProgress.DELAYED))")
+           "     com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)) " +
+           "AND (:onlyUnpublished = false OR ((c.publishLink IS NULL OR c.publishLink = '') " +
+           "     AND (c.progress IS NULL OR c.progress <> com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)))")
     Page<CollaborationTracking> findByFilters(
             @Param("brandId") Long brandId,
             @Param("teamId") Long teamId,
@@ -166,6 +173,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("prioritizeFinance") Boolean prioritizeFinance,
             @Param("onlyMyResponsibility") Boolean onlyMyResponsibility,
             @Param("onlyIncomplete") Boolean onlyIncomplete,
+            @Param("onlyUnpublished") Boolean onlyUnpublished,
             Pageable pageable);
 
     /**
@@ -208,7 +216,9 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "           com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST))) " +
            "AND (:onlyIncomplete = false OR c.progress IS NULL OR c.progress NOT IN (" +
            "     com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
-           "     com.lusuoria.settlement.enums.CollaborationProgress.DELAYED))")
+           "     com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)) " +
+           "AND (:onlyUnpublished = false OR ((c.publishLink IS NULL OR c.publishLink = '') " +
+           "     AND (c.progress IS NULL OR c.progress <> com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)))")
     List<Object[]> findLitePriorityProjectionByFilters(
             @Param("brandId") Long brandId,
             @Param("teamId") Long teamId,
@@ -231,6 +241,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("prioritizeFinance") Boolean prioritizeFinance,
             @Param("onlyMyResponsibility") Boolean onlyMyResponsibility,
             @Param("onlyIncomplete") Boolean onlyIncomplete,
+            @Param("onlyUnpublished") Boolean onlyUnpublished,
             Sort sort);
 
 
