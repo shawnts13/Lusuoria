@@ -8,8 +8,7 @@ import java.math.BigDecimal;
 import java.util.Date;
 
 /**
- * 进度提醒明细行（2026-07 新增），BRAND_MONTH_END_PAYMENT_DUE 类别没有明细（本身就是一句
- * 完整文案），其余类别都有。
+ * 进度提醒明细行（2026-07 新增）。
  *
  * 每行对应一条命中的记录（大多数类别是红人合作跟踪记录，REQUIREMENT_INVOICE_OVERDUE/
  * REQUIREMENT_CONTRACT_OVERDUE 是需求，INFLUENCER_PAYMENT_DUE 是结款记录），在跑批当时把

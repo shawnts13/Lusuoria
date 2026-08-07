@@ -7,7 +7,6 @@ import lombok.Getter;
 import lombok.Setter;
 
 import javax.persistence.*;
-import java.math.BigDecimal;
 import java.util.Date;
 
 /**
@@ -20,9 +19,8 @@ import java.util.Date;
  *
  * 一行代表"待处理-进度提醒"列表里的一条卡片：
  *   - category=COLLAB_PAYMENT_DUE：一个紧急程度档位一行（比如"0天或已超期：15笔"），
- *     具体命中的红人合作跟踪记录快照在 ProgressReminderDetail 里，通过 id 关联查询。
- *   - category=BRAND_MONTH_END_PAYMENT_DUE：一个"品牌方+结算月份"一行，本身就是一条完整消息，
- *     没有下钻明细。
+ *     具体命中的红人合作跟踪记录快照在 ProgressReminderDetail 里，通过 id 关联查询
+ *     （2026-08 起覆盖按红人成本阈值分档、月结两种品牌方付款周期）。
  *
  * category 字段预留了扩展空间，以后有新类型的提醒跑批可以直接复用这张表，不需要改表结构
  * （跟 PendingApproval.category 是同样的设计思路）。
@@ -43,7 +41,7 @@ public class ProgressReminder extends BaseEntity {
     private ReminderCategory category;
 
     /**
-     * 老两类（COLLAB_PAYMENT_DUE/BRAND_MONTH_END_PAYMENT_DUE，"临近提醒"方向，倒数天数）专用。
+     * COLLAB_PAYMENT_DUE（"临近提醒"方向，倒数天数）专用。
      * 2026-07 新增的3类"超期提醒"（方向相反，超出天数）改用下面的 overdueUrgency，
      * 这个字段对新类别没有实际展示意义，统一填一个占位值（不能留空，这一列是 NOT NULL 的
      * 历史列，ddl-auto 不会放松已有列的约束）。
@@ -91,36 +89,11 @@ public class ProgressReminder extends BaseEntity {
     @Column(name = "involved_employee_ids", columnDefinition = "TEXT")
     private String involvedEmployeeIds;
 
-    /** 预先算好的展示文案，前端直接展示（BRAND_MONTH_END_PAYMENT_DUE 就是完整消息本身） */
+    /** 预先算好的展示文案，前端直接展示 */
     @Column(name = "title", length = 500)
     private String title;
 
     /** COLLAB_PAYMENT_DUE 专用：命中的红人合作跟踪记录笔数 */
     @Column(name = "count")
     private Integer count;
-
-    /** BRAND_MONTH_END_PAYMENT_DUE 专用：品牌方 id */
-    @Column(name = "brand_id")
-    private Long brandId;
-
-    /** BRAND_MONTH_END_PAYMENT_DUE 专用：品牌方名称快照 */
-    @Column(name = "brand_name")
-    private String brandName;
-
-    /** BRAND_MONTH_END_PAYMENT_DUE 专用：结算月份，格式 yyyyMM */
-    @Column(name = "settlement_month", length = 6)
-    private String settlementMonth;
-
-    /** BRAND_MONTH_END_PAYMENT_DUE 专用：该品牌方该月"红人视频制作与发布成本"合计（美金） */
-    @Column(name = "total_cost_amount", precision = 15, scale = 2)
-    private BigDecimal totalCostAmount;
-
-    /** BRAND_MONTH_END_PAYMENT_DUE 专用：最迟结款日（月底 + 付款周期配置的天数） */
-    @Temporal(TemporalType.DATE)
-    @Column(name = "deadline_date")
-    private Date deadlineDate;
-
-    /** BRAND_MONTH_END_PAYMENT_DUE 专用：距最迟结款日的剩余天数（负数/0表示已超期） */
-    @Column(name = "days_remaining")
-    private Integer daysRemaining;
 }

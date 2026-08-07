@@ -42,13 +42,10 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -60,12 +57,11 @@ import java.util.stream.Collectors;
  * 见 runBatch()）：先清空 progress_reminders / progress_reminder_details 里的全部旧数据，
  * 再重新算一遍插入，所以这两张表任何时刻都只保存"最新一次跑批"的结果，不会跨天累积。
  *
- * 两类提醒（ReminderCategory）：
- *   COLLAB_PAYMENT_DUE          - 品牌方付款周期=按红人成本阈值分档：把命中的红人合作跟踪记录
- *                                  按离最迟结款日的天数分成三档，每档生成一条汇总（笔数）+
- *                                  一批 ProgressReminderDetail 明细快照。
- *   BRAND_MONTH_END_PAYMENT_DUE - 品牌方付款周期=月底对账日后N天结款：按品牌方+结算月份
- *                                  生成一条消息，本身就是完整文案，没有下钻明细。
+ * COLLAB_PAYMENT_DUE：覆盖按红人成本阈值分档、月结两种品牌方付款周期，把命中的红人合作
+ * 跟踪记录按离最迟结款日的天数分成三档，每档生成一条汇总（笔数）+ 一批 ProgressReminderDetail
+ * 明细快照（2026-08 起月结品牌方也按这套逻辑处理，见 runCollabPaymentDue 的说明；原来单独的
+ * BRAND_MONTH_END_PAYMENT_DUE 类别——按品牌方+月份汇总、不排除已结部分、没有下钻明细——
+ * 已被这次改动取代并删除）。
  *
  * 受众目前只有"管理层"这一个员工角色（Employee.role，注意不是 SysUser.role——判断谁能看到
  * 用的是登录账号关联的员工角色，跟登录账号本身是 ADMIN 还是 STAFF 无关）。
@@ -82,8 +78,6 @@ public class ProgressReminderService {
     private static final int[] CHECKPOINT_HOURS = {12, 18, 22};
     /** 一年签一次合同：到期前多少天开始提醒 */
     private static final int CONTRACT_EXPIRY_WINDOW_DAYS = 30;
-    /** 品牌方月结回溯月份数的技术兜底（不是业务规则）：纯粹防止极端脏数据导致死循环 */
-    private static final int MONTH_END_LOOKBACK_SAFETY_CAP = 36;
 
     /** 2026-07 新增：PM_EXECUTOR_PROGRESS_STALL 里"3个工作日未流转"提醒的状态集合
      * （INFLUENCER_ORDERED 单独按5个工作日，见 stallThreshold()） */
@@ -94,7 +88,7 @@ public class ProgressReminderService {
 
     /** "结款后更新提示内容"手动触发范围 */
     private static final Set<ReminderCategory> PAYMENT_CATEGORIES = EnumSet.of(
-            ReminderCategory.COLLAB_PAYMENT_DUE, ReminderCategory.BRAND_MONTH_END_PAYMENT_DUE,
+            ReminderCategory.COLLAB_PAYMENT_DUE,
             ReminderCategory.INFLUENCER_PAYMENT_DUE, ReminderCategory.INFLUENCER_PAYMENT_RECEIPT_OVERDUE);
     /** "项目流转后更新提示内容"手动触发范围（2026-07 新增，不含 CONTRACT_EXPIRING_SOON——
      * 那一类是按日历/合同到期日驱动的，不是按"进度流转"驱动的，只在每天3点主批次里跑） */
@@ -139,7 +133,6 @@ public class ProgressReminderService {
             Date batchDate = toDate(today);
 
             runCollabPaymentDue(today, batchDate);
-            runBrandMonthEndPaymentDue(today, batchDate);
             runInfluencerPaymentDue(today, batchDate);
             runInfluencerPaymentReceiptOverdue(today, batchDate);
             runPmExecutorProgressStall(today, batchDate);
@@ -240,8 +233,8 @@ public class ProgressReminderService {
     }
 
     /**
-     * "结款后更新提示内容"手动触发（2026-07 起只重算 COLLAB_PAYMENT_DUE/
-     * BRAND_MONTH_END_PAYMENT_DUE 这两类，2026-07 再新增 INFLUENCER_PAYMENT_DUE，不影响
+     * "结款后更新提示内容"手动触发（2026-07 起只重算 COLLAB_PAYMENT_DUE 这一类，
+     * 2026-07 再新增 INFLUENCER_PAYMENT_DUE，不影响
      * PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE 当天
      * 已经算好的数据）。
      */
@@ -252,7 +245,6 @@ public class ProgressReminderService {
             LocalDate today = LocalDate.now(ZoneId.systemDefault());
             Date batchDate = toDate(today);
             runCollabPaymentDue(today, batchDate);
-            runBrandMonthEndPaymentDue(today, batchDate);
             runInfluencerPaymentDue(today, batchDate);
             runInfluencerPaymentReceiptOverdue(today, batchDate);
         } catch (RuntimeException e) {
@@ -463,81 +455,6 @@ public class ProgressReminderService {
                 ? t.getInfluencerPaymentProgress().getLabel() : null);
 
         byUrgency.computeIfAbsent(urgency, k -> new ArrayList<>()).add(detail);
-    }
-
-    /**
-     * Part B：品牌方付款周期=月底对账日后N天结款。
-     * 从"最近一个已完整结束的月份"往前逐月回溯，每个月单独判断是否落在提醒区间内
-     * （已超期 / 1-3天 / 3-7天），一旦某个月完全没有红人成本数据就停止往前找
-     * （视为再往前也不会有需要结算的数据）。没有"标记已处理"的概念，只要没打款、
-     * 且当月有成本数据，就会一直提醒下去——这是产品明确认可的行为：这张表每天
-     * 跑批整体重建，不会导致提醒堆积。
-     */
-    private void runBrandMonthEndPaymentDue(LocalDate today, Date batchDate) {
-        List<Brand> qualifyingBrands = new ArrayList<>();
-        for (Brand b : brandCache.getAll()) {
-            if (b.getPaymentCycleType() == PaymentCycleType.MONTH_END && b.getDaysAfterMonthEnd() != null) {
-                qualifyingBrands.add(b);
-            }
-        }
-        if (qualifyingBrands.isEmpty()) return;
-
-        DateTimeFormatter monthFmt = DateTimeFormatter.ofPattern("yyyyMM");
-        List<ProgressReminder> toSave = new ArrayList<>();
-        int overdueMaxDays = thresholdCache.getInt(ReminderCategory.BRAND_MONTH_END_PAYMENT_DUE, "TIER_OVERDUE_MAX_DAYS", 0);
-        int nearMaxDays = thresholdCache.getInt(ReminderCategory.BRAND_MONTH_END_PAYMENT_DUE, "TIER_NEAR_MAX_DAYS", 3);
-        int windowMaxDays = thresholdCache.getInt(ReminderCategory.BRAND_MONTH_END_PAYMENT_DUE, "TIER_WINDOW_MAX_DAYS", 7);
-
-        for (Brand brand : qualifyingBrands) {
-            YearMonth candidate = YearMonth.from(today).minusMonths(1); // 最近一个已完整结束的月份
-            int guard = 0;
-            while (guard < MONTH_END_LOOKBACK_SAFETY_CAP) {
-                String monthStr = candidate.format(monthFmt);
-                BigDecimal totalCost = BigDecimal.ZERO;
-                for (CollaborationTracking t : trackingRepo.findByPublishMonth(monthStr)) {
-                    if (brand.getId().equals(t.getBrandId()) && t.getInfluencerCost() != null) {
-                        totalCost = totalCost.add(t.getInfluencerCost());
-                    }
-                }
-                if (totalCost.compareTo(BigDecimal.ZERO) == 0) break; // 再往前没有数据了，停止回溯
-
-                LocalDate monthEnd = candidate.atEndOfMonth();
-                LocalDate deadlineLocalDate = monthEnd.plusDays(brand.getDaysAfterMonthEnd());
-                long daysRemaining = ChronoUnit.DAYS.between(today, deadlineLocalDate);
-                ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining, overdueMaxDays, nearMaxDays, windowMaxDays);
-                if (urgency != null) {
-                    BigDecimal roundedCost = totalCost.setScale(2, RoundingMode.HALF_UP);
-                    ProgressReminder reminder = new ProgressReminder();
-                    reminder.setIsDeleted(false);
-                    reminder.setBatchDate(batchDate);
-                    reminder.setCategory(ReminderCategory.BRAND_MONTH_END_PAYMENT_DUE);
-                    reminder.setUrgency(urgency);
-                    reminder.setAudienceEmployeeRole(MANAGEMENT_ROLE);
-                    reminder.setBrandId(brand.getId());
-                    reminder.setBrandName(brand.getName());
-                    reminder.setSettlementMonth(monthStr);
-                    reminder.setTotalCostAmount(roundedCost);
-                    reminder.setDeadlineDate(toDate(deadlineLocalDate));
-                    reminder.setDaysRemaining((int) daysRemaining);
-                    reminder.setTitle(buildMonthEndTitle(
-                            brand.getName(), candidate.getMonthValue(), roundedCost, deadlineLocalDate, daysRemaining));
-                    toSave.add(reminder);
-                }
-                candidate = candidate.minusMonths(1);
-                guard++;
-            }
-        }
-        reminderRepo.saveAll(toSave);
-    }
-
-    private String buildMonthEndTitle(String brandName, int monthValue, BigDecimal totalCost,
-                                       LocalDate deadline, long daysRemaining) {
-        String deadlineStr = deadline.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-        String remainingPart = daysRemaining > 0
-                ? "还剩下" + daysRemaining + "天"
-                : "已超期" + Math.abs(daysRemaining) + "天";
-        return "距离" + brandName + "，" + monthValue + "月底对账后（金额共"
-                + totalCost.toPlainString() + "美元）最迟结款日（" + deadlineStr + "），" + remainingPart;
     }
 
     /**

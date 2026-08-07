@@ -4,8 +4,11 @@ package com.lusuoria.settlement.enums;
  * 进度提醒类别（2026-07 新增，跑批生成，展示在"待处理-进度提醒"里）。
  * 预留扩展空间：以后新增其他类型的提醒跑批，直接加新的枚举值即可，不需要改表结构。
  *
- *   COLLAB_PAYMENT_DUE          - 红人合作跟踪临近结款提醒（品牌方付款周期=按红人成本阈值分档）
- *   BRAND_MONTH_END_PAYMENT_DUE - 品牌方月结临近结款提醒（品牌方付款周期=月底对账日后N天结款）
+ *   COLLAB_PAYMENT_DUE          - 红人合作跟踪临近结款提醒，覆盖按红人成本阈值分档、月结两种
+ *                                 品牌方付款周期（2026-08 起月结品牌方也纳入，按单条记录处理，
+ *                                 用"视频发布月份最后一个工作日+对账日后N天"模拟结款截止日；
+ *                                 原来单独的 BRAND_MONTH_END_PAYMENT_DUE 类别——按品牌方+月份
+ *                                 汇总、不排除已结部分、无下钻明细——已被这次改动取代并删除）
  *   INFLUENCER_PAYMENT_DUE      - 红人结款临近付款日提醒（"红人结款"状态=待付款，按预计付款日
  *                                 距今天数分档，档位口径完全同 COLLAB_PAYMENT_DUE）
  *   PM_EXECUTOR_PROGRESS_STALL  - 项目负责人/执行人员视角：视频项目进度长时间未流转
@@ -21,7 +24,6 @@ package com.lusuoria.settlement.enums;
  */
 public enum ReminderCategory {
     COLLAB_PAYMENT_DUE("红人合作跟踪临近结款"),
-    BRAND_MONTH_END_PAYMENT_DUE("品牌方月结临近结款"),
     INFLUENCER_PAYMENT_DUE("红人结款临近付款日"),
     PM_EXECUTOR_PROGRESS_STALL("进度滞留-项目"),
     FINANCE_PROGRESS_STALL("进度滞留-财务"),
