@@ -488,6 +488,29 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     List<Object[]> sumDelayedByRequirementNos(@Param("requirementNos") List<String> requirementNos);
 
     /**
+     * "查看未结款的需求"专用（2026-08 修复）：从传入的需求编号里，找出"存在至少一条已经进入
+     * 可结款阶段（红人结款进度非空）、但还没被纳入任何结款批次"的记录的需求编号集合。
+     *
+     * 背景：这个筛选原来只判断"结款状态字段是否为 null"，但月结品牌方允许一个需求分多批结款——
+     * 需求一旦被结过一次款（哪怕只结了其中一部分），结款状态就不再是 null，会永久性地从
+     * "查看未结款的需求"列表消失，即使后续又有新的可结款记录被漏掉忘记结。这里改成直接判断
+     * "这个需求下还有没有漏网的可结款记录"，不管这个需求之前有没有结过款——只要还有没结的，
+     * 就应该继续出现在这个列表里；调用方（InfluencerRequirementService.pageUnsettled）把这个
+     * 结果跟"结款状态为 null"（覆盖还没任何视频进入可结款阶段的全新需求）取并集。
+     *
+     * "已经进入可结款阶段"= influencerPaymentProgress 非空（跟 InfluencerPaymentService.
+     * validateNoPartialRequirement() 判断"遗漏"用的是同一个口径）；"还没被纳入任何结款批次"
+     * 排除 INCLUDED_IN_PAYMENT_BATCH / INCLUDED_IN_PAYMENT_BATCH_MISSING_INVOICE 这两个值。
+     */
+    @Query("SELECT DISTINCT c.internalRequirementNo FROM CollaborationTracking c " +
+           "WHERE c.isDeleted = false AND c.internalRequirementNo IN :requirementNos " +
+           "AND c.influencerPaymentProgress IS NOT NULL " +
+           "AND c.influencerPaymentProgress NOT IN (" +
+           "  com.lusuoria.settlement.enums.InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH, " +
+           "  com.lusuoria.settlement.enums.InfluencerPaymentProgress.INCLUDED_IN_PAYMENT_BATCH_MISSING_INVOICE)")
+    List<String> findRequirementNosWithUnbatchedPayableItems(@Param("requirementNos") List<String> requirementNos);
+
+    /**
      * 需求列表页"新建合作跟踪"按钮判断用：按 internalRequirementNo 分组统计"已建立跟踪记录数"
      * ——不看 progress 状态，只要关联了就算（含折损），口径跟 findByInternalRequirementNoAndIsDeletedFalse
      * 一致。达到 totalItemCount 时说明每个条目的名额都已经有跟踪记录占上了，不该再允许新建，

@@ -557,9 +557,17 @@ public class InfluencerRequirementService {
 
     /**
      * "需求列表页 - 查看未结款的需求"按钮专用（2026-08 新增，仅管理层可见，前端/后端都做了
-     * 角色校验）：条件跟 findByFilters 一致，只额外要求这条需求的"结款状态"（settlementStatus）
-     * 为空——即还没有任何红人结款记录关联过它，不要求需求必须100%完成（未完成的需求也会
-     * 出现在这个列表里，方便管理层提前掌握全貌，只是排序上靠后）。
+     * 角色校验；2026-08 修复见下）：条件跟 findByFilters 一致，命中"结款状态
+     * （settlementStatus）为空"（还没有任何红人结款记录关联过它，覆盖全新需求，不要求需求
+     * 必须100%完成，未完成的需求也会出现在这个列表里，方便管理层提前掌握全貌）**或者**
+     * "这个需求下还有已经进入可结款阶段、但漏掉没纳入任何批次的记录"这两种情况之一。
+     *
+     * 2026-08 修复：之前只判断"结款状态为空"，但月结品牌方允许一个需求分多批结款——需求一旦
+     * 被结过一次款（哪怕只结了其中一部分），结款状态就不再是空，会永久性地从这个列表消失，
+     * 即使后续又有新的可结款记录被漏掉忘记结掉，也不会再被提醒。现在额外用
+     * CollaborationTrackingRepository.findRequirementNosWithUnbatchedPayableItems() 查一遍
+     * "还有没有漏网的可结款记录"，跟"结款状态为空"取并集——这样不管这个需求之前有没有结过款，
+     * 只要还有没结的，就会一直出现在这个列表里，直到真的结完为止。
      *
      * 排序：需求完成进度=100%的排最前；组内再按"预计付款日"从近到远排（越紧迫越靠前），算不出
      * 预计付款日的排最后。这个"预计付款日"是估算值，供管理层判断优先级用，不是红人结款记录里
@@ -573,8 +581,15 @@ public class InfluencerRequirementService {
         List<InfluencerRequirement> all = requirementRepo.findByFiltersNoPaging(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo,
                 completedMonth, pageable.getSort());
+
+        List<String> allNos = all.stream().map(InfluencerRequirement::getInternalRequirementNo)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toList());
+        Set<String> hasUnbatchedPayableItems = new HashSet<>(
+                trackingRepo.findRequirementNosWithUnbatchedPayableItems(allNos));
+
         List<InfluencerRequirement> unsettled = all.stream()
-                .filter(r -> r.getSettlementStatus() == null)
+                .filter(r -> r.getSettlementStatus() == null
+                        || hasUnbatchedPayableItems.contains(r.getInternalRequirementNo()))
                 .collect(Collectors.toList());
 
         List<String> nos = unsettled.stream().map(InfluencerRequirement::getInternalRequirementNo)
