@@ -83,6 +83,7 @@ public class InfluencerRequirementService {
     @Autowired private InfluencerContractRepository influencerContractRepo;
     @Autowired private InfluencerPaymentRepository paymentRepo;
     @Autowired private PendingApprovalRepository pendingApprovalRepo;
+    @Autowired private com.lusuoria.settlement.util.EmployeeRoleUtil employeeRoleUtil;
 
     @Transactional
     public InfluencerRequirement save(InfluencerRequirementRequest req) {
@@ -1050,6 +1051,20 @@ public class InfluencerRequirementService {
      * 发起时查一次，PendingApprovalService.approve() 真正执行删除时会再查一次兜底（申请提交
      * 之后、ADMIN 审批之前这段时间里，仍然可能有人新建了关联到这条需求的合作跟踪记录）。
      *
+     * 2026-08-10 新增：发起权限收窄成"项目负责人/执行人员或 ADMIN"（跟红人合作跟踪的
+     * assertOwnerOrAdmin 同一个思路），不再是任何 STAFF 账号都能发起——Controller 上的
+     * @PreAuthorize 只能识别 ADMIN/STAFF 这种粗粒度 SysUser 角色，识别不了"项目负责人"/
+     * "执行人员"这种细粒度的员工业务角色，所以这层限制放在这里做。
+     * 跟红人合作跟踪不同的是：红人需求管理没有"这条记录归谁"的真实归属概念（
+     * defaultProjectManagerId 只是新建时的默认值提示，不是强制的所有权关系），所以这里
+     * 校验的是"当前账号的员工角色是不是项目负责人/执行人员"，不看是不是这条具体需求记录
+     * "名义上"的负责人——只要角色对，任何项目负责人/执行人员都能对任意一条需求发起删除申请。
+     *
+     * "申请人"沿用 targetProjectManagerId 这个既有字段（不新增字段）存当前发起人的员工id——
+     * 红人需求管理没有 PM/执行人员两种角色分开占用两个字段的场景，直接复用一个即可，
+     * dismiss()/listMyNotifications() 的判断逻辑（targetProjectManagerId 或 targetExecutorId
+     * 命中当前员工）不需要跟着改，天然兼容。
+     *
      * 不直接调用 PendingApprovalService.requestDelete()：PendingApprovalService 已经反向依赖了
      * 本 Service（executeProgressRollback() 里会调用 refreshCompletedAt()），如果这里再依赖
      * PendingApprovalService，会形成两个 Service 相互依赖的循环，Spring 默认在启动时就会报错
@@ -1060,6 +1075,7 @@ public class InfluencerRequirementService {
      */
     @Transactional
     public PendingApproval requestDelete(Long id, String reason) {
+        assertPmOrExecutorOrAdmin("发起删除申请");
         InfluencerRequirement requirement = requirementRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("需求记录不存在：" + id));
         List<CollaborationTracking> linked =
@@ -1069,6 +1085,7 @@ public class InfluencerRequirementService {
         }
         String summary = (requirement.getBrand() != null ? requirement.getBrand().getName() : "未知品牌")
                 + " - " + (requirement.getInfluencer() != null ? requirement.getInfluencer().getAccountName() : "未知红人");
+        Long requesterEmployeeId = employeeRoleUtil.getCurrentEmployeeId();
         return pendingApprovalRepo
                 .findByTargetModuleAndTargetIdAndCategoryAndStatus(
                         PendingApprovalModule.INFLUENCER_REQUIREMENT, id,
@@ -1083,8 +1100,22 @@ public class InfluencerRequirementService {
                     p.setReason(reason);
                     p.setRequestedBy(RoleUtil.getCurrentUsername());
                     p.setStatus(PendingApprovalStatus.PENDING);
+                    p.setTargetProjectManagerId(requesterEmployeeId);
                     return pendingApprovalRepo.save(p);
                 });
+    }
+
+    /**
+     * "红人需求管理"删除申请专属的发起权限校验：ADMIN 不受限；其余账号必须是"项目负责人"或
+     * "执行人员"角色（不看是不是这条具体需求的归属人，这个模块没有强制的归属关系，见
+     * requestDelete() 上面的注释）。
+     */
+    private void assertPmOrExecutorOrAdmin(String actionLabel) {
+        if (RoleUtil.isAdmin()) return;
+        String role = employeeRoleUtil.getCurrentEmployeeRole();
+        if (!"项目负责人".equals(role) && !"执行人员".equals(role)) {
+            throw new RuntimeException("只有项目负责人或执行人员可以" + actionLabel);
+        }
     }
 
     /**
