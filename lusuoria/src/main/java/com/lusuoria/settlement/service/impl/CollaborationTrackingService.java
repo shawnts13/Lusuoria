@@ -836,6 +836,11 @@ public class CollaborationTrackingService {
         // 只在进度真的发生变化时才校验——原样提交回去（进度没变，比如历史遗留的问题记录被
         // 打开又原样保存）不受这条限制影响，不然这类历史数据会连状态流转弹窗都打不开/保存不了，
         // 需要单独走别的渠道修复，不该被这里的校验卡死。
+        // 2026-08 起：前端 CollaborationStatusModal 只在流转到"已发布（未结算）"时展示这两个
+        // 输入框，"已加入客户未结算列表"/"客户已结算"不再重复问一遍（避免每次流转都要把前面
+        // 阶段的字段再填一次）——但下面这条后端校验本身不放松：这两个字段只要缺，不管目标是三个
+        // 阶段里的哪一个都拒绝，作为"没经过已发布（未结算）就被直接跳过去"这种边界情况的兜底
+        // （此时前端会检测到记录缺这两个字段，重新把输入框露出来，不会出现"报错但没地方填"的情况）
         boolean progressActuallyChangedForPublishCheck = !java.util.Objects.equals(oldProgress, newProgress);
         if (progressActuallyChangedForPublishCheck && newProgress != null && newProgress.allowsPaymentProgress()) {
             // 2026-08 新增：这次请求如果带了视频发布链接/视频发布时间，直接写入这条记录——
