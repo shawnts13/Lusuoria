@@ -11,6 +11,7 @@ import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.ExchangeRateCache;
 import com.lusuoria.settlement.entity.ExecutorPayRateTier;
+import com.lusuoria.settlement.entity.ExecutorWageConfirmation;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.enums.CollaborationProgress;
@@ -20,6 +21,7 @@ import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.ExchangeRateCacheRepository;
 import com.lusuoria.settlement.repository.ExecutorPayRateTierRepository;
+import com.lusuoria.settlement.repository.ExecutorWageConfirmationRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.config.InfluencerTeamCache;
@@ -84,6 +86,7 @@ public class CollaborationTrackingService {
     @Autowired private InfluencerRequirementService requirementService;
     @Autowired private com.lusuoria.settlement.util.EmployeeRoleUtil employeeRoleUtil;
     @Autowired private ExecutorPayRateTierRepository executorPayRateTierRepo;
+    @Autowired private ExecutorWageConfirmationRepository wageConfirmationRepo;
     @Autowired private ExchangeRateCacheRepository exchangeRateCacheRepo;
 
     /** 自定义异常：去重命中 */
@@ -1484,6 +1487,14 @@ public class CollaborationTrackingService {
      *   - executorCostOverridden=true（ADMIN 在编辑表单手动特批的值，见 doSave()）——尊重
      *     这个特批，不覆盖；但它已经花的钱仍然计入同组后续记录的当月封顶累计，不会凭空
      *     多出预算
+     *   - 这个 (项目负责人,执行人员,月份) 组合已经在"手下执行人员工资"确认过（2026-08-10
+     *     新增，Shawn 反馈后加的保护）——确认动作有自己独立的冻结快照
+     *     （ExecutorWageConfirmation.detailJson），底层这条记录的内部执行成本如果被这里悄悄
+     *     改动，快照不会跟着变，表面上看不出异常，但这条确认一旦之后因为任何别的原因被取消
+     *     确认再重新确认，就会直接读到被批量重算改过的新值，而且完全绕开"内部执行成本二次
+     *     修改需要项目负责人审批"那套流程（那套流程只挡得住手动编辑，挡不住这个批量按钮）。
+     *     同样只跳过"改动"，不跳过"占用当月封顶预算/排位"，跟 executorCostOverridden 处理方式
+     *     一致
      *   - 已确认"不涉及内部执行人员"、或"折损"记录（本来就不参与执行成本核算）
      *   - 缺执行人员/视频类型/发布时间/项目负责人任意一项的（没法归组计算）
      *   - 这个 (项目负责人,执行人员,视频类型) 组合完全没有配置过费率梯度的——整组跳过，
@@ -1510,8 +1521,24 @@ public class CollaborationTrackingService {
             String key = t.getProjectManager().getId() + "|" + t.getExecutor().getId() + "|" + t.getVideoType() + "|" + month;
             execCostGroups.computeIfAbsent(key, k -> new ArrayList<>()).add(t);
         }
+        // 2026-08 新增：已经在"手下执行人员工资"确认过的 (项目负责人,执行人员,月份) 组合不能
+        // 被这里悄悄改动内部执行成本——确认动作本身有独立的冻结快照（ExecutorWageConfirmation.
+        // detailJson），底层这条记录的数值改了快照不会跟着变，看起来"好像没事"，但一旦这条确认
+        // 之后因为任何别的原因被取消确认再重新确认，就会直接读到这个被批量重算悄悄改过的新值，
+        // 而且完全绕开"内部执行成本二次修改需要项目负责人审批"那套流程（那套流程只挡得住手动
+        // 编辑，挡不住这个批量按钮）。Shawn 2026-08-10 反馈后加的保护，跟下面 executorCostOverridden
+        // 的跳过逻辑并列——只跳过"改动"，不跳过"占用这个月的封顶预算/排位"（已经确认、已经实际
+        // 发生的这几条视频，仍然要算进这个类型当月的累计条数/累计金额里，不然后面还没确认的
+        // 记录反而会因为少算了前面几条而被分到更靠前的档位，间接产生新的偏差）。
+        Set<String> confirmedWageKeys = new HashSet<>();
+        for (ExecutorWageConfirmation c : wageConfirmationRepo.findByConfirmedTrueAndIsDeletedFalse()) {
+            if (c.getExecutorId() == null) continue; // 改造前"整批打包确认"的历史记录，不参与判断
+            confirmedWageKeys.add(c.getManagerId() + "|" + c.getExecutorId() + "|" + c.getYearMonth());
+        }
+
         int recomputedExecutorCostCount = 0;
         int overriddenSkippedCount = 0;
+        int confirmedSkippedCount = 0;
         int outOfRangeSkippedCount = 0;
         int noRateSkippedCount = 0;
         Set<String> noRateSkippedCombos = new java.util.TreeSet<>();
@@ -1522,6 +1549,7 @@ public class CollaborationTrackingService {
                 return a.getId().compareTo(b.getId());
             });
             CollaborationTracking first = group.get(0);
+            String groupMonth = monthFormat.format(first.getPublishDate());
             List<ExecutorPayRateTier> tiers = executorPayRateTierRepo
                     .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(
                             first.getProjectManager().getId(), first.getExecutor().getId(), first.getVideoType());
@@ -1530,10 +1558,12 @@ public class CollaborationTrackingService {
                 noRateSkippedCombos.add(first.getExecutor().getName() + " / " + first.getVideoType().getLabel());
                 continue;
             }
+            boolean groupWageConfirmed = confirmedWageKeys.contains(
+                    first.getProjectManager().getId() + "|" + first.getExecutor().getId() + "|" + groupMonth);
             List<CollaborationTracking> processed = new ArrayList<>();
             for (CollaborationTracking t : group) {
-                if (Boolean.TRUE.equals(t.getExecutorCostOverridden())) {
-                    overriddenSkippedCount++;
+                if (Boolean.TRUE.equals(t.getExecutorCostOverridden()) || groupWageConfirmed) {
+                    if (groupWageConfirmed) confirmedSkippedCount++; else overriddenSkippedCount++;
                     processed.add(t); // 已花的钱仍然占用这个类型当月的封顶预算
                     continue;
                 }
@@ -1588,6 +1618,11 @@ public class CollaborationTrackingService {
         msg.append("\n内部执行成本：已按费率梯度重新计算 ").append(recomputedExecutorCostCount).append(" 条");
         if (overriddenSkippedCount > 0) {
             msg.append("；").append(overriddenSkippedCount).append(" 条是 ADMIN 手动特批的值，未覆盖");
+        }
+        if (confirmedSkippedCount > 0) {
+            msg.append("；").append(confirmedSkippedCount)
+               .append(" 条所在的项目负责人+执行人员+月份组合已经在\"手下执行人员工资\"确认过，未覆盖"
+                       + "（需要改的话，先去那边取消确认再改）");
         }
         if (outOfRangeSkippedCount > 0) {
             msg.append("；").append(outOfRangeSkippedCount)

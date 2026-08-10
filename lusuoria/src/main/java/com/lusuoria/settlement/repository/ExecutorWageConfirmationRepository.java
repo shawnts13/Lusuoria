@@ -19,4 +19,12 @@ public interface ExecutorWageConfirmationRepository extends JpaRepository<Execut
      * 执行人员/项目负责人工资单时一次性拿到全部人的状态，避免按人循环查（N+1）。
      */
     List<ExecutorWageConfirmation> findByYearMonthAndIsDeletedFalse(String yearMonth);
+
+    /**
+     * 全历史所有"已确认"的确认记录（不分月份），供
+     * {@link com.lusuoria.settlement.service.impl.CollaborationTrackingService#recomputeAllProfits()}
+     * 用来判断哪些 (项目负责人, 执行人员, 月份) 组合已经确认过工资、不该被批量重算悄悄改动
+     * 内部执行成本（2026-08 新增，见该方法内注释）。
+     */
+    List<ExecutorWageConfirmation> findByConfirmedTrueAndIsDeletedFalse();
 }
