@@ -543,6 +543,12 @@ public class PayslipService {
         BigDecimal totalCommission = BigDecimal.ZERO;
         BigDecimal totalExecCostUsd = BigDecimal.ZERO;
         BigDecimal totalCompanyProfitUsd = BigDecimal.ZERO;
+        // "负责人提成合计（含Bonus）"按项目负责人拆分用（2026-08-10 新增，见下面
+        // commissionBreakdownRows 的组装）：管理层自己的订单不算在内——那部分订单产生的是
+        // "内部执行人力成本"（体现在 execOrdersUnderMgmt/executorWageRows 那边），不是"负责人
+        // 提成"，管理层本人也不参与提成阶梯Bonus（跟 DashboardStatsService.drilldownCommission()
+        // "管理层这个特殊项目负责人整行剔除"是同一个口径）。
+        Map<Long, BigDecimal> commissionByManager = new LinkedHashMap<>();
 
         for (CollaborationTracking o : orders) {
             DashboardStatsService.Computed c = dashboardStatsService.compute(o);
@@ -559,6 +565,10 @@ public class PayslipService {
             // 完全是同一套数字，用户拿页面上任意几个数字手算公式一定能对上。
             totalExecCostUsd = totalExecCostUsd.add(c.grossProfit.subtract(c.distributableProfit));
             totalCompanyProfitUsd = totalCompanyProfitUsd.add(c.companyProfit);
+
+            if (o.getProjectManagerId() != null && !o.getProjectManagerId().equals(mgmt.getId())) {
+                commissionByManager.merge(o.getProjectManagerId(), c.commissionAmount, BigDecimal::add);
+            }
 
             String brandName = dashboardStatsService.brandNameOf(o.getBrandId());
             String teamName = dashboardStatsService.teamNameOf(o.getTeam());
@@ -587,6 +597,13 @@ public class PayslipService {
                 .findByYearMonthAndFinalConfirmedTrueAndIsDeletedFalseAndEmployeeIdNot(yearMonth, mgmt.getId());
         BigDecimal tierBonusTotalUsd = BigDecimal.ZERO;
         BigDecimal extraBonusTotalUsd = BigDecimal.ZERO;
+        // 每个项目负责人自己的阶梯Bonus（2026-08-10 新增，供 commissionBreakdownRows 用）——
+        // 只有已确认（finalConfirmed，即在 othersConfirmed 里）的项目负责人才有值可读，没确认的
+        // 在下面组装明细行时按 null 处理（前端显示"—"，不是误导性的 0.00）
+        Map<Long, BigDecimal> tierBonusByManager = new HashMap<>();
+        // "内部其他员工成本"按人拆分（2026-08-10 新增，供 otherStaffCostBreakdownRows 用），
+        // 跟下面 otherStaffCostRmb 汇总数字用的是完全同一套判断条件，只是多存一份明细
+        List<PayslipDimensionRow> otherStaffCostBreakdownRows = new ArrayList<>();
         // 内部其他员工成本：财务/IT后勤固定月薪合计（人民币）+ 法务当月工资，换算成美金扣减。
         // 财务/IT后勤这部分同样要按入职时间过滤（2026-08 修复，跟 listForMonth()/
         // managementBlockReason() 保持一致口径）——不然入职月份晚于 yearMonth 的财务/IT后勤
@@ -594,12 +611,20 @@ public class PayslipService {
         BigDecimal otherStaffCostRmb = BigDecimal.ZERO;
         for (Employee e : allEmployees) {
             if (FIXED_SALARY_ROLES.contains(e.getRole()) && !isBeforeHireMonth(e, yearMonth)) {
-                otherStaffCostRmb = otherStaffCostRmb.add(dashboardStatsService.safe(e.getFixedMonthlySalary()));
+                BigDecimal salary = dashboardStatsService.safe(e.getFixedMonthlySalary());
+                otherStaffCostRmb = otherStaffCostRmb.add(salary);
+                otherStaffCostBreakdownRows.add(PayslipDimensionRow.builder()
+                        .brandName(e.getRole() + " - " + e.getName())
+                        .amount(salary.setScale(SCALE, RoundingMode.HALF_UP))
+                        .isSummaryRow(false).build());
             }
         }
         for (Payslip other : othersConfirmed) {
             PayslipDetailResponse snap = readSnapshot(other);
-            if (snap.getTierBonusAmount() != null) tierBonusTotalUsd = tierBonusTotalUsd.add(snap.getTierBonusAmount());
+            if (snap.getTierBonusAmount() != null) {
+                tierBonusTotalUsd = tierBonusTotalUsd.add(snap.getTierBonusAmount());
+                tierBonusByManager.put(other.getEmployeeId(), snap.getTierBonusAmount());
+            }
             if (other.getExtraBonusAmount() != null) {
                 boolean isRmb = "RMB".equals(other.getExtraBonusCurrency());
                 BigDecimal usd = isRmb
@@ -611,14 +636,39 @@ public class PayslipService {
             }
             if ("法务".equals(other.getEmployeeRole()) && other.getLegalSalaryRmb() != null) {
                 otherStaffCostRmb = otherStaffCostRmb.add(other.getLegalSalaryRmb());
+                otherStaffCostBreakdownRows.add(PayslipDimensionRow.builder()
+                        .brandName("法务 - " + employeeNameOf(other.getEmployeeId()))
+                        .amount(other.getLegalSalaryRmb().setScale(SCALE, RoundingMode.HALF_UP))
+                        .isSummaryRow(false).build());
             }
         }
+        otherStaffCostBreakdownRows.add(buildSummaryRow(otherStaffCostBreakdownRows));
+
         BigDecimal otherStaffCostUsd = dashboardStatsService.convertFromRmb(otherStaffCostRmb, rate, false);
         BigDecimal execCostUsd = totalExecCostUsd.setScale(SCALE, RoundingMode.HALF_UP);
         BigDecimal companyProfitBeforePayouts = totalCompanyProfitUsd.subtract(otherStaffCostUsd);
 
         BigDecimal managerCommissionTotal = totalCommission.add(tierBonusTotalUsd);
         BigDecimal companyProfit = companyProfitBeforePayouts.subtract(tierBonusTotalUsd).subtract(extraBonusTotalUsd);
+
+        // "负责人提成合计（含Bonus）"明细行组装（2026-08-10 新增）：按负责人姓名排序，
+        // amount=原始提成，amount2=阶梯Bonus（未确认/没配置为 null），profit=两者之和，
+        // 跟顶部"负责人提成合计（含Bonus）"这一个数字的构成完全对应，方便管理层核对
+        List<Long> commissionManagerIds = new ArrayList<>(commissionByManager.keySet());
+        commissionManagerIds.sort(Comparator.comparing(this::employeeNameOf, Comparator.nullsLast(Comparator.naturalOrder())));
+        List<PayslipDimensionRow> commissionBreakdownRows = new ArrayList<>();
+        for (Long pmId : commissionManagerIds) {
+            BigDecimal commission = commissionByManager.get(pmId).setScale(SCALE, RoundingMode.HALF_UP);
+            BigDecimal bonus = tierBonusByManager.get(pmId);
+            BigDecimal total = commission.add(bonus != null ? bonus : BigDecimal.ZERO);
+            commissionBreakdownRows.add(PayslipDimensionRow.builder()
+                    .brandName(employeeNameOf(pmId))
+                    .amount(commission)
+                    .amount2(bonus)
+                    .profit(total)
+                    .isSummaryRow(false).build());
+        }
+        commissionBreakdownRows.add(buildSummaryRow(commissionBreakdownRows));
 
         // ===== 管理层作为"特殊的项目负责人"，也要能按执行人员单独确认自己名下
         // （projectManagerId=管理层本人）执行人员的工资——用跟普通项目负责人完全一样的一套
@@ -651,6 +701,8 @@ public class PayslipService {
                 .executorWageRows(ownWageDetail.rows)
                 .executorWageTotal(ownWageDetail.total.setScale(SCALE, RoundingMode.HALF_UP))
                 .executorWageConfirmed(ownAllExecutorsConfirmed)
+                .commissionBreakdownRows(commissionBreakdownRows)
+                .otherStaffCostBreakdownRows(otherStaffCostBreakdownRows)
                 .build();
     }
 
@@ -1247,13 +1299,22 @@ public class PayslipService {
         // 再各自四舍五入然后相减——这样用户拿页面上"总工资"和"应发给执行人员的工资"两个已经
         // 展示出来的数字手动相减，一定能跟这里算出来的 finalNetWage 完全对上。
         boolean isProjectManager = "PROJECT_MANAGER".equals(type);
-        boolean showsExecutorWages = isProjectManager || "MANAGEMENT".equals(type);
+        boolean isManagement = "MANAGEMENT".equals(type);
+        boolean showsExecutorWages = isProjectManager || isManagement;
         List<PayslipDimensionRow> convertedExecutorWageRows = showsExecutorWages
                 ? convertDimensionRows(src.getExecutorWageRows(), true, rate, toRmb) : null;
         BigDecimal executorWageTotal = showsExecutorWages
                 ? convertAmount(src.getExecutorWageTotal(), true, rate, toRmb) : null;
         BigDecimal finalNetWage = isProjectManager && total != null && executorWageTotal != null
                 ? total.subtract(executorWageTotal).setScale(SCALE, RoundingMode.HALF_UP) : null;
+
+        // 管理层专属明细拆分（2026-08-10 新增，见 PayslipDetailResponse 字段注释）：
+        // commissionBreakdownRows 存的原始值是美金（跟 managerCommissionTotal 一致），
+        // otherStaffCostBreakdownRows 存的原始值是人民币（跟 executorWageRows 一致）
+        List<PayslipDimensionRow> convertedCommissionBreakdownRows = isManagement
+                ? convertDimensionRows(src.getCommissionBreakdownRows(), false, rate, toRmb) : null;
+        List<PayslipDimensionRow> convertedOtherStaffCostBreakdownRows = isManagement
+                ? convertDimensionRows(src.getOtherStaffCostBreakdownRows(), true, rate, toRmb) : null;
 
         return PayslipDetailResponse.builder()
                 .type(type).rows(convertedRows)
@@ -1271,6 +1332,8 @@ public class PayslipService {
                 .managerCommissionTotal(managerCommissionTotal).executorPayTotal(executorPayTotal)
                 .otherStaffCost(otherStaffCost).extraBonusPayoutTotal(extraBonusPayoutTotal)
                 .companyProfit(companyProfit)
+                .commissionBreakdownRows(convertedCommissionBreakdownRows)
+                .otherStaffCostBreakdownRows(convertedOtherStaffCostBreakdownRows)
                 .currency(toRmb ? "RMB" : "USD").confirmed(confirmed)
                 .ownActionConfirmed(draft != null && Boolean.TRUE.equals(draft.getConfirmed()))
                 .exchangeRateInfo(rateInfo)

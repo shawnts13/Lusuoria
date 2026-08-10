@@ -80,6 +80,27 @@ public class PayslipDetailResponse {
     private BigDecimal extraBonusPayoutTotal;
     private BigDecimal companyProfit;
 
+    // ===== 管理层专属明细拆分（2026-08-10 新增，Shawn 反馈只看汇总数字没法核对公式对不对，
+    // 要求"查看详情"能看到这几项的构成明细）：复用 PayslipDimensionRow 这个通用行结构，
+    // 字段含义按下面各自的说明来，含各自的汇总行（isSummaryRow=true）。amount 是美金
+    // （managerCommissionTotal/executorPayTotal 都是美金），otherStaffCostBreakdownRows 的
+    // amount 是人民币原值（otherStaffCost 本身换算前也是人民币），未做 toDisplayResponse 那层
+    // 币种换算——跟 executorWageRows 保持一致的"明细行原始币种、只有汇总数字才换算"的约定 =====
+
+    /**
+     * "负责人提成合计（含Bonus）"按项目负责人拆分：brandName=负责人姓名，amount=该负责人的
+     * 原始提成（美金），amount2=该负责人的阶梯Bonus（美金，还没确认/没配置阶梯时为 null，
+     * 前端显示"—"），profit=两者之和（跟"总金额"列对应）。不包含管理层自己（他"自己的订单"
+     * 计入的是内部执行人力成本，不是负责人提成，见 executorWageRows 那部分）。
+     */
+    private List<PayslipDimensionRow> commissionBreakdownRows;
+
+    /**
+     * "内部其他员工成本"按人拆分：brandName="角色 - 姓名"，amount=这个人当月的成本（人民币，
+     * 财务/IT后勤是固定月薪，法务是管理层当月手动录入的 legalSalaryRmb）。
+     */
+    private List<PayslipDimensionRow> otherStaffCostBreakdownRows;
+
     // ===== 读取时补上的展示上下文，不参与快照存储 =====
     private String currency;
     /**
