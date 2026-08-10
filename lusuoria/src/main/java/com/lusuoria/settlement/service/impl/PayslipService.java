@@ -573,26 +573,30 @@ public class PayslipService {
         rows.sort((a, b) -> b.getVideoCount().compareTo(a.getVideoCount()));
         rows.add(buildSummaryRow(rows));
 
-        // 内部其他员工成本：财务/IT后勤固定月薪合计（人民币），换算成美金扣减。
-        // 同样要按入职时间过滤（2026-08 修复，跟 listForMonth()/managementBlockReason() 保持
-        // 一致口径）——不然入职月份晚于 yearMonth 的财务/IT后勤员工，固定月薪会被提前算进
-        // 更早月份的公司利润扣减项里，把那些月份的公司利润少算了。
+        // 当月所有"已确认"的其他员工：阶梯Bonus + 奖金 + 法务当月工资，都要从公司利润里扣掉
+        // （上面这套公式本身只扣了内部执行成本/负责人提成，没扣这三项）。法务工资挪到这里
+        // 一起处理是 2026-08-10 修复：之前"内部其他员工成本"只累加了财务/IT后勤固定月薪，
+        // 完全漏了法务——数据看板那边（DashboardStatsService.getSummary()）2026-07 起已经把
+        // 法务当月工资（Payslip.legalSalaryRmb）计入"内部其他员工成本"，但这边没有同步改，
+        // 导致管理层确认某个月后，数据看板算出来的公司利润比工资单这边少（少扣的法务工资部分
+        // 让工资单的利润显得偏高），Shawn 手动比对两边公式发现的。法务工资只在这里、从
+        // othersConfirmed 里取（employeeRole 字段是 confirm() 时顺带存的，不用再单独查一次
+        // 员工角色）——法务不涉及"手下执行人员工资"那套下游依赖，只要 confirmed 就是
+        // finalConfirmed，所以能跟阶梯Bonus/奖金用同一批 othersConfirmed 数据源，不需要额外查询。
+        List<Payslip> othersConfirmed = payslipRepo
+                .findByYearMonthAndFinalConfirmedTrueAndIsDeletedFalseAndEmployeeIdNot(yearMonth, mgmt.getId());
+        BigDecimal tierBonusTotalUsd = BigDecimal.ZERO;
+        BigDecimal extraBonusTotalUsd = BigDecimal.ZERO;
+        // 内部其他员工成本：财务/IT后勤固定月薪合计（人民币）+ 法务当月工资，换算成美金扣减。
+        // 财务/IT后勤这部分同样要按入职时间过滤（2026-08 修复，跟 listForMonth()/
+        // managementBlockReason() 保持一致口径）——不然入职月份晚于 yearMonth 的财务/IT后勤
+        // 员工，固定月薪会被提前算进更早月份的公司利润扣减项里，把那些月份的公司利润少算了。
         BigDecimal otherStaffCostRmb = BigDecimal.ZERO;
         for (Employee e : allEmployees) {
             if (FIXED_SALARY_ROLES.contains(e.getRole()) && !isBeforeHireMonth(e, yearMonth)) {
                 otherStaffCostRmb = otherStaffCostRmb.add(dashboardStatsService.safe(e.getFixedMonthlySalary()));
             }
         }
-        BigDecimal otherStaffCostUsd = dashboardStatsService.convertFromRmb(otherStaffCostRmb, rate, false);
-        BigDecimal execCostUsd = totalExecCostUsd.setScale(SCALE, RoundingMode.HALF_UP);
-        BigDecimal companyProfitBeforePayouts = totalCompanyProfitUsd.subtract(otherStaffCostUsd);
-
-        // 当月所有"已确认"的其他员工：阶梯Bonus + 奖金，都要从公司利润里再扣一层
-        // （上面这套公式本身只扣了内部执行成本/负责人提成/内部其他员工成本，没扣这两项）
-        List<Payslip> othersConfirmed = payslipRepo
-                .findByYearMonthAndFinalConfirmedTrueAndIsDeletedFalseAndEmployeeIdNot(yearMonth, mgmt.getId());
-        BigDecimal tierBonusTotalUsd = BigDecimal.ZERO;
-        BigDecimal extraBonusTotalUsd = BigDecimal.ZERO;
         for (Payslip other : othersConfirmed) {
             PayslipDetailResponse snap = readSnapshot(other);
             if (snap.getTierBonusAmount() != null) tierBonusTotalUsd = tierBonusTotalUsd.add(snap.getTierBonusAmount());
@@ -605,7 +609,13 @@ public class PayslipService {
                         : other.getExtraBonusAmount();
                 extraBonusTotalUsd = extraBonusTotalUsd.add(usd);
             }
+            if ("法务".equals(other.getEmployeeRole()) && other.getLegalSalaryRmb() != null) {
+                otherStaffCostRmb = otherStaffCostRmb.add(other.getLegalSalaryRmb());
+            }
         }
+        BigDecimal otherStaffCostUsd = dashboardStatsService.convertFromRmb(otherStaffCostRmb, rate, false);
+        BigDecimal execCostUsd = totalExecCostUsd.setScale(SCALE, RoundingMode.HALF_UP);
+        BigDecimal companyProfitBeforePayouts = totalCompanyProfitUsd.subtract(otherStaffCostUsd);
 
         BigDecimal managerCommissionTotal = totalCommission.add(tierBonusTotalUsd);
         BigDecimal companyProfit = companyProfitBeforePayouts.subtract(tierBonusTotalUsd).subtract(extraBonusTotalUsd);

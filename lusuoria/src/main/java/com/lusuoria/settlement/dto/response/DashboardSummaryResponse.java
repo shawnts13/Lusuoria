@@ -63,7 +63,12 @@ public class DashboardSummaryResponse {
      */
     private BigDecimal totalInternalExecutionCostForProfit;
 
-    /** 内部其他员工成本合计（财务、IT后勤这些角色的固定月薪，法务角色薪资方案还没设计，暂不计入） */
+    /**
+     * 内部其他员工成本合计（财务、IT后勤这些角色的固定月薪 + 法务当月工资）。
+     * 上面这句"法务角色薪资方案还没设计，暂不计入"是旧注释，2026-07 起法务薪资方案已经落地
+     * （管理层每月在"工资单"模块手动录入 Payslip.legalSalaryRmb），这里其实已经计入了，
+     * 只是当时改代码时忘了同步更新这行注释——2026-08-10 顺手修正措辞。
+     */
     private BigDecimal totalOtherStaffCost;
 
     /**
@@ -78,12 +83,16 @@ public class DashboardSummaryResponse {
     /** 可分配利润合计 = 项目毛利 - 内部执行成本 */
     private BigDecimal totalDistributableProfit;
 
-    /** 负责人提成合计 */
+    /**
+     * 负责人提成合计（含Bonus，2026-08-10 起）——原始提成 + 阶梯Bonus（tierBonusTotalUsd()），
+     * 口径改成跟工资单模块（PayslipService.computeManagement 的 managerCommissionTotal）完全
+     * 一致，之前这里只有原始提成、没算阶梯Bonus，导致同一个月两边的公司利润对不上。
+     */
     private BigDecimal totalCommissionAmount;
 
     /**
      * 公司利润 = 项目毛利 - 内部执行人力成本（仅计入公司利润的那部分，见
-     * totalInternalExecutionCostForProfit） - 负责人提成合计 - 内部其他员工成本 - 奖金
+     * totalInternalExecutionCostForProfit） - 负责人提成合计（含Bonus） - 内部其他员工成本 - 奖金
      */
     private BigDecimal totalCompanyProfit;
 

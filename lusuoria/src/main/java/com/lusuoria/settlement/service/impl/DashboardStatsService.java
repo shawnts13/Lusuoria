@@ -1,5 +1,6 @@
 package com.lusuoria.settlement.service.impl;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.dto.response.DashboardDrilldownResponse;
@@ -8,6 +9,7 @@ import com.lusuoria.settlement.dto.response.DashboardPivotResponse;
 import com.lusuoria.settlement.dto.response.DashboardRangeSummaryResponse;
 import com.lusuoria.settlement.dto.response.DashboardSummaryResponse;
 import com.lusuoria.settlement.dto.response.ExchangeRateInfo;
+import com.lusuoria.settlement.dto.response.PayslipDetailResponse;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
@@ -60,6 +62,7 @@ public class DashboardStatsService {
     @Autowired private com.lusuoria.settlement.util.ProfitCalculator profitCalculator;
     @Autowired private CommissionBonusService commissionBonusService;
     @Autowired private PayslipRepository payslipRepo;
+    @Autowired private ObjectMapper objectMapper;
 
     // ============ 顶部汇总 ============
 
@@ -123,6 +126,13 @@ public class DashboardStatsService {
         // 实际的公司利润偏高
         BigDecimal totalExtraBonusUsd = extraBonusTotalUsd(yearMonth, rate);
         totalCompanyProfit = totalCompanyProfit.subtract(totalExtraBonusUsd);
+
+        // 负责人阶梯Bonus（2026-08-10 新增，见 tierBonusTotalUsd() 注释）：并进"负责人提成合计"
+        // 一起展示（Shawn 确认按跟工资单一样的"（含Bonus）"口径合并展示，不单独拆一行），
+        // 同时也要从公司利润里扣掉——之前完全没算这一项，是看板"公司利润"比工资单偏高的另一个原因
+        BigDecimal totalTierBonusUsd = tierBonusTotalUsd(yearMonth);
+        totalCommission = totalCommission.add(totalTierBonusUsd);
+        totalCompanyProfit = totalCompanyProfit.subtract(totalTierBonusUsd);
 
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
         return DashboardSummaryResponse.builder()
@@ -210,6 +220,16 @@ public class DashboardStatsService {
             totalExtraBonusUsd = totalExtraBonusUsd.add(extraBonusTotalUsd(m, rate));
         }
         totalCompanyProfit = totalCompanyProfit.subtract(totalExtraBonusUsd);
+
+        // 负责人阶梯Bonus（2026-08-10 新增，见 tierBonusTotalUsd() 注释及 getSummary() 同一处的
+        // 说明）：并进"负责人提成合计"一起展示，同时从公司利润里扣掉，日期区间覆盖到的每个月
+        // 各自算好再相加，跟这个方法处理"内部其他员工成本"/"奖金"跨月求和是同一个思路
+        BigDecimal totalTierBonusUsd = BigDecimal.ZERO;
+        for (String m : touchedMonths) {
+            totalTierBonusUsd = totalTierBonusUsd.add(tierBonusTotalUsd(m));
+        }
+        totalCommission = totalCommission.add(totalTierBonusUsd);
+        totalCompanyProfit = totalCompanyProfit.subtract(totalTierBonusUsd);
 
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
         return DashboardSummaryResponse.builder()
@@ -324,6 +344,36 @@ public class DashboardStatsService {
                         : BigDecimal.ZERO)
                     : p.getExtraBonusAmount();
             sum = sum.add(usd);
+        }
+        return sum;
+    }
+
+    /**
+     * 当月所有项目负责人/管理层的阶梯Bonus（美金，Payslip.detailJson 快照里的
+     * tierBonusAmount）合计——2026-08-10 新增，修复"负责人提成合计"跟工资单模块对不上的问题：
+     * PayslipService.computeManagement() 的"负责人提成合计（含Bonus）"= 原始提成 + 这笔阶梯
+     * Bonus，看板这边之前完全没算这一项、也没在"公司利润"公式里扣掉，导致管理层确认某个月后，
+     * 看板算出来的公司利润比工资单偏高（少扣了这笔真实成本），Shawn 手动比对两边公式发现的。
+     *
+     * 只统计 finalConfirmed=true 的记录，不像 extraBonusTotalUsd()/legalStaffCostRmb() 那样
+     * "预计"性质地读未确认的实时值——这不是本方法自己收紧口径，是这个字段本身的性质决定的：
+     * 阶梯Bonus 只有在 Payslip 被确认成最终版时才会按当时锁定的提成金额算出来、写进
+     * detailJson 快照（见 PayslipService.applyFinalSnapshot），未确认之前压根没有这个值可读；
+     * PayslipService.computeManagement() 自己汇总"其他人的"阶梯Bonus 时（othersConfirmed）
+     * 用的也是同一个 finalConfirmed 条件，这里保持一致，不是新引入的限制。
+     * tierBonusAmount 快照里已经是美金（见 PayslipDetailResponse 字段注释），不需要再按汇率换算。
+     */
+    private BigDecimal tierBonusTotalUsd(String yearMonth) {
+        BigDecimal sum = BigDecimal.ZERO;
+        for (Payslip p : payslipRepo.findByYearMonthAndIsDeletedFalse(yearMonth)) {
+            if (!Boolean.TRUE.equals(p.getFinalConfirmed()) || p.getDetailJson() == null) continue;
+            try {
+                PayslipDetailResponse snap = objectMapper.readValue(p.getDetailJson(), PayslipDetailResponse.class);
+                if (snap.getTierBonusAmount() != null) sum = sum.add(snap.getTierBonusAmount());
+            } catch (Exception e) {
+                // 反序列化失败不该让整个看板汇总接口挂掉——跳过这一条按0处理，不影响其他记录
+                // （正常情况下不会走到这里，detailJson 是系统自己写的，格式必然合法）
+            }
         }
         return sum;
     }
