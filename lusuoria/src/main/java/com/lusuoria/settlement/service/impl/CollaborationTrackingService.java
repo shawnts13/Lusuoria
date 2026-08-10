@@ -919,6 +919,29 @@ public class CollaborationTrackingService {
             t.setClientPaymentBatch(req.getClientPaymentBatch().trim());
         }
 
+        // 汇率自动补全 + 利润重算（2026-08 修复）：以前 updateStatus() 这条路径全程不会重新算
+        // 利润，也不会像 recomputeAllProfits()（"重新计算利润"按钮）那样在汇率缺失时自动按
+        // 发布月份从"汇率维护"回填——汇率字段本身仅 ADMIN 能在"编辑"表单里手动填
+        // （见上面 doSave() 的 canEditExchangeRate() 判断），导致执行人员/项目负责人这类非
+        // ADMIN 账号走状态流转把进度推进到"已发布（未结算）"、顺手在这个弹窗里填了视频发布
+        // 时间后，这条记录的汇率仍然是0/空，公司利润（人民币）跟着一起是0，得等有人手动点
+        // "重新计算利润"才会修好。现在改成：只要这条记录汇率缺失/非法、且发布时间所在月份
+        // 已经在"汇率维护"里配置了汇率，这里就当场自动回填；并且不管这次操作有没有牵涉发布
+        // 信息，每次状态流转都重新跑一遍利润计算，跟 doSave()"每次保存都重新算一遍"保持一致，
+        // 不再依赖"重新计算利润"这个手动按钮兜底
+        boolean exchangeRateInvalid = t.getExchangeRate() == null
+                || t.getExchangeRate().compareTo(java.math.BigDecimal.ZERO) <= 0;
+        if (exchangeRateInvalid && t.getPublishDate() != null) {
+            ExchangeRateCache cache = exchangeRateCacheRepo
+                    .findByYearMonth(new SimpleDateFormat("yyyyMM").format(t.getPublishDate()))
+                    .orElse(null);
+            if (cache != null && cache.getUsdToCny() != null
+                    && cache.getUsdToCny().compareTo(java.math.BigDecimal.ZERO) > 0) {
+                t.setExchangeRate(cache.getUsdToCny());
+            }
+        }
+        profitCalculator.calculate(t);
+
         // 进度真正变化时才刷新"进度最近更新时间"（供进度滞留提醒批次用），原样提交回去
         // （值没变）不算变化，不刷新
         boolean progressActuallyChanged = !java.util.Objects.equals(oldProgress, newProgress);
