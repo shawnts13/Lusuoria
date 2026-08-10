@@ -256,13 +256,43 @@ public class PayslipService {
         boolean anyConfirmed;
     }
 
+    /**
+     * 2026-08 新增（性能优化用）：管理层点"确认"这一次请求内部共享的月度数据缓存——本月合作
+     * 记录/执行人员工资确认状态/全体在职员工列表这三份数据，原来会被 managementBlockReason()、
+     * recomputeFinality()→allOwnExecutorWagesConfirmed()、applyFinalSnapshot()→computeManagement()
+     * 各自独立查询一遍，同一份数据在一次点击里被重复查了两次，是管理层"确认"明显比其他角色慢
+     * 的主要原因（其他角色的确认不需要汇总全公司数据，没有这层重复）。这个缓存只在管理层确认
+     * 这一条调用链内部构造、传递，不是跨请求共享的状态——PayslipService 是单例 bean，不能用
+     * 实例字段做请求级缓存，必须像这样显式当参数传递。其他角色/其他调用路径（比如批量列表页、
+     * 项目负责人自己确认执行人员工资）完全不受影响，继续走原来各自独立查询一次的重载方法。
+     */
+    private static final class MonthDataCache {
+        final List<CollaborationTracking> orders;
+        final Map<Long, Map<Long, ExecutorWageConfirmation>> wageConfirmations;
+        final List<Employee> allEmployees;
+        MonthDataCache(List<CollaborationTracking> orders,
+                       Map<Long, Map<Long, ExecutorWageConfirmation>> wageConfirmations,
+                       List<Employee> allEmployees) {
+            this.orders = orders;
+            this.wageConfirmations = wageConfirmations;
+            this.allEmployees = allEmployees;
+        }
+    }
+
     @Transactional
     public void confirm(Long employeeId, String yearMonth) {
         Employee emp = employeeRepo.findByIdAndIsDeletedFalse(employeeId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
         BigDecimal rate = exchangeRateService.getRateForMonth(yearMonth).getUsdToCny();
+        MonthDataCache cache = null;
         if ("管理层".equals(emp.getRole())) {
-            String blocked = managementBlockReason(yearMonth, employeeId, rate);
+            // 见 MonthDataCache 类注释：这三份数据下面 managementBlockReason()/recomputeFinality()/
+            // computeManagement() 都要用到，这里只查一次、全程复用
+            cache = new MonthDataCache(
+                    excludeDamaged(trackingRepo.findByPublishMonth(yearMonth)),
+                    fetchWageConfirmations(yearMonth),
+                    employeeRepo.findByIsDeletedFalseOrderByNameAsc());
+            String blocked = managementBlockReason(yearMonth, employeeId, rate, cache.allEmployees);
             if (blocked != null) throw new RuntimeException(blocked);
         }
         if ("执行人员".equals(emp.getRole())) {
@@ -284,7 +314,7 @@ public class PayslipService {
             p.setConfirmedAt(new Date());
             p.setConfirmedByEmployeeId(employeeRoleUtil.getCurrentEmployeeId());
             payslipRepo.save(p);
-            recomputeFinality(emp, yearMonth, rate);
+            recomputeFinality(emp, yearMonth, rate, cache);
         } else {
             applyConfirmedSnapshot(emp, yearMonth, p, employeeRoleUtil.getCurrentEmployeeId(), rate);
             payslipRepo.save(p);
@@ -427,7 +457,26 @@ public class PayslipService {
     }
 
     private PayslipDetailResponse computeManagement(Employee mgmt, String yearMonth, BigDecimal rate) {
-        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
+        return computeManagement(mgmt, yearMonth, rate,
+                excludeDamaged(trackingRepo.findByPublishMonth(yearMonth)),
+                fetchWageConfirmations(yearMonth),
+                employeeRepo.findByIsDeletedFalseOrderByNameAsc());
+    }
+
+    /**
+     * 2026-08 新增（性能优化，见 MonthDataCache 类注释）：管理层确认这条调用链传入已经查好的
+     * 本月合作记录/执行人员工资确认状态/全体员工列表，跳过下面原本各自独立的三次查询。
+     * 计算逻辑本身跟原来完全一样，只是数据来源从"方法内部现查"改成"调用方传入"。
+     */
+    private PayslipDetailResponse computeManagement(Employee mgmt, String yearMonth, BigDecimal rate,
+                                                      MonthDataCache cache) {
+        return computeManagement(mgmt, yearMonth, rate, cache.orders, cache.wageConfirmations, cache.allEmployees);
+    }
+
+    private PayslipDetailResponse computeManagement(Employee mgmt, String yearMonth, BigDecimal rate,
+                                                      List<CollaborationTracking> orders,
+                                                      Map<Long, Map<Long, ExecutorWageConfirmation>> confirmationByManagerIdParam,
+                                                      List<Employee> allEmployees) {
         Map<String, PayslipDimensionRow> grouped = new LinkedHashMap<>();
         BigDecimal totalGrossProfit = BigDecimal.ZERO;
         BigDecimal totalDistributable = BigDecimal.ZERO;
@@ -469,7 +518,7 @@ public class PayslipService {
         // 一致口径）——不然入职月份晚于 yearMonth 的财务/IT后勤员工，固定月薪会被提前算进
         // 更早月份的公司利润扣减项里，把那些月份的公司利润少算了。
         BigDecimal otherStaffCostRmb = BigDecimal.ZERO;
-        for (Employee e : employeeRepo.findByIsDeletedFalseOrderByNameAsc()) {
+        for (Employee e : allEmployees) {
             if (FIXED_SALARY_ROLES.contains(e.getRole()) && !isBeforeHireMonth(e, yearMonth)) {
                 otherStaffCostRmb = otherStaffCostRmb.add(dashboardStatsService.safe(e.getFixedMonthlySalary()));
             }
@@ -508,11 +557,10 @@ public class PayslipService {
         // "内部执行人力成本"用的是同一批 orders，但这里要按"项目负责人→执行人员"分组才能
         // 拆出明细行给前端展示。 =====
         Map<Long, Map<Long, List<CollaborationTracking>>> byPmThenExec = groupByManagerThenExecutor(orders);
-        Map<Long, Map<Long, ExecutorWageConfirmation>> confirmationByManagerId = fetchWageConfirmations(yearMonth);
         Map<Long, List<CollaborationTracking>> execOrdersUnderMgmt =
                 byPmThenExec.getOrDefault(mgmt.getId(), Collections.emptyMap());
         Map<Long, ExecutorWageConfirmation> confirmationsForMgmt =
-                confirmationByManagerId.getOrDefault(mgmt.getId(), Collections.emptyMap());
+                confirmationByManagerIdParam.getOrDefault(mgmt.getId(), Collections.emptyMap());
         ExecutorWageDetail ownWageDetail = buildExecutorWageRows(mgmt.getId(), execOrdersUnderMgmt, confirmationsForMgmt);
         boolean ownAllExecutorsConfirmed = !execOrdersUnderMgmt.isEmpty()
                 && execOrdersUnderMgmt.keySet().stream().allMatch(execId -> {
@@ -1277,13 +1325,23 @@ public class PayslipService {
      * 触发，请求量本身就是 O(1)，不受员工数量影响。
      */
     private String managementBlockReason(String yearMonth, Long managementEmployeeId, BigDecimal rate) {
+        return managementBlockReason(yearMonth, managementEmployeeId, rate,
+                employeeRepo.findByIsDeletedFalseOrderByNameAsc());
+    }
+
+    /**
+     * 2026-08 新增（性能优化，见 MonthDataCache 类注释）：调用方已经查好全体在职员工列表时用
+     * 这个重载，跳过重复查询；逻辑跟上面无 cache 的版本完全一样。
+     */
+    private String managementBlockReason(String yearMonth, Long managementEmployeeId, BigDecimal rate,
+                                          List<Employee> allEmployees) {
         // 这批"其他员工"的范围必须跟 listForMonth() 给管理层展示的"手下员工列表"完全一致——
         // 之前这里漏了入职时间过滤（2026-08 修复）：listForMonth() 已经把入职月份晚于
         // yearMonth 的员工过滤掉了（管理层压根看不到、也确认不了这个人这个月的工资单），
         // 但这里独立查了一遍全部在职员工、没有同步做这个过滤，导致一个还没入职到这个月的
         // 新员工，会被误当成"没确认"卡住管理层自己的确认按钮——即便管理层能看到的每一个
         // "手下员工"其实都已经确认过了。
-        List<Employee> activeOthers = employeeRepo.findByIsDeletedFalseOrderByNameAsc().stream()
+        List<Employee> activeOthers = allEmployees.stream()
                 .filter(e -> e.getResignDate() == null)
                 .filter(e -> !e.getId().equals(managementEmployeeId))
                 .filter(e -> !"管理层".equals(e.getRole()))
@@ -1354,11 +1412,16 @@ public class PayslipService {
     /**
      * 计算当前实时数据、写入"最终版"快照并把 finalConfirmed 置 true，不动 confirmed/confirmedAt/
      * confirmedByEmployeeId（那些是管理层自己确认动作的时间戳，不该被这里的自动结算覆盖），
-     * 不负责 save。仅用于项目负责人/执行人员这两个角色，在 confirm()/confirmExecutorWages()/
-     * unconfirmExecutorWages() 之后由 recomputeFinality() 调用。
+     * 不负责 save。用于项目负责人/执行人员/管理层这三个角色，在 confirm()/confirmExecutorWages()/
+     * unconfirmExecutorWages() 之后由 recomputeFinality() 调用。cache 非 null（仅管理层确认这条
+     * 调用链会传）时直接调用 computeManagement() 的缓存重载，跳过 computeLive() 的通用分发，
+     * 避免管理层这里重新查一遍本月合作记录/执行人员工资确认状态/全体员工列表（见 MonthDataCache
+     * 类注释）；其他角色或 cache 为 null 时行为完全不变，走原来的 computeLive() 分发。
      */
-    private void applyFinalSnapshot(Employee emp, String yearMonth, Payslip p, BigDecimal rate) {
-        PayslipDetailResponse live = computeLive(emp, yearMonth, p, rate);
+    private void applyFinalSnapshot(Employee emp, String yearMonth, Payslip p, BigDecimal rate, MonthDataCache cache) {
+        PayslipDetailResponse live = (cache != null && "管理层".equals(emp.getRole()))
+                ? computeManagement(emp, yearMonth, rate, cache)
+                : computeLive(emp, yearMonth, p, rate);
         p.setEmployeeRole(emp.getRole());
         p.setDetailJson(writeSnapshot(live));
         p.setExchangeRateSnapshot(rate);
@@ -1397,6 +1460,16 @@ public class PayslipService {
      *     /detail 会一直吐旧的冻结快照给"管理层手下执行人员工资"那张卡片，看起来像没生效）。
      */
     private void recomputeFinality(Employee emp, String yearMonth, BigDecimal rate) {
+        recomputeFinality(emp, yearMonth, rate, null);
+    }
+
+    /**
+     * 2026-08 新增 cache 参数（性能优化，见 MonthDataCache 类注释）：非 null 时只有管理层
+     * 确认这条调用链会传入，用来跳过下面 allOwnExecutorWagesConfirmed()/applyFinalSnapshot()
+     * 对本月合作记录/执行人员工资确认状态的重复查询；其他调用方（confirmExecutorWages()/
+     * unconfirmExecutorWages()，处理的是项目负责人/执行人员分支）继续传 null，行为完全不变。
+     */
+    private void recomputeFinality(Employee emp, String yearMonth, BigDecimal rate, MonthDataCache cache) {
         Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(emp.getId(), yearMonth).orElse(null);
         if (p == null) return;
         if (!Boolean.TRUE.equals(p.getConfirmed())) {
@@ -1418,7 +1491,9 @@ public class PayslipService {
             // confirmRow(PM) 这个按钮（toRowResponse 里 PM 的 blockedReason 恒为 null），
             // 两件事从设计上就是互不设限的，没有"前置条件"关系需要撤销。
         } else if ("管理层".equals(emp.getRole())) {
-            shouldBeFinal = allOwnExecutorWagesConfirmed(emp.getId(), yearMonth);
+            shouldBeFinal = cache != null
+                    ? allOwnExecutorWagesConfirmed(emp.getId(), cache.orders, cache.wageConfirmations)
+                    : allOwnExecutorWagesConfirmed(emp.getId(), yearMonth);
             // 2026-08 修复：管理层不能照抄 PM 的"从不回退"——管理层自己"手下执行人员工资"没
             // 全部确认时，那些执行人员就到不了 finalConfirmed，而 managementBlockReason() 要求
             // "所有其他员工都 finalConfirmed" 才放行管理层自己的"确认"按钮，所以
@@ -1434,7 +1509,7 @@ public class PayslipService {
             shouldBeFinal = true;
         }
         if (shouldBeFinal && !Boolean.TRUE.equals(p.getFinalConfirmed())) {
-            applyFinalSnapshot(emp, yearMonth, p, rate);
+            applyFinalSnapshot(emp, yearMonth, p, rate, cache);
             payslipRepo.save(p);
         } else if (!shouldBeFinal && Boolean.TRUE.equals(p.getFinalConfirmed())) {
             p.setFinalConfirmed(false);
@@ -1449,7 +1524,16 @@ public class PayslipService {
      * 没有执行人员记录时，视为"没有下游义务"，返回 true。
      */
     private boolean allOwnExecutorWagesConfirmed(Long managerId, String yearMonth) {
-        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
+        return allOwnExecutorWagesConfirmed(managerId,
+                excludeDamaged(trackingRepo.findByPublishMonth(yearMonth)), fetchWageConfirmations(yearMonth));
+    }
+
+    /**
+     * 2026-08 新增（性能优化，见 MonthDataCache 类注释）：调用方已经查好本月合作记录/执行人员
+     * 工资确认状态时用这个重载，跳过重复查询；逻辑跟上面无 cache 的版本完全一样。
+     */
+    private boolean allOwnExecutorWagesConfirmed(Long managerId, List<CollaborationTracking> orders,
+                                                   Map<Long, Map<Long, ExecutorWageConfirmation>> wageConfirmations) {
         Set<Long> execIds = new LinkedHashSet<>();
         for (CollaborationTracking o : orders) {
             if (managerId.equals(o.getProjectManagerId()) && o.getExecutorId() != null) {
@@ -1458,7 +1542,7 @@ public class PayslipService {
         }
         if (execIds.isEmpty()) return true;
         Map<Long, ExecutorWageConfirmation> confirmationsForThisManager =
-                fetchWageConfirmations(yearMonth).getOrDefault(managerId, Collections.emptyMap());
+                wageConfirmations.getOrDefault(managerId, Collections.emptyMap());
         for (Long execId : execIds) {
             ExecutorWageConfirmation c = confirmationsForThisManager.get(execId);
             if (c == null || !Boolean.TRUE.equals(c.getConfirmed())) return false;
