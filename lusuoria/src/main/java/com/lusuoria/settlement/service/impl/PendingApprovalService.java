@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.service.impl;
 
 import com.lusuoria.settlement.entity.CollaborationTracking;
+import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
@@ -8,6 +9,7 @@ import com.lusuoria.settlement.enums.PendingApprovalCategory;
 import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.enums.PendingApprovalStatus;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
+import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
 import com.lusuoria.settlement.repository.PendingApprovalRepository;
 import com.lusuoria.settlement.util.MultiValueUtil;
 import com.lusuoria.settlement.util.ProfitCalculator;
@@ -29,21 +31,28 @@ import java.util.stream.Collectors;
 /**
  * 待处理事项 - 业务逻辑
  *
- * 只依赖 Repository，不依赖 CollaborationTrackingService，
- * 避免"删除要经过审核 -> 审核通过要执行删除"这个链路形成 Service 之间的循环依赖。
+ * 只依赖 Repository（CollaborationTrackingRepository/InfluencerRequirementRepository），
+ * 不依赖 CollaborationTrackingService，避免"删除要经过审核 -> 审核通过要执行删除"这个链路
+ * 形成 Service 之间的循环依赖——同样的原因，两个模块各自的 requestDelete() 也都不调用本
+ * Service，而是直接操作 PendingApprovalRepository 现场复刻一份等价逻辑（见
+ * InfluencerRequirementService.requestDelete() 的注释）。本 Service 反过来依赖了
+ * InfluencerRequirementService（只用它的 refreshCompletedAt()），所以这个方向不能颠倒。
  *
  * 目前有两种类别，同一条业务记录上可能同时存在两种互不相关的"待审核"事项，
  * 所有按目标记录查/判重的方法都必须带上 category 条件，不能只按 targetModule+targetId 查
  * （否则会把"删除审核"和"进度倒退审核"混在一起误判）。
  *
- * 2026-07："项目订单"模块整体废弃，target_module 现在实际上只会是
- * COLLABORATION_TRACKING 一种（PROJECT_ORDER 枚举值也一并移除了）。
+ * 2026-07："项目订单"模块整体废弃，PROJECT_ORDER 枚举值一并移除。
+ * 2026-08 新增 INFLUENCER_REQUIREMENT 模块：target_module 现在有 COLLABORATION_TRACKING/
+ * INFLUENCER_REQUIREMENT 两种，PROGRESS_ROLLBACK/EXECUTOR_COST_MODIFY 这两个类别仍然只有
+ * COLLABORATION_TRACKING 用得到，DELETE_REQUEST 两个模块都会用。
  */
 @Service
 public class PendingApprovalService {
 
     @Autowired private PendingApprovalRepository pendingApprovalRepo;
     @Autowired private CollaborationTrackingRepository trackingRepo;
+    @Autowired private InfluencerRequirementRepository requirementRepo;
     @Autowired private InfluencerRequirementService requirementService;
     @Autowired private ProfitCalculator profitCalculator;
 
@@ -231,6 +240,8 @@ public class PendingApprovalService {
             executeProgressRollback(p);
         } else if (p.getCategory() == PendingApprovalCategory.EXECUTOR_COST_MODIFY) {
             executeExecutorCostModify(p);
+        } else if (p.getTargetModule() == PendingApprovalModule.INFLUENCER_REQUIREMENT) {
+            executeRequirementDeletion(p.getTargetId());
         } else {
             executeTrackingDeletion(p.getTargetId());
         }
@@ -276,6 +287,26 @@ public class PendingApprovalService {
         t.setOldMaterialSourceLink(null);
         t.setOldMaterialSourceLinkNormalized(null);
         trackingRepo.save(t);
+    }
+
+    /**
+     * 真正删除红人需求管理记录（2026-08 新增，跟"红人合作跟踪"的删除审核机制保持一致）。
+     * 有关联的红人合作跟踪记录时不允许删除——发起申请那一刻
+     * （InfluencerRequirementService.requestDelete()）已经查过一次，这里审核通过、真正执行
+     * 删除前再查一次兜底，防止申请提交之后、ADMIN 审批之前这段时间里，又有人新建了关联到
+     * 这条需求的合作跟踪记录（一旦命中，直接抛异常，事务回滚，这条待处理事项仍然停在
+     * PENDING，不会被误判成"已同意"）。
+     */
+    private void executeRequirementDeletion(Long requirementId) {
+        InfluencerRequirement r = requirementRepo.findByIdAndIsDeletedFalse(requirementId)
+                .orElseThrow(() -> new RuntimeException("需求记录不存在或已被删除：" + requirementId));
+        List<CollaborationTracking> linked =
+                trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(r.getInternalRequirementNo());
+        if (!linked.isEmpty()) {
+            throw new RuntimeException("该需求已经有关联的红人合作跟踪记录，不能删除");
+        }
+        r.setIsDeleted(true);
+        requirementRepo.save(r);
     }
 
     /**

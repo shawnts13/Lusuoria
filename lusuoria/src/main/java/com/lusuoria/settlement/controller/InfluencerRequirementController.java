@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.controller;
 
 import com.lusuoria.settlement.dto.request.ContractLinkRequest;
+import com.lusuoria.settlement.dto.request.DeleteRequestReasonRequest;
 import com.lusuoria.settlement.dto.request.InfluencerRequirementRequest;
 import com.lusuoria.settlement.dto.request.InvoiceLinkRequest;
 import com.lusuoria.settlement.dto.request.LinkLegacyTrackingsRequest;
@@ -10,8 +11,12 @@ import com.lusuoria.settlement.dto.response.LegacyTrackingCandidateResponse;
 import com.lusuoria.settlement.dto.response.RequirementContentParseResponse;
 import com.lusuoria.settlement.dto.response.RequirementTrackingSummaryResponse;
 import com.lusuoria.settlement.entity.InfluencerRequirement;
+import com.lusuoria.settlement.entity.PendingApproval;
+import com.lusuoria.settlement.enums.PendingApprovalCategory;
+import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.excel.InfluencerRequirementExcelHandler;
 import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
+import com.lusuoria.settlement.repository.PendingApprovalRepository;
 import com.lusuoria.settlement.service.impl.InfluencerRequirementService;
 import com.lusuoria.settlement.util.PaymentAccessUtil;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,8 +29,10 @@ import org.springframework.web.bind.annotation.*;
 import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
 import java.io.IOException;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -39,6 +46,7 @@ public class InfluencerRequirementController {
     @Autowired private InfluencerRequirementService requirementService;
     @Autowired private InfluencerRequirementExcelHandler excelHandler;
     @Autowired private PaymentAccessUtil paymentAccessUtil;
+    @Autowired private PendingApprovalRepository pendingApprovalRepo;
 
     @GetMapping
     public ApiResponse<Page<InfluencerRequirement>> list(
@@ -69,52 +77,55 @@ public class InfluencerRequirementController {
 
         // "查看未完成的需求"/"查看未上传invoice的需求"/"查看未上传合同的需求"/"查看未结款的需求"：
         // 四个开关互斥（前端只会传其中一个true），都走单独的全量查询+内存筛选+手动分页，见各自方法的注释
+        Page<InfluencerRequirement> result;
         if (onlyIncomplete) {
-            return ApiResponse.success(requirementService.pageIncomplete(
+            result = requirementService.pageIncomplete(
                     brandId, teamId, accountName, requirementMonth, internalRequirementNo,
-                    completedMonthParam, pageable));
-        }
-        if (onlyMissingInvoice) {
-            return ApiResponse.success(requirementService.pageMissingInvoice(
+                    completedMonthParam, pageable);
+        } else if (onlyMissingInvoice) {
+            result = requirementService.pageMissingInvoice(
                     brandId, teamId, accountName, requirementMonth, internalRequirementNo,
-                    completedMonthParam, pageable));
-        }
-        if (onlyMissingContract) {
-            return ApiResponse.success(requirementService.pageMissingContract(
+                    completedMonthParam, pageable);
+        } else if (onlyMissingContract) {
+            result = requirementService.pageMissingContract(
                     brandId, teamId, accountName, requirementMonth, internalRequirementNo,
-                    completedMonthParam, pageable));
-        }
-        // "查看未结款的需求"（2026-08 新增）：只有员工角色=管理层才能看，前端按钮本身也只对
-        // 管理层展示，这里是后端兜底——跟"红人结款"模块权限判定同一套（PaymentAccessUtil），
-        // 因为这个筛选本质上是给管理层安排结款用的
-        if (onlyUnsettled) {
+                    completedMonthParam, pageable);
+        } else if (onlyUnsettled) {
+            // "查看未结款的需求"（2026-08 新增）：只有员工角色=管理层才能看，前端按钮本身也只对
+            // 管理层展示，这里是后端兜底——跟"红人结款"模块权限判定同一套（PaymentAccessUtil），
+            // 因为这个筛选本质上是给管理层安排结款用的
             if (!paymentAccessUtil.canManage()) return ApiResponse.error(403, "无权限查看未结款的需求");
-            return ApiResponse.success(requirementService.pageUnsettled(
+            result = requirementService.pageUnsettled(
                     brandId, teamId, accountName, requirementMonth, internalRequirementNo,
-                    completedMonthParam, pageable));
+                    completedMonthParam, pageable);
+        } else if ("id".equals(sortBy)) {
+            // "全部需求"视角下的默认排序（前端没有点过别的列头，还是初始的按 id）：未完成的排在
+            // 已完成的前面，见 listIncompleteFirst 的注释。用户主动点了别的列头排序时不做这层重排。
+            result = requirementService.listIncompleteFirst(
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo,
+                    completedMonthParam, pageable);
+        } else {
+            result = requirementRepo.findByFilters(
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo,
+                    completedMonthParam, pageable);
+            // "需求完成进度"分子、"已建立跟踪记录数"（"新建合作跟踪"按钮判断用）批量查出来再赋值，
+            // 避免逐条查库——上面几个分支各自的 service 方法内部已经做过这一步，只有这条默认
+            // 路径（findByFilters 直查）还需要在这里补上
+            List<String> nos = result.getContent().stream()
+                    .map(InfluencerRequirement::getInternalRequirementNo).collect(Collectors.toList());
+            Map<String, Integer> completedByNo = requirementService.completedCountByNos(nos);
+            Map<String, Integer> establishedByNo = requirementService.establishedCountByNos(nos);
+            result.forEach(r -> {
+                r.setCompletedCount(completedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
+                r.setEstablishedCount(establishedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
+            });
         }
 
-        // "全部需求"视角下的默认排序（前端没有点过别的列头，还是初始的按 id）：未完成的排在
-        // 已完成的前面，见 listIncompleteFirst 的注释。用户主动点了别的列头排序时不做这层重排。
-        if ("id".equals(sortBy)) {
-            return ApiResponse.success(requirementService.listIncompleteFirst(
-                    brandId, teamId, accountName, requirementMonth, internalRequirementNo,
-                    completedMonthParam, pageable));
-        }
-
-        Page<InfluencerRequirement> result = requirementRepo.findByFilters(
-                brandId, teamId, accountName, requirementMonth, internalRequirementNo,
-                completedMonthParam, pageable);
-
-        // "需求完成进度"分子、"已建立跟踪记录数"（"新建合作跟踪"按钮判断用）批量查出来再赋值，避免逐条查库
-        List<String> nos = result.getContent().stream()
-                .map(InfluencerRequirement::getInternalRequirementNo).collect(Collectors.toList());
-        Map<String, Integer> completedByNo = requirementService.completedCountByNos(nos);
-        Map<String, Integer> establishedByNo = requirementService.establishedCountByNos(nos);
-        result.forEach(r -> {
-            r.setCompletedCount(completedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
-            r.setEstablishedCount(establishedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
-        });
+        // 批量标记"当前是否有待审核的删除申请"（2026-08 新增，跟红人合作跟踪一样），不管走的是
+        // 上面哪个分支都要补这一层，所以放在所有分支汇合之后统一处理一次，不重复写六遍
+        Set<Long> pendingDeleteIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(
+                PendingApprovalModule.INFLUENCER_REQUIREMENT, PendingApprovalCategory.DELETE_REQUEST));
+        result.forEach(r -> r.setHasPendingDeleteRequest(pendingDeleteIds.contains(r.getId())));
 
         return ApiResponse.success(result);
     }
@@ -126,6 +137,9 @@ public class InfluencerRequirementController {
         Map<String, Integer> completedByNo = requirementService.completedCountByNos(
                 java.util.Collections.singletonList(r.getInternalRequirementNo()));
         r.setCompletedCount(completedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
+        r.setHasPendingDeleteRequest(pendingApprovalRepo.existsByTargetModuleAndTargetIdAndCategoryAndStatus(
+                PendingApprovalModule.INFLUENCER_REQUIREMENT, r.getId(),
+                PendingApprovalCategory.DELETE_REQUEST, com.lusuoria.settlement.enums.PendingApprovalStatus.PENDING));
         return ApiResponse.success(r);
     }
 
@@ -135,11 +149,16 @@ public class InfluencerRequirementController {
         return ApiResponse.success(requirementService.save(req));
     }
 
-    @DeleteMapping("/{id}")
+    /**
+     * 发起删除申请（不直接删除）：填写删除原因后生成一条"待处理"审核事项，
+     * 由 ADMIN 在"待处理"模块同意后才真正删除。2026-08 起跟"红人合作跟踪"保持一致，
+     * 不再是直接 DELETE。
+     */
+    @PostMapping("/{id}/delete-request")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
-    public ApiResponse<Void> delete(@PathVariable Long id) {
-        requirementService.delete(id);
-        return ApiResponse.success();
+    public ApiResponse<PendingApproval> requestDelete(
+            @PathVariable Long id, @Valid @RequestBody DeleteRequestReasonRequest req) {
+        return ApiResponse.success(requirementService.requestDelete(id, req.getReason()));
     }
 
     @GetMapping("/{id}/items")

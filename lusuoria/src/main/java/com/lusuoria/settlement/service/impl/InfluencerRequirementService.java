@@ -20,9 +20,13 @@ import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.InfluencerRequirementItem;
 import com.lusuoria.settlement.entity.InfluencerPayment;
 import com.lusuoria.settlement.entity.InfluencerTeam;
+import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.InfluencerPaymentStatus;
 import com.lusuoria.settlement.enums.PaymentCycleType;
+import com.lusuoria.settlement.enums.PendingApprovalCategory;
+import com.lusuoria.settlement.enums.PendingApprovalModule;
+import com.lusuoria.settlement.enums.PendingApprovalStatus;
 import com.lusuoria.settlement.enums.RequirementSettlementStatus;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
@@ -32,9 +36,11 @@ import com.lusuoria.settlement.repository.InfluencerPaymentRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementItemRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
+import com.lusuoria.settlement.repository.PendingApprovalRepository;
 import com.lusuoria.settlement.util.MultiValueUtil;
 import com.lusuoria.settlement.util.RequirementContentParser;
 import com.lusuoria.settlement.util.RequirementNoAllocator;
+import com.lusuoria.settlement.util.RoleUtil;
 import com.lusuoria.settlement.util.WorkdayUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -76,6 +82,7 @@ public class InfluencerRequirementService {
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private InfluencerContractRepository influencerContractRepo;
     @Autowired private InfluencerPaymentRepository paymentRepo;
+    @Autowired private PendingApprovalRepository pendingApprovalRepo;
 
     @Transactional
     public InfluencerRequirement save(InfluencerRequirementRequest req) {
@@ -1037,8 +1044,22 @@ public class InfluencerRequirementService {
         refreshCompletedAt(internalRequirementNo);
     }
 
+    /**
+     * 发起删除申请（不直接删除，2026-08 起改成跟"红人合作跟踪"一样需要 ADMIN 在"待处理"
+     * 模块同意后才真正删除）。有关联的红人合作跟踪记录时直接拒绝，不允许发起申请——这个校验
+     * 发起时查一次，PendingApprovalService.approve() 真正执行删除时会再查一次兜底（申请提交
+     * 之后、ADMIN 审批之前这段时间里，仍然可能有人新建了关联到这条需求的合作跟踪记录）。
+     *
+     * 不直接调用 PendingApprovalService.requestDelete()：PendingApprovalService 已经反向依赖了
+     * 本 Service（executeProgressRollback() 里会调用 refreshCompletedAt()），如果这里再依赖
+     * PendingApprovalService，会形成两个 Service 相互依赖的循环，Spring 默认在启动时就会报错
+     * 拒绝装配（本项目用的是字段注入，不是构造器注入，循环依赖不会在编译期报错，只会在启动时
+     * 才炸，格外容易被漏掉）。这里直接复用 PendingApprovalRepository 现场做一遍
+     * "已有待审核就复用、没有才新建"的逻辑，跟 PendingApprovalService.requestDelete() 保持
+     * 完全一致的语义。
+     */
     @Transactional
-    public void delete(Long id) {
+    public PendingApproval requestDelete(Long id, String reason) {
         InfluencerRequirement requirement = requirementRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("需求记录不存在：" + id));
         List<CollaborationTracking> linked =
@@ -1046,8 +1067,24 @@ public class InfluencerRequirementService {
         if (!linked.isEmpty()) {
             throw new RuntimeException("该需求已经有关联的红人合作跟踪记录，不能删除");
         }
-        requirement.setIsDeleted(true);
-        requirementRepo.save(requirement);
+        String summary = (requirement.getBrand() != null ? requirement.getBrand().getName() : "未知品牌")
+                + " - " + (requirement.getInfluencer() != null ? requirement.getInfluencer().getAccountName() : "未知红人");
+        return pendingApprovalRepo
+                .findByTargetModuleAndTargetIdAndCategoryAndStatus(
+                        PendingApprovalModule.INFLUENCER_REQUIREMENT, id,
+                        PendingApprovalCategory.DELETE_REQUEST, PendingApprovalStatus.PENDING)
+                .orElseGet(() -> {
+                    PendingApproval p = new PendingApproval();
+                    p.setCategory(PendingApprovalCategory.DELETE_REQUEST);
+                    p.setTargetModule(PendingApprovalModule.INFLUENCER_REQUIREMENT);
+                    p.setTargetId(id);
+                    p.setTargetInternalProjectNo(requirement.getInternalRequirementNo());
+                    p.setTargetSummary(summary);
+                    p.setReason(reason);
+                    p.setRequestedBy(RoleUtil.getCurrentUsername());
+                    p.setStatus(PendingApprovalStatus.PENDING);
+                    return pendingApprovalRepo.save(p);
+                });
     }
 
     /**

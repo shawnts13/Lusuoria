@@ -170,4 +170,13 @@ public class InfluencerRequirement extends BaseEntity {
      */
     @Transient
     private Integer establishedCount;
+
+    /**
+     * 当前是否有一条"待审核"的删除申请（2026-08 新增，跟"红人合作跟踪"的删除审核机制保持
+     * 一致——删除不再直接生效，需要 ADMIN 在"待处理"模块同意后才真正删除）。前端据此显示
+     * "审核中"、禁用删除按钮。瞬态字段，不落库，由 Controller 在返回列表/详情时批量查出来再赋值，
+     * 跟 CollaborationTracking.hasPendingDeleteRequest 的批量填充方式一致。
+     */
+    @Transient
+    private Boolean hasPendingDeleteRequest;
 }

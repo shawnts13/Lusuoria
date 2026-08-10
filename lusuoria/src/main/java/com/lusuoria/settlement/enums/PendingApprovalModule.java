@@ -7,9 +7,13 @@ package com.lusuoria.settlement.enums;
  * 注意：移除前必须先清空 pending_approvals 表里 target_module='PROJECT_ORDER' 的历史记录
  * （见部署脚本 01-migrate-project-order-fields.sql 最后一步），否则 Hibernate
  * 反序列化这些历史行时会因为找不到对应的枚举常量而报错。
+ *
+ * 2026-08 新增 INFLUENCER_REQUIREMENT："红人需求管理"的删除也改成走管理员审核，
+ * 不再是直接 DELETE（跟红人合作跟踪保持一致）。
  */
 public enum PendingApprovalModule {
-    COLLABORATION_TRACKING("红人合作跟踪");
+    COLLABORATION_TRACKING("红人合作跟踪"),
+    INFLUENCER_REQUIREMENT("红人需求管理");
 
     private final String label;
     PendingApprovalModule(String label) { this.label = label; }
