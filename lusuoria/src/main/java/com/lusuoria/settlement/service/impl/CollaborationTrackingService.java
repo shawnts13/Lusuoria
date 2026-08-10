@@ -1501,8 +1501,10 @@ public class CollaborationTrackingService {
      *     不强行清零、也不中断整个操作，汇总在返回文案里告诉调用方跳过了哪些组合，
      *     需要去补配置或者手动处理
      *
-     * @return 一句人类可读的处理结果摘要，包含处理总数、自动补上汇率的条数、仍然缺失的条数、
-     *         内部执行成本重新计算的条数、因缺费率梯度配置跳过的组合
+     * @return 一句人类可读的处理结果摘要，包含扫描总数、利润数值实际发生变化的条数、自动补上
+     *         汇率的条数、仍然缺失的条数、内部执行成本实际被改动的条数、因缺费率梯度配置跳过的
+     *         组合——"实际变化/实际被改动"这两个条数（2026-08-10 起）只统计新算出来的值真的
+     *         跟原值不一样的记录，不是"过了一遍计算逻辑"的条数，避免让人误以为改动范围比实际大
      */
     @Transactional
     public String recomputeAllProfits() {
@@ -1572,8 +1574,15 @@ public class CollaborationTrackingService {
                 if (matched == null) {
                     outOfRangeSkippedCount++;
                 } else {
-                    t.setInternalExecutionCost(capAdjustedRate(matched, processed));
-                    recomputedExecutorCostCount++;
+                    // 2026-08-10 修复（Shawn 反馈）：只有算出来的新值真的跟原值不一样才计入
+                    // "已重新计算"的条数——之前不管新值是不是恰好等于原值都会计数，导致这个数字
+                    // 表达的其实是"过了一遍计算逻辑的条数"，不是"真的被改动的条数"，容易让人误以为
+                    // 有很多记录被改动了。BigDecimal 用 compareTo 而不是 equals，避免 100.00 和
+                    // 100.0 这种精度不同但数值相同的情况被误判成"变了"。
+                    java.math.BigDecimal before = t.getInternalExecutionCost();
+                    java.math.BigDecimal after = capAdjustedRate(matched, processed);
+                    t.setInternalExecutionCost(after);
+                    if (bigDecimalChanged(before, after)) recomputedExecutorCostCount++;
                 }
                 processed.add(t);
             }
@@ -1581,6 +1590,7 @@ public class CollaborationTrackingService {
 
         int fixedExchangeRateCount = 0;
         int stillMissingExchangeRateCount = 0;
+        int actuallyChangedProfitCount = 0;
         for (CollaborationTracking t : all) {
             boolean rateInvalid = t.getExchangeRate() == null
                     || t.getExchangeRate().compareTo(java.math.BigDecimal.ZERO) <= 0;
@@ -1596,15 +1606,33 @@ public class CollaborationTrackingService {
                     stillMissingExchangeRateCount++;
                 }
             }
+            // 2026-08-10 修复（Shawn 反馈）：只统计利润相关字段真的算出不同值的记录条数——
+            // profitCalculator.calculate() 本身对每条记录都会跑一遍（哪怕汇率/内部执行成本
+            // 压根没变，重算出来的毛利/可分配利润/提成/公司利润跟原值也会完全一样），之前直接
+            // 用 all.size()（扫描总数）当"已重新计算"的条数，表达的其实是"检查了多少条"，不是
+            // "改动了多少条"，容易让人误以为这次操作动了很多记录。这里記下重算前的快照，
+            // 重算完再逐个字段比对（BigDecimal 用 compareTo，避免精度表示不同被误判成"变了"）。
+            java.math.BigDecimal beforeGross = t.getGrossProfit();
+            java.math.BigDecimal beforeDistributable = t.getDistributableProfit();
+            java.math.BigDecimal beforeCommission = t.getCommissionAmount();
+            java.math.BigDecimal beforeCompanyProfit = t.getCompanyNetProfit();
+            java.math.BigDecimal beforeRmbRevenue = t.getRmbRevenue();
             profitCalculator.calculate(t);
+            boolean profitChanged = bigDecimalChanged(beforeGross, t.getGrossProfit())
+                    || bigDecimalChanged(beforeDistributable, t.getDistributableProfit())
+                    || bigDecimalChanged(beforeCommission, t.getCommissionAmount())
+                    || bigDecimalChanged(beforeCompanyProfit, t.getCompanyNetProfit())
+                    || bigDecimalChanged(beforeRmbRevenue, t.getRmbRevenue());
+            if (profitChanged) actuallyChangedProfitCount++;
             trackingRepo.save(t);
         }
 
-        StringBuilder msg = new StringBuilder("已重新计算 " + all.size() + " 条记录的利润");
+        StringBuilder msg = new StringBuilder("本次扫描 " + all.size() + " 条记录，其中 "
+                + actuallyChangedProfitCount + " 条利润数值发生了变化并已更新");
         if (fixedExchangeRateCount > 0) {
-            msg.append("，其中 ").append(fixedExchangeRateCount)
-               .append(" 条记录的汇率异常（视频已发布，但汇率是0或缺失）已按发布时间所在月份在"
-                       + "\"汇率维护\"里配置的汇率自动修复");
+            msg.append("（含 ").append(fixedExchangeRateCount)
+               .append(" 条因为汇率异常——视频已发布，但汇率是0或缺失——已按发布时间所在月份在"
+                       + "\"汇率维护\"里配置的汇率自动修复）");
         }
         if (stillMissingExchangeRateCount > 0) {
             msg.append("；另有 ").append(stillMissingExchangeRateCount)
@@ -1612,7 +1640,7 @@ public class CollaborationTrackingService {
                        + "\"汇率维护\"配置汇率——请先补上发布时间/配置好对应月份的汇率，再点一次\"重新计算利润\"修复");
         }
         if (fixedExchangeRateCount == 0 && stillMissingExchangeRateCount == 0) {
-            msg.append("，没有发现汇率异常（0或缺失）的记录");
+            msg.append("；没有发现汇率异常（0或缺失）的记录");
         }
 
         msg.append("\n内部执行成本：已按费率梯度重新计算 ").append(recomputedExecutorCostCount).append(" 条");
@@ -1635,6 +1663,17 @@ public class CollaborationTrackingService {
                .append("，需要先去\"员工管理\"/\"执行人员管理\"配置后再点一次\"重新计算利润\"补算");
         }
         return msg.toString();
+    }
+
+    /**
+     * 两个金额是否"实际不同"——recomputeAllProfits() 统计"真的被改动的条数"专用。用 compareTo
+     * 而不是 equals，避免 100.00 和 100.0 这种精度表示不同、数值其实相等的情况被误判成"变了"；
+     * 一 null 一非 null 也算变了（null 通常代表"从没算过"，回填了具体值当然算改动）。
+     */
+    private boolean bigDecimalChanged(java.math.BigDecimal before, java.math.BigDecimal after) {
+        if (before == null && after == null) return false;
+        if (before == null || after == null) return true;
+        return before.compareTo(after) != 0;
     }
 
     private String emptyToNull(String s) {
