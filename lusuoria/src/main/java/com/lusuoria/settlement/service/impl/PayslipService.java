@@ -257,14 +257,19 @@ public class PayslipService {
     }
 
     /**
-     * 2026-08 新增（性能优化用）：管理层点"确认"这一次请求内部共享的月度数据缓存——本月合作
-     * 记录/执行人员工资确认状态/全体在职员工列表这三份数据，原来会被 managementBlockReason()、
-     * recomputeFinality()→allOwnExecutorWagesConfirmed()、applyFinalSnapshot()→computeManagement()
-     * 各自独立查询一遍，同一份数据在一次点击里被重复查了两次，是管理层"确认"明显比其他角色慢
-     * 的主要原因（其他角色的确认不需要汇总全公司数据，没有这层重复）。这个缓存只在管理层确认
-     * 这一条调用链内部构造、传递，不是跨请求共享的状态——PayslipService 是单例 bean，不能用
-     * 实例字段做请求级缓存，必须像这样显式当参数传递。其他角色/其他调用路径（比如批量列表页、
-     * 项目负责人自己确认执行人员工资）完全不受影响，继续走原来各自独立查询一次的重载方法。
+     * 2026-08 新增（性能优化用）：涉及"管理层"这个角色的写操作请求内部共享的月度数据缓存——
+     * 本月合作记录/执行人员工资确认状态/全体在职员工列表这三份数据，原来会被
+     * managementBlockReason()、recomputeFinality()→allOwnExecutorWagesConfirmed()、
+     * applyFinalSnapshot()→computeManagement() 各自独立查询一遍，同一份数据在一次点击里被
+     * 重复查了两次，是管理层相关操作明显比其他角色慢的主要原因（其他角色不需要汇总全公司
+     * 数据，没有这层重复）。这个缓存只在触发到管理层的调用链内部构造、传递，不是跨请求共享
+     * 的状态——PayslipService 是单例 bean，不能用实例字段做请求级缓存，必须像这样显式当参数
+     * 传递。目前两条调用链会用到：(a) confirm()——管理层点自己那份工资单的"确认"；
+     * (b) confirmExecutorWages()/unconfirmExecutorWages()——manager 恰好是管理层时（"确认
+     * 执行人员薪酬"这个按钮，管理层作为项目负责人确认/取消确认自己名下某个执行人员的工资），
+     * 2026-08-10 补的，之前只顾上了 (a)，Shawn 反馈这个按钮也一样慢才发现漏了这一条。
+     * manager 不是管理层的场景（最常见——普通项目负责人确认执行人员工资）不建这份缓存，因为
+     * recomputeFinality 的"项目负责人"分支不消费 cache，白建只会平白多花3次查询。
      */
     private static final class MonthDataCache {
         final List<CollaborationTracking> orders;
@@ -369,8 +374,20 @@ public class PayslipService {
         wageConfirmationRepo.save(confirmation);
 
         BigDecimal rate = exchangeRateService.getRateForMonth(yearMonth).getUsdToCny();
-        recomputeFinality(executor, yearMonth, rate);
-        recomputeFinality(manager, yearMonth, rate);
+        // 2026-08-10 修复：这个按钮（"确认执行人员薪酬"）在 manager 是管理层的场景下，会
+        // 触发下面 recomputeFinality(manager,...) 走进跟 confirm()（管理层点自己那份工资单
+        // 的"确认"）同样昂贵的 computeManagement() 路径——之前这里没有像 confirm() 那样传
+        // MonthDataCache，本月合作记录（其实上面已经查过存在 orders 里了）/执行人员工资确认
+        // 状态/全体员工列表在一次点击里被重复查询，是这个按钮同样"要等一小会"的原因。这里
+        // 复用同一套缓存机制，只在 manager 真的是管理层时才现建一份传下去——manager 是普通
+        // 项目负责人时 recomputeFinality 的那个分支不消费 cache，白建一份没有意义，只会给
+        // 最常见的"普通项目负责人确认执行人员工资"场景平白多花3次查询，所以按角色判断，不是
+        // 无条件都建。
+        MonthDataCache cache = "管理层".equals(manager.getRole())
+                ? new MonthDataCache(orders, fetchWageConfirmations(yearMonth), employeeRepo.findByIsDeletedFalseOrderByNameAsc())
+                : null;
+        recomputeFinality(executor, yearMonth, rate, cache);
+        recomputeFinality(manager, yearMonth, rate, cache);
     }
 
     /**
@@ -388,8 +405,14 @@ public class PayslipService {
         Employee manager = employeeRepo.findByIdAndIsDeletedFalse(managerId).orElse(null);
         Employee executor = employeeRepo.findByIdAndIsDeletedFalse(executorId).orElse(null);
         BigDecimal rate = exchangeRateService.getRateForMonth(yearMonth).getUsdToCny();
-        if (executor != null) recomputeFinality(executor, yearMonth, rate);
-        if (manager != null) recomputeFinality(manager, yearMonth, rate);
+        // 同 confirmExecutorWages() 的性能修复（2026-08-10）：manager 是管理层时才建缓存，
+        // 避免最常见的"普通项目负责人取消确认执行人员工资"场景平白多花查询
+        MonthDataCache cache = (manager != null && "管理层".equals(manager.getRole()))
+                ? new MonthDataCache(excludeDamaged(trackingRepo.findByPublishMonth(yearMonth)),
+                        fetchWageConfirmations(yearMonth), employeeRepo.findByIsDeletedFalseOrderByNameAsc())
+                : null;
+        if (executor != null) recomputeFinality(executor, yearMonth, rate, cache);
+        if (manager != null) recomputeFinality(manager, yearMonth, rate, cache);
     }
 
     private String writeExecutorWageSnapshot(List<PayslipDimensionRow> rows) {
