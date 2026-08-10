@@ -96,7 +96,15 @@ public class PayslipService {
     /**
      * 管理层视角的员工列表（不含管理层自己，见 {@link #managementRow}）。
      * 整月合作跟踪记录、整月工资单确认状态、月度汇率各只查一次，员工数量再多也不会变成
-     * N 次查询。
+     * N 次查询——2026-08-10 修复：这句话之前不成立，"执行人员"这个角色每一行都会在
+     * toRowResponse() 里各自调一次 resolveExecutorPmConfirmStatus()（算"确认"按钮要不要
+     * 禁用），那个方法内部独立查询本月合作记录/管理层员工id/执行人员工资确认状态三样东西，
+     * 完全没有复用 batchComputeCommissionRoles() 已经查好的同一批数据，是一处隐蔽的 N+1
+     * （随执行人员人数线性增长，不是"这个月有没有数据"决定的，Shawn 反馈"切到工资单要转好久，
+     * 哪怕这个月没什么数据"就是这个问题——慢的是"公司总共有几个执行人员"，不是"这个月忙不忙"）。
+     * 现在改成跟 commissionRoleEmployees 共用同一份 orders/confirmationByManagerId，本月所有
+     * 执行人员的 blockedReason 提前批量算好存进 execStatusById，再传给 toRowResponse()，
+     * 不在循环里现查。
      */
     @Transactional
     public List<PayslipRowResponse> listForMonth(String yearMonth, String roleFilter, String currency) {
@@ -117,7 +125,23 @@ public class PayslipService {
         List<Employee> commissionRoleEmployees = employees.stream()
                 .filter(e -> "项目负责人".equals(e.getRole()) || "执行人员".equals(e.getRole()))
                 .collect(Collectors.toList());
-        Map<Long, PayslipDetailResponse> liveMap = batchComputeCommissionRoles(commissionRoleEmployees, yearMonth, rate);
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
+        Map<Long, Map<Long, ExecutorWageConfirmation>> confirmationByManagerId = fetchWageConfirmations(yearMonth);
+        Map<Long, PayslipDetailResponse> liveMap =
+                batchComputeCommissionRoles(commissionRoleEmployees, rate, orders, confirmationByManagerId);
+
+        // 本月所有执行人员的"确认"按钮拦截原因批量算好（见上面方法注释），不在下面的行循环里
+        // 逐个现查——跟 batchComputeCommissionRoles 共用同一份 orders/confirmationByManagerId，
+        // 管理层员工id列表也只单独查这一次
+        Set<Long> managementIds = employeeRepo.findByRoleAndIsDeletedFalse("管理层").stream()
+                .map(Employee::getId).collect(Collectors.toSet());
+        Map<Long, ExecutorPmConfirmStatus> execStatusById = new HashMap<>();
+        for (Employee e : commissionRoleEmployees) {
+            if ("执行人员".equals(e.getRole())) {
+                execStatusById.put(e.getId(),
+                        resolveExecutorPmConfirmStatus(e.getId(), orders, managementIds, confirmationByManagerId));
+            }
+        }
 
         Map<Long, Payslip> payslipByEmployeeId = payslipRepo.findByYearMonthAndIsDeletedFalse(yearMonth).stream()
                 .collect(Collectors.toMap(Payslip::getEmployeeId, p -> p, (a, b) -> a));
@@ -131,7 +155,8 @@ public class PayslipService {
 
         List<PayslipRowResponse> result = new ArrayList<>();
         for (Employee e : employees) {
-            result.add(toRowResponse(e, yearMonth, currency, liveMap.get(e.getId()), payslipByEmployeeId.get(e.getId()), liveRateInfo));
+            result.add(toRowResponse(e, yearMonth, currency, liveMap.get(e.getId()), payslipByEmployeeId.get(e.getId()),
+                    liveRateInfo, execStatusById.get(e.getId())));
         }
         return result;
     }
@@ -209,7 +234,22 @@ public class PayslipService {
      * - "已确认"（绿色）：管理层自己那部分确认了，且所有其他项目负责人也都确认了。
      */
     private ExecutorPmConfirmStatus resolveExecutorPmConfirmStatus(Long executorId, String yearMonth) {
-        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
+        return resolveExecutorPmConfirmStatus(executorId,
+                excludeDamaged(trackingRepo.findByPublishMonth(yearMonth)),
+                employeeRepo.findByRoleAndIsDeletedFalse("管理层").stream()
+                        .map(Employee::getId).collect(Collectors.toSet()),
+                fetchWageConfirmations(yearMonth));
+    }
+
+    /**
+     * 2026-08-10 新增（性能优化）：调用方已经查好本月合作记录/管理层员工id/执行人员工资确认
+     * 状态时用这个重载，跳过重复查询——listForMonth() 批量算全部执行人员行的 blockedReason
+     * 时用这个，避免"每个执行人员各查一次"的 N+1（见 listForMonth() 方法注释）。逻辑跟上面
+     * 无 cache 的版本完全一样。
+     */
+    private ExecutorPmConfirmStatus resolveExecutorPmConfirmStatus(Long executorId, List<CollaborationTracking> orders,
+                                                                     Set<Long> managementIds,
+                                                                     Map<Long, Map<Long, ExecutorWageConfirmation>> confirmations) {
         Set<Long> pmIds = new LinkedHashSet<>();
         for (CollaborationTracking o : orders) {
             if (executorId.equals(o.getExecutorId()) && o.getProjectManagerId() != null) {
@@ -217,9 +257,6 @@ public class PayslipService {
             }
         }
         if (pmIds.isEmpty()) return new ExecutorPmConfirmStatus(true, false, null, false);
-        Set<Long> managementIds = employeeRepo.findByRoleAndIsDeletedFalse("管理层").stream()
-                .map(Employee::getId).collect(Collectors.toSet());
-        Map<Long, Map<Long, ExecutorWageConfirmation>> confirmations = fetchWageConfirmations(yearMonth);
         boolean allConfirmed = true;
         boolean anyConfirmed = false;
         boolean managementIsParty = false;
@@ -610,10 +647,14 @@ public class PayslipService {
     // ================= 按角色计算：批量（工资单列表页用，整月记录只查一次） =================
 
     /**
-     * 项目负责人/执行人员批量实时预览：整月合作跟踪记录只查一次，在内存里按人分组，
-     * 避免工资单列表页挨个员工各查一次整月数据（原来的写法在员工多的时候明显变慢）。
+     * 项目负责人/执行人员批量实时预览：整月合作跟踪记录/执行人员工资确认状态由调用方
+     * （listForMonth()）传入，不在这里各自查一次——2026-08-10 起 listForMonth() 还要用同一份
+     * orders/confirmationByManagerId 批量算执行人员的"确认"按钮拦截原因（见 listForMonth()
+     * 方法注释），两处共用同一份数据才能真正做到"整月记录只查一次"。
      */
-    private Map<Long, PayslipDetailResponse> batchComputeCommissionRoles(List<Employee> employees, String yearMonth, BigDecimal rate) {
+    private Map<Long, PayslipDetailResponse> batchComputeCommissionRoles(
+            List<Employee> employees, BigDecimal rate,
+            List<CollaborationTracking> orders, Map<Long, Map<Long, ExecutorWageConfirmation>> confirmationByManagerId) {
         Map<Long, Employee> pmById = new HashMap<>();
         Map<Long, Employee> execById = new HashMap<>();
         for (Employee e : employees) {
@@ -623,12 +664,9 @@ public class PayslipService {
         Map<Long, PayslipDetailResponse> result = new HashMap<>();
         if (pmById.isEmpty() && execById.isEmpty()) return result;
 
-        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         // 按"项目负责人→执行人员"两层分组一次建好，项目负责人视角（自己名下执行人员薪酬明细）
         // 和执行人员视角（自己在每个项目负责人名下挣了多少）共用同一份分组结果，不重复扫描订单。
         Map<Long, Map<Long, List<CollaborationTracking>>> byPmThenExec = groupByManagerThenExecutor(orders);
-        // 当月所有项目负责人的"确认执行人员工资"状态一次查完，不按人循环查（避免重蹈之前修过的 N+1）
-        Map<Long, Map<Long, ExecutorWageConfirmation>> confirmationByManagerId = fetchWageConfirmations(yearMonth);
 
         Map<Long, Map<String, PayslipDimensionRow>> pmGrouped = new HashMap<>();
         Map<Long, BigDecimal> pmCommission = new HashMap<>();
@@ -1296,6 +1334,18 @@ public class PayslipService {
     private PayslipRowResponse toRowResponse(Employee emp, String yearMonth, String currency,
                                               PayslipDetailResponse precomputedLive, Payslip payslip,
                                               ExchangeRateInfo liveRateInfo) {
+        return toRowResponse(emp, yearMonth, currency, precomputedLive, payslip, liveRateInfo, null);
+    }
+
+    /**
+     * 2026-08-10 新增 precomputedExecStatus 参数（性能优化）：listForMonth() 批量算好全部
+     * 执行人员的 ExecutorPmConfirmStatus 后传进来，跳过下面"执行人员"分支现查一次的动作；
+     * 非 null 时只对角色="执行人员"的行生效，其他角色/managementRow() 那条单行调用路径继续
+     * 传 null、行为完全不变。
+     */
+    private PayslipRowResponse toRowResponse(Employee emp, String yearMonth, String currency,
+                                              PayslipDetailResponse precomputedLive, Payslip payslip,
+                                              ExchangeRateInfo liveRateInfo, ExecutorPmConfirmStatus precomputedExecStatus) {
         PayslipDetailResponse d = resolveDisplay(emp, yearMonth, currency, precomputedLive, payslip, liveRateInfo);
         Long videoCount = null;
         if (("项目负责人".equals(emp.getRole()) || "执行人员".equals(emp.getRole()))
@@ -1307,7 +1357,9 @@ public class PayslipService {
         if ("管理层".equals(emp.getRole())) {
             blockedReason = managementBlockReason(yearMonth, emp.getId(), liveRateInfo.getUsdToCny());
         } else if ("执行人员".equals(emp.getRole())) {
-            blockedReason = resolveExecutorPmConfirmStatus(emp.getId(), yearMonth).getBlockedReason();
+            ExecutorPmConfirmStatus status = precomputedExecStatus != null
+                    ? precomputedExecStatus : resolveExecutorPmConfirmStatus(emp.getId(), yearMonth);
+            blockedReason = status.getBlockedReason();
         } else {
             blockedReason = null;
         }
