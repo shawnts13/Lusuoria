@@ -1540,7 +1540,6 @@ public class CollaborationTrackingService {
 
         int recomputedExecutorCostCount = 0;
         int overriddenSkippedCount = 0;
-        int confirmedSkippedCount = 0;
         int outOfRangeSkippedCount = 0;
         int noRateSkippedCount = 0;
         Set<String> noRateSkippedCombos = new java.util.TreeSet<>();
@@ -1564,9 +1563,16 @@ public class CollaborationTrackingService {
                     first.getProjectManager().getId() + "|" + first.getExecutor().getId() + "|" + groupMonth);
             List<CollaborationTracking> processed = new ArrayList<>();
             for (CollaborationTracking t : group) {
-                if (Boolean.TRUE.equals(t.getExecutorCostOverridden()) || groupWageConfirmed) {
-                    if (groupWageConfirmed) confirmedSkippedCount++; else overriddenSkippedCount++;
+                if (Boolean.TRUE.equals(t.getExecutorCostOverridden())) {
+                    overriddenSkippedCount++;
                     processed.add(t); // 已花的钱仍然占用这个类型当月的封顶预算
+                    continue;
+                }
+                // 已确认工资的月份：跳过改动，但不计数、不在结果摘要里提——Shawn 反馈这条提示
+                // 没必要展示（2026-08-10）。跳过本身的保护逻辑不变，见上面 confirmedWageKeys
+                // 的注释；这里同样占用当月封顶预算/排位，不跳过 processed.add()
+                if (groupWageConfirmed) {
+                    processed.add(t);
                     continue;
                 }
                 int position = processed.size() + 1;
@@ -1646,11 +1652,6 @@ public class CollaborationTrackingService {
         msg.append("\n内部执行成本：已按费率梯度重新计算 ").append(recomputedExecutorCostCount).append(" 条");
         if (overriddenSkippedCount > 0) {
             msg.append("；").append(overriddenSkippedCount).append(" 条是 ADMIN 手动特批的值，未覆盖");
-        }
-        if (confirmedSkippedCount > 0) {
-            msg.append("；").append(confirmedSkippedCount)
-               .append(" 条所在的项目负责人+执行人员+月份组合已经在\"手下执行人员工资\"确认过，未覆盖"
-                       + "（需要改的话，先去那边取消确认再改）");
         }
         if (outOfRangeSkippedCount > 0) {
             msg.append("；").append(outOfRangeSkippedCount)
