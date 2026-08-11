@@ -586,12 +586,11 @@ public class ProgressReminderService {
 
         Map<OverdueUrgency, List<ProgressReminderDetail>> byUrgency = new EnumMap<>(OverdueUrgency.class);
         for (InfluencerPayment p : candidates) {
+            // 2026-08 起改成读创建时落库的快照（InfluencerPayment.involvesCorporateInvoice），
+            // 不再按当前团队/品牌方配置现算——避免管理层事后调整团队的发票配置，追溯影响历史
+            // "已付款"记录该不该提醒补发票，见该字段的类注释
+            if (!Boolean.TRUE.equals(p.getInvolvesCorporateInvoice())) continue;
             Brand brand = p.getBrandId() != null ? brandCache.findById(p.getBrandId()) : null;
-            boolean involvesInvoice = p.getTeamIds() != null && p.getTeamIds().stream().anyMatch(teamId -> {
-                InfluencerTeam team = teamId != null ? teamCache.findById(teamId) : null;
-                return InfluencerTeam.involvesCorporateInvoice(brand, team);
-            });
-            if (!involvesInvoice) continue;
 
             int workdays = WorkdayUtil.countWeekdaysInclusive(toLocalDate(p.getActualPaymentDate()), today);
             int overdueDays = workdays - overdueThreshold;

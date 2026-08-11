@@ -23,10 +23,13 @@ import com.lusuoria.settlement.repository.InfluencerPaymentTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.InfluencerTeamRepository;
 import com.lusuoria.settlement.util.PaymentNoGenerator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.annotation.PostConstruct;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
@@ -52,6 +55,8 @@ import java.util.stream.Collectors;
 @Service
 public class InfluencerPaymentService {
 
+    private static final Logger log = LoggerFactory.getLogger(InfluencerPaymentService.class);
+
     @Autowired private InfluencerPaymentRepository paymentRepo;
     @Autowired private InfluencerPaymentTeamRepository paymentTeamRepo;
     @Autowired private CollaborationTrackingRepository trackingRepo;
@@ -63,6 +68,32 @@ public class InfluencerPaymentService {
     @Autowired private BrandCache brandCache;
     @Autowired private InfluencerTeamCache teamCache;
     @Autowired private PaymentNoGenerator paymentNoGenerator;
+
+    /**
+     * 一次性回填"是否涉及公对公发票"快照（2026-08 新增，随 InfluencerPayment.involvesCorporateInvoice
+     * 这个字段一起上线）：这个字段上线之前创建的存量结款记录（待付款+已付款都有）是 null，
+     * 回填口径是"用当前的品牌方/团队配置现算"——这是唯一能拿到的值，没有更早的历史配置可以
+     * 参照，见该字段的类注释。启动时自动跑，只处理字段还是 null 的行（findByInvolvesCorporateInvoiceIsNull），
+     * 处理过一次之后这些行就不会再被这条查询选中，天然幂等，可以放心每次启动都执行，不需要
+     * 手动触发、也不需要以后再把这段代码删掉。
+     *
+     * 故意不加 @Transactional：@PostConstruct 回调是容器在这个 bean 完成初始化的过程中直接调用
+     * 原始实例的方法，此时 @Transactional 的动态代理还没包上去，加了也不会生效（反而误导）。
+     * 这里唯一真正落库的操作是最后一行 paymentRepo.saveAll()——Spring Data JPA 的 saveAll()
+     * 本身就是一次独立的事务性调用，这一批回填要么整体成功要么整体失败，不需要额外包一层。
+     */
+    @PostConstruct
+    public void backfillInvolvesCorporateInvoiceSnapshot() {
+        List<InfluencerPayment> toBackfill = paymentRepo.findByInvolvesCorporateInvoiceIsNull();
+        if (toBackfill.isEmpty()) return;
+        attachTeamIds(toBackfill);
+        for (InfluencerPayment p : toBackfill) {
+            Brand brand = brandCache.findById(p.getBrandId());
+            p.setInvolvesCorporateInvoice(resolveInvolvesCorporateInvoice(brand, p.getTeamIds()));
+        }
+        paymentRepo.saveAll(toBackfill);
+        log.info("已回填 {} 条红人结款记录的\"是否涉及公对公发票\"快照", toBackfill.size());
+    }
 
     // ============ 查询：选择弹窗 ============
 
@@ -293,6 +324,10 @@ public class InfluencerPaymentService {
         payment.setCooperationQuantity(items.size());
         payment.setPayableAmount(sumCost(items));
         payment.setInvolvedRequirementNos(computeInvolvedRequirementNos(items));
+        // "是否涉及公对公发票"在创建这一刻按当前团队/品牌方配置现算一次，此后冻结成快照，
+        // 不再跟着团队配置的后续改动联动——团队范围创建后本来就不可再改（update() 的限制），
+        // 详见 InfluencerPayment.involvesCorporateInvoice 字段注释
+        payment.setInvolvesCorporateInvoice(resolveInvolvesCorporateInvoice(brand, req.getTeamIds()));
 
         // 汇率创建时不接受前端手填，按结算月份自动从汇率维护取（取不到就留空）
         exchangeRateCacheRepo.findByYearMonth(req.getSettlementMonth())
@@ -549,17 +584,15 @@ public class InfluencerPaymentService {
         }
     }
 
-    /** 这条结款记录整体是否涉及公对公发票：涉及范围内任意一个团队（含"不选团队"落回品牌方默认值）解析为 true 即算涉及。
-     *  受 validateInvoiceTeamExclusivity 约束，正常情况下命中的话这个范围只会有这一项，这里按"任意一项"写是防御性的写法。 */
-    private boolean resolveInvolvesCorporateInvoice(InfluencerPayment payment) {
-        Brand brand = brandCache.findById(payment.getBrandId());
-        List<InfluencerPaymentTeam> scopeRows = paymentTeamRepo.findByInfluencerPaymentIdAndIsDeletedFalse(payment.getId());
-        List<Long> teamIds = scopeRows.stream().map(InfluencerPaymentTeam::getTeamId).collect(Collectors.toList());
-        return resolveInvolvesCorporateInvoice(brand, teamIds);
-    }
-
-    /** 跟上面那个重载逻辑完全一致，只是团队范围直接传入——批量场景（attachTeamIds() 已经把
-     *  payment.teamIds 批量填好）下用这个重载可以省掉逐条再查一次 paymentTeamRepo，见 pageMissingReceipt() */
+    /**
+     * 按当前品牌方/团队配置现算"是否涉及公对公发票"——2026-08 起只在两个地方用：
+     * 1. create() 里给新记录的快照字段赋初值；
+     * 2. backfillInvolvesCorporateInvoiceSnapshot() 给历史存量记录一次性回填快照。
+     * 除了这两处，其余所有"这条结款记录到底涉不涉及发票"的判断一律读
+     * InfluencerPayment.involvesCorporateInvoice 这个已经落库的快照，不要再现算——现算的话，
+     * 后续团队配置一改，历史"已付款"记录也会被追溯影响，这正是这个快照字段要避免的问题
+     * （见该字段的类注释）。
+     */
     private boolean resolveInvolvesCorporateInvoice(Brand brand, List<Long> teamIds) {
         if (teamIds == null) return false;
         for (Long teamId : teamIds) {
@@ -574,7 +607,7 @@ public class InfluencerPaymentService {
     public InfluencerPayment uploadReceiptLink(Long id, String receiptLink) {
         InfluencerPayment payment = paymentRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("结款记录不存在"));
-        if (!resolveInvolvesCorporateInvoice(payment)) {
+        if (!Boolean.TRUE.equals(payment.getInvolvesCorporateInvoice())) {
             throw new RuntimeException("该结款记录不涉及公对公发票，无需上传");
         }
         payment.setReceiptLink(receiptLink);
@@ -583,10 +616,10 @@ public class InfluencerPaymentService {
 
     /**
      * "查看未上传发票的记录"按钮专用（2026-08 新增）：跟列表页 findByFilters 走同一套筛选条件，
-     * 只额外要求这条结款记录涉及公对公发票（resolveInvolvesCorporateInvoice）、且还没上传
-     * 发票（receiptLink为空）。是否涉及发票要靠 Brand/InfluencerTeam 缓存解析，没法下推到
-     * SQL WHERE，只能先按其余条件查出来，在内存里筛选+手动分页（这个模块数据量不大，
-     * 跟"红人需求管理"那几个"查看未上传XX"按钮同一个套路）。
+     * 只额外要求这条结款记录涉及公对公发票（读 involvesCorporateInvoice 快照，不现算，见其
+     * 字段注释）、且还没上传发票（receiptLink为空）。没法下推到 SQL WHERE，只能先按其余条件
+     * 查出来，在内存里筛选+手动分页（这个模块数据量不大，跟"红人需求管理"那几个"查看未上传XX"
+     * 按钮同一个套路）。
      */
     @Transactional(readOnly = true)
     public org.springframework.data.domain.Page<InfluencerPayment> pageMissingReceipt(
@@ -596,12 +629,13 @@ public class InfluencerPaymentService {
         List<InfluencerPayment> all = paymentRepo.findByFiltersNoPaging(
                 settlementMonth, brandId, filterByTeam, matchingIds, filterByReqNo, reqMatchingIds,
                 paymentStatus, paymentNo, pageable.getSort());
+        // 涉不涉及发票已经改成读快照字段，不再需要 teamIds 参与判断，但列表页"红人团队"列展示
+        // 仍然要靠这个批量填充（Controller 的普通分页分支也是同一套 attachTeamIds，这里保持一致）
         attachTeamIds(all);
         List<InfluencerPayment> missing = new ArrayList<>();
         for (InfluencerPayment p : all) {
             if (p.getReceiptLink() != null && !p.getReceiptLink().trim().isEmpty()) continue;
-            Brand brand = brandCache.findById(p.getBrandId());
-            if (!resolveInvolvesCorporateInvoice(brand, p.getTeamIds())) continue;
+            if (!Boolean.TRUE.equals(p.getInvolvesCorporateInvoice())) continue;
             missing.add(p);
         }
         int total = missing.size();

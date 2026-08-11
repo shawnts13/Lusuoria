@@ -83,4 +83,12 @@ public interface InfluencerPaymentRepository extends JpaRepository<InfluencerPay
     /** 结款单号分配用：统计某"品牌-结算月份-"前缀已用了多少个（作为序号起点） */
     @Query("SELECT COUNT(ip) FROM InfluencerPayment ip WHERE ip.paymentNo LIKE :prefixPattern")
     long countByPaymentNoPrefix(@Param("prefixPattern") String prefixPattern);
+
+    /**
+     * "是否涉及公对公发票"快照字段一次性回填专用（2026-08 新增，见
+     * InfluencerPaymentService.backfillInvolvesCorporateInvoiceSnapshot()）：这个字段上线
+     * 之前创建的存量记录（待付款+已付款都有）是 null，之后新建的记录 create() 时就会赋值，
+     * 不会再命中这条查询——天然幂等。不按 isDeleted 过滤，软删除的历史记录也顺便一起补上。
+     */
+    List<InfluencerPayment> findByInvolvesCorporateInvoiceIsNull();
 }

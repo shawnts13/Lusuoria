@@ -104,9 +104,23 @@ public class InfluencerPayment extends BaseEntity {
      * 公对公发票链接（2026-08 新增，"上传发票"功能，跟"红人需求管理"的Invoice是同一套
      * "链接贴过来"机制——文件本身存在共享Google Drive文件夹里，这里只存最终的Google Drive链接，
      * 命名规则用 receipt 而不是 invoice，见 PaymentReceiptModal.vue）。只有这条结款记录涉及的
-     * 品牌方-红人团队组合"涉及公对公发票"（InfluencerTeam.involvesCorporateInvoice()）时才有
-     * 意义；纯记录用途，上传后不会级联触发任何状态流转（跟Invoice上传会推动红人结款进度不同）。
+     * 品牌方-红人团队组合"涉及公对公发票"（见下面 involvesCorporateInvoice 字段）时才有意义；
+     * 纯记录用途，上传后不会级联触发任何状态流转（跟Invoice上传会推动红人结款进度不同）。
      */
     @Column(name = "receipt_link", columnDefinition = "TEXT")
     private String receiptLink;
+
+    /**
+     * 这条结款记录"是否涉及公对公发票"的快照（2026-08 新增）。创建时按当时的品牌方/团队配置
+     * （InfluencerTeam.involvesCorporateInvoice()）现算一次存下来，此后永久不变——即使后续管理层
+     * 把某个团队的"是否涉及公对公发票"配置从"不涉及"改成"涉及"（或反过来），也不会影响这条
+     * 记录（尤其是已经"已付款"的历史记录），跟 CollaborationTracking.commissionRate 是同一个
+     * "冻结快照，不做实时联动"的道理——结款记录创建后团队范围本来就不可再改
+     * （见 InfluencerPaymentService.update() 的说明），所以这个快照只在 create() 时算一次即可，
+     * 不需要在 update() 里重新计算。历史存量数据（这个字段上线之前创建的记录）由
+     * InfluencerPaymentService 启动时的一次性回填补上，回填口径是"用当前的品牌方/团队配置现算"
+     * （没有更早的历史配置可以参照，这是能拿到的最好的值）。
+     */
+    @Column(name = "involves_corporate_invoice")
+    private Boolean involvesCorporateInvoice;
 }
