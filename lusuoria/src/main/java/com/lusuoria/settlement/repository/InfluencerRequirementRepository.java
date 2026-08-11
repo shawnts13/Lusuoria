@@ -5,10 +5,12 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import javax.persistence.LockModeType;
 import java.util.List;
 import java.util.Optional;
 
@@ -18,6 +20,20 @@ public interface InfluencerRequirementRepository extends JpaRepository<Influence
     Optional<InfluencerRequirement> findByIdAndIsDeletedFalse(Long id);
 
     Optional<InfluencerRequirement> findByInternalRequirementNoAndIsDeletedFalse(String internalRequirementNo);
+
+    /**
+     * 跟 findByInternalRequirementNoAndIsDeletedFalse 一样，但加悲观写锁（2026-08 新增）。
+     * 专供 InfluencerRequirementService.validateTrackingLinkage() 校验"需求条目剩余名额"时使用——
+     * 原来那里是"先查一遍已占用数，再跟 videoCount 比较"，中间没有锁，两个人几乎同时给同一个
+     * 需求条目的最后一个名额各建一条红人合作跟踪记录时，可能都在对方提交之前读到"还有名额"、
+     * 都通过校验，最终把这个需求条目超额占用，且没有任何数据库约束能拦下来。加锁后，第二个
+     * 并发请求会阻塞到第一个请求所在事务提交/回滚为止，再重新读到"名额已经被占满"从而正确报错。
+     * 只用在这一个"真正落库前"的校验点，不用在别处（比如 validateBatchLinkage 那个批量预检，
+     * 那个只是给个更友好的提前报错，不是权威判断，不需要也不该在预检阶段就持锁）。
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT r FROM InfluencerRequirement r WHERE r.internalRequirementNo = :no AND r.isDeleted = false")
+    Optional<InfluencerRequirement> findByInternalRequirementNoAndIsDeletedFalseForUpdate(@Param("no") String internalRequirementNo);
 
     /** "重新计算需求完成时间"善后用（2026-08 新增） */
     List<InfluencerRequirement> findByIsDeletedFalse();

@@ -58,9 +58,18 @@ public class PendingApprovalService {
 
     /**
      * 发起删除申请。如果这条记录已经有一条"待审核"的删除申请，直接复用（不重复创建）。
+     *
+     * 2026-08 修复：下面这三个 request*() 方法都是"先查一遍这条记录有没有待审核事项，没有就
+     * 新建"，查和建中间没有加锁，pending_approvals 表也没有唯一约束兜底——快速连续点两次
+     * 按钮，或者两个人几乎同时操作同一条记录，理论上能建出两条内容重复的待审核事项。加
+     * synchronized 后同一时刻只有一个线程能执行这三个方法中的任意一个，从根上堵住这个竞态；
+     * Render 部署是单实例（免费版没有多实例/水平扩展），JVM 级别的锁就足够覆盖生产环境的
+     * 实际拓扑，不需要引入数据库锁或分布式锁这类更重的方案。这里没有细分锁粒度（比如只锁同一
+     * 条目标记录），是因为这几个方法本身调用频率很低（都是用户主动点按钮触发，不是批量/高频
+     * 路径），粗粒度地把整个服务的这三个方法串行化，实际性能影响可以忽略。
      */
     @Transactional
-    public PendingApproval requestDelete(PendingApprovalModule module, Long targetId,
+    public synchronized PendingApproval requestDelete(PendingApprovalModule module, Long targetId,
                                           String internalProjectNo, String summary, String reason) {
         return pendingApprovalRepo
                 .findByTargetModuleAndTargetIdAndCategoryAndStatus(
@@ -100,7 +109,7 @@ public class PendingApprovalService {
      *                                 倒退到不满足前置条件的状态后，红人结款进度理应清空）
      */
     @Transactional
-    public PendingApproval requestProgressRollback(Long trackingId, String internalProjectNo, String summary,
+    public synchronized PendingApproval requestProgressRollback(Long trackingId, String internalProjectNo, String summary,
                                                      String reason, CollaborationProgress requestedProgress,
                                                      InfluencerPaymentProgress requestedPaymentProgress) {
         return pendingApprovalRepo
@@ -131,7 +140,7 @@ public class PendingApprovalService {
      * 跟删除审核/进度倒退审核同一套"去重"约定）。
      */
     @Transactional
-    public PendingApproval requestExecutorCostModify(Long trackingId, String internalProjectNo, String summary,
+    public synchronized PendingApproval requestExecutorCostModify(Long trackingId, String internalProjectNo, String summary,
                                                        BigDecimal previousAmount, Boolean previousNotApplicable,
                                                        BigDecimal requestedAmount, boolean requestedNotApplicable) {
         return pendingApprovalRepo

@@ -89,6 +89,26 @@ public class CollaborationTrackingService {
     @Autowired private ExecutorWageConfirmationRepository wageConfirmationRepo;
     @Autowired private ExchangeRateCacheRepository exchangeRateCacheRepo;
 
+    /**
+     * 自己的懒加载代理引用（2026-08 新增，见 save()/createBatch() 上"内部项目编号并发冲突重试"
+     * 的注释）：重试时必须经过 Spring 事务代理重新调用、开一个全新事务，直接 this.xxx(...) 是
+     * 同一个 bean 内部自调用，会绕开代理导致 @Transactional 失效、失败事务也不会被正确清理。
+     */
+    @Autowired @org.springframework.context.annotation.Lazy private CollaborationTrackingService self;
+
+    /** 内部项目编号并发分配冲突时最多重试几次——两人几乎同时给同一"品牌方/团队/月份"新建
+     *  记录才会撞上，重试一两次基本必中，留够余量设成 3 次 */
+    private static final int PROJECT_NO_CONFLICT_MAX_RETRY = 3;
+
+    /** 这次 DataIntegrityViolationException 是不是 internal_project_no 唯一约束冲突导致的
+     *  （ProjectNoAllocator.allocate() 的并发竞态，见其类注释）——只有这种情况才值得自动重试，
+     *  别的唯一约束冲突（比如"采买旧视频原链接"查重）重试也没用，应该照样把错误抛给用户 */
+    private boolean isProjectNoConflict(org.springframework.dao.DataIntegrityViolationException e) {
+        Throwable root = e.getMostSpecificCause();
+        String msg = root != null ? root.getMessage() : e.getMessage();
+        return msg != null && msg.toLowerCase().contains("internal_project_no");
+    }
+
     /** 自定义异常：去重命中 */
     public static class DuplicateTrackingException extends RuntimeException {
         public DuplicateTrackingException(String msg) { super(msg); }
@@ -199,13 +219,41 @@ public class CollaborationTrackingService {
      *        编辑表单里状态字段是锁死的，防止误操作。
      *        Excel 导入命中查重、走"更新已有记录"分支时传 true —— 允许连带把状态也更新了。
      */
-    @Transactional
     public CollaborationTracking save(CollaborationTrackingRequest req) {
         return save(req, false);
     }
 
-    @Transactional
+    /**
+     * 2026-08 修复：只有"新建"才会现场生成一个新的内部项目编号（ProjectNoAllocator.allocate()，
+     * 见其类注释）——那套分配逻辑是"先查一遍当前已用到几号，再挑一个没被占用的"，中间没有加锁，
+     * 两个人几乎同时给同一个品牌方/团队/月份新建记录时，理论上会都读到同一个"还没被占用"的候选
+     * 编号。数据库对 internal_project_no 有唯一约束兜底，不会真的产生重复编号，但会导致其中
+     * 一次保存被数据库拒绝（DataIntegrityViolationException，GlobalExceptionHandler 兜底成一句
+     * "数据处理失败，请稍后重试"），用户看不懂为什么好端端保存不了。这里遇到这种冲突就自动重试
+     * ——重新走一遍 saveTransactional() 会重新查一次数据库现有编号数量，基本一次就能避开刚才
+     * 撞上的那个编号，不需要用户自己再点一次保存。编辑已有记录（req.getId() != null）不会分配
+     * 新编号，没有这个冲突场景，直接走一次即可，不进重试循环。
+     *
+     * 这个方法本身不能是 @Transactional——重试要靠"上一次失败的事务已经完整回滚、下一次是全新
+     * 事务重新查库"，如果这层也包在同一个事务里，第一次失败后事务已经被标记 rollback-only，
+     * 后面根本没法继续用同一个事务重试。真正的读写逻辑都在 saveTransactional() 里，每次调用
+     * 通过 self 代理走一个全新事务。
+     */
     public CollaborationTracking save(CollaborationTrackingRequest req, boolean allowStatusUpdateOnEdit) {
+        if (req.getId() != null) {
+            return self.saveTransactional(req, allowStatusUpdateOnEdit);
+        }
+        for (int attempt = 1; ; attempt++) {
+            try {
+                return self.saveTransactional(req, allowStatusUpdateOnEdit);
+            } catch (org.springframework.dao.DataIntegrityViolationException e) {
+                if (attempt >= PROJECT_NO_CONFLICT_MAX_RETRY || !isProjectNoConflict(e)) throw e;
+            }
+        }
+    }
+
+    @Transactional
+    public CollaborationTracking saveTransactional(CollaborationTrackingRequest req, boolean allowStatusUpdateOnEdit) {
         Influencer influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getInfluencerId())
                 .orElseThrow(() -> new RuntimeException("红人不存在：" + req.getInfluencerId()));
         CollaborationTracking existing = req.getId() != null
@@ -225,9 +273,23 @@ public class CollaborationTrackingService {
      * 预检这一批一共想新建几条、够不够名额，报错文案能精确说明"本次试图新建N条XX类型的
      * 记录，超出了...限制"；之后逐条走 doSave() 时如果还有其他校验失败（查重命中等）
      * 同样整批回滚。
+     *
+     * 2026-08 修复：同 save() 上方的注释——批量新建每一条都会现场分配一个新的内部项目编号，
+     * 同样可能撞上 ProjectNoAllocator 的并发竞态，这里同样自动重试整批（重试时会重新查库，
+     * 整批都用得上更新后的"已用编号"状态，比只重试撞车的那一条更简单也更安全）。
      */
-    @Transactional
     public List<CollaborationTracking> createBatch(List<CollaborationTrackingRequest> reqs) {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                return self.createBatchTransactional(reqs);
+            } catch (org.springframework.dao.DataIntegrityViolationException e) {
+                if (attempt >= PROJECT_NO_CONFLICT_MAX_RETRY || !isProjectNoConflict(e)) throw e;
+            }
+        }
+    }
+
+    @Transactional
+    public List<CollaborationTracking> createBatchTransactional(List<CollaborationTrackingRequest> reqs) {
         requirementService.validateBatchLinkage(reqs);
         // 同样是当前 HTTP 请求线程，一次性现场取，不用每条都重新查
         boolean isFullAccess = fieldVisibility.resolve().isFull();
@@ -1358,9 +1420,15 @@ public class CollaborationTrackingService {
      * CollaborationStatusUpdateResult 是同一个思路。这条路径下执行人员早就定下来了
      * （isFirstTime=false 意味着已经成功保存过一次），不接受这次请求顺带改动执行人员本身，
      * 直接用记录当前已有的执行人员现算金额。
+     *
+     * 2026-08 修复：isFirstTime 是"读一次 executorCostEverSet 就当场决定要不要走审核"，中间没有
+     * 加锁——两次并发的 setExecutorCost() 调用（比如误触发两次提交）理论上可能都读到
+     * executorCostEverSet=false，都判定成"首次"从而都绕开审核直接生效。加 synchronized，跟
+     * PendingApprovalService 那几个 request*() 方法同样的道理：Render 是单实例部署，JVM 锁
+     * 就够用；这个方法调用频率低（项目负责人手动操作），粗粒度串行化没有实际性能影响。
      */
     @Transactional
-    public com.lusuoria.settlement.dto.response.ExecutorCostUpdateResult setExecutorCost(
+    public synchronized com.lusuoria.settlement.dto.response.ExecutorCostUpdateResult setExecutorCost(
             Long id, Long executorId, boolean notApplicable) {
         CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + id));

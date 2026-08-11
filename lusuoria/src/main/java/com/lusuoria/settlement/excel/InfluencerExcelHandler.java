@@ -24,9 +24,7 @@ import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddressList;
 import org.apache.poi.xssf.usermodel.*;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import javax.servlet.http.HttpServletResponse;
@@ -59,13 +57,6 @@ public class InfluencerExcelHandler {
     @Autowired private ImportBatchRepository importBatchRepo;
     @Autowired private DomainSyncService domainSyncService;
     @Autowired private InfluencerCache influencerCache;
-
-    /**
-     * 自己的懒加载代理引用：importDataAsync() 需要经过 Spring 事务代理调用 importData()
-     * （那个方法是 @Transactional），直接 this.importData(...) 是同一个 bean 内部自调用，
-     * 会绕开代理导致事务注解失效——用这个自注入的代理引用调用就能保留事务语义。
-     */
-    @Autowired @Lazy private InfluencerExcelHandler self;
 
     // ===================================================================
     // 导出
@@ -265,11 +256,11 @@ public class InfluencerExcelHandler {
     // ===================================================================
     /** 保留 MultipartFile 入口，兼容以后可能需要同步调用的场景 */
     public List<String> importData(MultipartFile file, boolean canViewSensitive) throws IOException {
-        return self.importData(file.getInputStream(), canViewSensitive, (processed, total) -> {});
+        return importData(file.getInputStream(), canViewSensitive, (processed, total) -> {});
     }
 
     public List<String> importData(InputStream fileStream, boolean canViewSensitive) throws IOException {
-        return self.importData(fileStream, canViewSensitive, (processed, total) -> {});
+        return importData(fileStream, canViewSensitive, (processed, total) -> {});
     }
 
     /**
@@ -281,7 +272,7 @@ public class InfluencerExcelHandler {
         ImportBatch batch = importBatchRepo.findById(batchId).orElse(null);
         if (batch == null) return; // 理论上不会发生，防御性判断
         try {
-            List<String> errors = self.importData(new ByteArrayInputStream(fileBytes), canViewSensitive,
+            List<String> errors = importData(new ByteArrayInputStream(fileBytes), canViewSensitive,
                     (processed, total) -> {
                         // 每处理一批就回写一次进度，前端"导入历史"页面轮询的时候就能看到实时进度
                         batch.setTotalRows(total);
@@ -325,8 +316,19 @@ public class InfluencerExcelHandler {
      *
      * 带进度回调：每处理完一批（20行）就回调一次，异步导入用这个把进度实时写回"导入批次"
      * 记录；同步调用（上面两个重载）传一个空回调就行，不影响原来的行为。
+     *
+     * 2026-08 修复：这个方法故意不加 @Transactional（跟 CollaborationTrackingExcelHandler 的
+     * 同名方法保持一致）——之前加了的话，上面这个"每处理一批就回写一次进度"的 progressCallback
+     * 跟本方法后面真正的数据写入是同一个事务/同一个数据库连接，在整个导入跑完之前根本不会提交，
+     * 导致"导入历史"页面轮询看到的进度条整个导入过程中都不会动，直到成功/失败那一刻才跳到最终
+     * 状态，白白维护了一个"实时进度"功能却看不到效果；顺带还会在导入的整个耗时期间（可能是几千
+     * 行 Excel）一直占着数据库连接池里 3 个连接中的 1 个。去掉以后，行级的业务校验失败本来就是
+     * 在下面循环内部 catch 住记进 errors 列表、不会中断整个方法，真正落库的几步
+     * （influencerRepo.saveAll / teamCache.getOrCreate / influencerBrandTeamRepo.saveAll）
+     * 各自都是独立的小事务；万一后面这几步里某一步失败，前面已经写入的部分不会回滚，但因为
+     * 红人库按 accountName 判重，重新导入同一份 Excel 能安全地把没写完的部分补上，不会产生
+     * 重复数据。
      */
-    @Transactional
     public List<String> importData(InputStream fileStream, boolean canViewSensitive,
                                     java.util.function.BiConsumer<Integer, Integer> progressCallback) throws IOException {
         List<String> errors = new ArrayList<String>();

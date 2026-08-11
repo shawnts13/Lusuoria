@@ -35,7 +35,10 @@ public class InfluencerContractController {
     @Autowired private BrandCache brandCache;
     @Autowired private InfluencerTeamCache teamCache;
 
-    private static final SimpleDateFormat DATE_FMT = new SimpleDateFormat("yyyy-MM-dd");
+    // SimpleDateFormat 本身不是线程安全的，Controller 是单例，并发请求共用同一个 static 实例
+    // 会导致日期格式化结果错乱甚至抛异常——改成 ThreadLocal，每个请求线程各用各的实例
+    private static final ThreadLocal<SimpleDateFormat> DATE_FMT =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd"));
 
     /** 某个红人的合同列表（有效期起始日期倒序），供"红人管理"编辑弹窗展示 */
     @GetMapping("/by-influencer/{influencerId}")
@@ -139,7 +142,7 @@ public class InfluencerContractController {
                 req.getStartDate(), req.getEndDate(), excludeId);
         if (!overlapping.isEmpty()) {
             String ranges = overlapping.stream()
-                    .map(c -> DATE_FMT.format(c.getStartDate()) + " 至 " + DATE_FMT.format(c.getEndDate()))
+                    .map(c -> DATE_FMT.get().format(c.getStartDate()) + " 至 " + DATE_FMT.get().format(c.getEndDate()))
                     .collect(Collectors.joining("、"));
             throw new RuntimeException("该红人在这个品牌方/团队下，已有有效期重叠的合同记录（" + ranges + "），请先编辑或调整已有记录");
         }

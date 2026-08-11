@@ -1205,13 +1205,23 @@ public class InfluencerRequirementService {
      * 也就是本该 5 条容量的条目和 1 条容量的条目，各自都显示"已实施 6 条"这种同一批记录被
      * 两个条目重复计入的错误。单价加入匹配条件后，只要两个条目没有完全相同的单价组合，
      * 就能唯一定位到该记录真正对应哪个条目，恢复按条目精确控制名额。
+     *
+     * 2026-08 修复：这里原来是"先查一遍已占用数，再跟 videoCount 比较"，中间没有加锁——两个人
+     * 几乎同时给同一个需求条目的最后一个名额各建一条红人合作跟踪记录时，理论上都能在对方提交
+     * 之前读到"还有名额"、都通过校验，最终把这个需求条目超额占用（比如本该 5 条名额的条目实际
+     * 关联了 6 条），且没有任何数据库约束能兜底拦下来（不像 internal_project_no 那种有唯一约束
+     * 保护的场景）。改成用悲观写锁查需求本身——本方法一定是在调用方已经开好的读写事务里执行
+     * （doSave()/linkLegacyTrackings()，两处都是 @Transactional 非只读），锁会一直持有到那个
+     * 外层事务提交/回滚为止，第二个并发请求会阻塞等锁，等第一个提交后再重新读到"名额已占满"，
+     * 从而正确报错，不会再出现两边都"看起来还有名额"的情况。因此这里也不能再是只读事务
+     * （readOnly=true 会跟"要拿写锁"的语义矛盾），去掉这个标记。
      */
-    @Transactional(readOnly = true)
+    @Transactional
     public void validateTrackingLinkage(String internalRequirementNo, Long influencerId, Long brandId, Long teamId,
                                          VideoType videoType, String platform,
                                          BigDecimal influencerCost, BigDecimal clientPrice, Long excludeTrackingId) {
         InfluencerRequirement requirement = requirementRepo
-                .findByInternalRequirementNoAndIsDeletedFalse(internalRequirementNo)
+                .findByInternalRequirementNoAndIsDeletedFalseForUpdate(internalRequirementNo)
                 .orElseThrow(() -> new RuntimeException("内部需求编号 [" + internalRequirementNo + "] 不存在"));
 
         if (!java.util.Objects.equals(requirement.getInfluencerId(), influencerId)) {
