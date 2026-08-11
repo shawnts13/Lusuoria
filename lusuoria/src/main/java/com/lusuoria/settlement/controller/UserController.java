@@ -175,7 +175,9 @@ public class UserController {
     private String roleLabel(String role) {
         if ("ADMIN".equals(role))   return "管理员";
         if ("STAFF".equals(role))   return "普通员工";
-        if ("AUDITOR".equals(role)) return "财务";
+        // 法务岗位目前也是配 AUDITOR 这个 SysUser 角色（只读+导出，跟财务权限档位一致），
+        // 单纯显示"财务"容易让法务同事误会自己的账号权限档位设错了，标签改成"财务/法务"
+        if ("AUDITOR".equals(role)) return "财务/法务";
         if ("GUEST".equals(role))   return "访客";
         return role;
     }
