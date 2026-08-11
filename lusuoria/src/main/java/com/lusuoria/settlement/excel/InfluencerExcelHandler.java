@@ -324,7 +324,7 @@ public class InfluencerExcelHandler {
      * 状态，白白维护了一个"实时进度"功能却看不到效果；顺带还会在导入的整个耗时期间（可能是几千
      * 行 Excel）一直占着数据库连接池里 3 个连接中的 1 个。去掉以后，行级的业务校验失败本来就是
      * 在下面循环内部 catch 住记进 errors 列表、不会中断整个方法，真正落库的几步
-     * （influencerRepo.saveAll / teamCache.getOrCreate / influencerBrandTeamRepo.saveAll）
+     * （influencerRepo.saveAll / influencerBrandTeamRepo.saveAll）
      * 各自都是独立的小事务；万一后面这几步里某一步失败，前面已经写入的部分不会回滚，但因为
      * 红人库按 accountName 判重，重新导入同一份 Excel 能安全地把没写完的部分补上，不会产生
      * 重复数据。
@@ -424,10 +424,7 @@ public class InfluencerExcelHandler {
         // 收集每个红人本次导入解析出的品牌方名称（accountName -> 品牌名集合），
         // 导入结束后统一解析成 id 并写入中间表（红人此时还没有 id，不能在循环内直接写）
         Map<String, Set<String>> pendingBrandTeamPairs = new HashMap<String, Set<String>>();
-        // 收集本次导入中出现的新团队和新领域，导入后统一刷新缓存
-        // newTeams：团队名 -> 归属品牌方id（2026-07 起团队归属唯一品牌方，同一次导入里同名团队
-        // 对应了不同品牌方是数据错误，下面解析循环里会拦下来报行错误，不会静默写错归属）
-        Map<String, Long> newTeams = new HashMap<String, Long>();
+        // 收集本次导入中出现的新领域，导入后统一刷新缓存（团队不再在这里自动新建，见下方解析循环）
         Set<String> newDomains = new HashSet<String>();
 
         for (int i = 1; i <= totalRows; i++) {
@@ -467,8 +464,10 @@ public class InfluencerExcelHandler {
                 // 以下所有字段：Excel 有值才更新，空白则保留数据库原值
 
                 // 品牌方-团队（每行一对，格式：品牌方/团队，团队可省略，多对换行分隔）
-                // 品牌方必须是品牌方管理里已存在的名称；团队如果不存在会自动创建（跟手动新建团队一致）
-                // 解析结果先记下来，导入循环结束、所有红人都有 id、新团队也建好了以后，再统一写入关联表
+                // 品牌方和团队都必须是各自管理模块里已存在的名称——2026-08 起团队新建收紧到只能
+                // 由管理层通过"品牌方/红人团队管理"页面完成，Excel 导入不再借 getOrCreate 顺手
+                // 自动建团队（哪怕操作导入的人本身就是管理层也一样，统一走同一个口子）
+                // 解析结果先记下来，导入循环结束、所有红人都有 id 以后，再统一写入关联表
                 String brandTeamRaw = getStr(row, colMap, "品牌方-团队(每行一对,格式:品牌方/团队,团队可省略,多对用换行分隔)");
                 // 兼容"Excel 导出"生成的表头（没有"，多对用换行分隔"这半句），支持导出后原样再导入
                 if (brandTeamRaw == null) brandTeamRaw = getStr(row, colMap, "品牌方-团队(每行一对,格式:品牌方/团队,团队可省略)");
@@ -476,6 +475,7 @@ public class InfluencerExcelHandler {
                 Set<String> pairKeys = new java.util.LinkedHashSet<String>();
                 if (hasValue(brandTeamRaw)) {
                     List<String> notFound = new ArrayList<String>();
+                    List<String> notFoundTeams = new ArrayList<String>();
                     for (String line : brandTeamRaw.split("[\n\r]+")) {
                         String trimmed = line.trim();
                         if (trimmed.isEmpty()) continue;
@@ -489,19 +489,20 @@ public class InfluencerExcelHandler {
                             continue;
                         }
                         if (!teamNm.isEmpty() && teamCache.findByName(teamNm) == null) {
-                            Long conflictingBrandId = newTeams.get(teamNm);
-                            if (conflictingBrandId != null && !conflictingBrandId.equals(brand.getId())) {
-                                errors.add("第" + (i + 1) + "行：团队 [" + teamNm + "] 在本次导入中对应了不同的品牌方，"
-                                        + "团队归属唯一品牌方，请确认后重新导入，该行其余关联已正常处理");
-                            } else {
-                                newTeams.put(teamNm, brand.getId());
-                            }
+                            // 团队不存在：不再自动创建，整条品牌-团队关联跳过，报行错误让用户
+                            // 先去"品牌方/红人团队管理"新建团队后再重新导入
+                            notFoundTeams.add(teamNm);
+                            continue;
                         }
                         pairKeys.add(brandName + "|" + teamNm); // teamNm 为空字符串表示"这个品牌下没配团队"
                     }
                     if (!notFound.isEmpty()) {
                         errors.add("第" + (i + 1) + "行：品牌方 " + notFound
                                 + " 不存在，请先在品牌方管理模块创建后再导入，该行其余关联已正常处理");
+                    }
+                    if (!notFoundTeams.isEmpty()) {
+                        errors.add("第" + (i + 1) + "行：团队 " + notFoundTeams
+                                + " 不存在，请先在\"品牌方/红人团队管理\"中新建该团队后再导入，该行其余关联已正常处理");
                     }
                     if (!pairKeys.isEmpty()) {
                         pendingBrandTeamPairs.put(nameKey(accountName), pairKeys);
@@ -618,17 +619,7 @@ public class InfluencerExcelHandler {
         // 批量写库（只写有变化的记录）
         influencerRepo.saveAll(toSave);
 
-        // 统一注册新团队和新领域（必须在处理品牌-团队关联对之前，因为下面要用到团队的 id）。
-        // getOrCreate 在团队名已经属于数据库里另一个品牌方时会抛异常（团队归属唯一品牌方），
-        // 这里单独 catch 记成错误而不是让整个导入批次失败——这种情况下这个团队的关联会在下面
-        // "品牌方-团队关联"处理时因为 teamCache.findByName 仍然找不到而被跳过（走"没配团队"分支）。
-        for (Map.Entry<String, Long> entry : newTeams.entrySet()) {
-            try {
-                teamCache.getOrCreate(entry.getKey(), entry.getValue());
-            } catch (RuntimeException e) {
-                errors.add(e.getMessage());
-            }
-        }
+        // 统一注册新领域（团队不会在这里自动新建了，不存在的团队名已经在上面解析循环里报错跳过）
         for (String d : newDomains) domainCache.getOrCreate(d);
 
         // 品牌方-团队关联：只处理真正变化的部分（逻辑跟红人管理页保存时一致），不再"全删再插"
