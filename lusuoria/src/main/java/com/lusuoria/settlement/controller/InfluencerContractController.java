@@ -10,8 +10,9 @@ import com.lusuoria.settlement.entity.InfluencerContract;
 import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.repository.InfluencerContractRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
+import com.lusuoria.settlement.util.EmployeeRoleUtil;
+import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import javax.validation.Valid;
@@ -34,6 +35,7 @@ public class InfluencerContractController {
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private InfluencerTeamCache teamCache;
+    @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
     // SimpleDateFormat 本身不是线程安全的，Controller 是单例，并发请求共用同一个 static 实例
     // 会导致日期格式化结果错乱甚至抛异常——改成 ThreadLocal，每个请求线程各用各的实例
@@ -62,8 +64,8 @@ public class InfluencerContractController {
     }
 
     @PostMapping
-    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<InfluencerContract> create(@Valid @RequestBody InfluencerContractRequest req) {
+        assertCanManageContracts();
         Influencer influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getInfluencerId())
                 .orElseThrow(() -> new RuntimeException("红人不存在：" + req.getInfluencerId()));
         Brand brand = resolveBrand(req.getBrandId());
@@ -82,8 +84,8 @@ public class InfluencerContractController {
     }
 
     @PutMapping("/{id}")
-    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<InfluencerContract> update(@PathVariable Long id, @Valid @RequestBody InfluencerContractRequest req) {
+        assertCanManageContracts();
         InfluencerContract contract = contractRepo.findById(id)
                 .orElseThrow(() -> new RuntimeException("合同记录不存在：" + id));
         Brand brand = resolveBrand(req.getBrandId());
@@ -105,13 +107,25 @@ public class InfluencerContractController {
      * 删除就直接把数据库行删掉，方便手动清理很久以前（比如2年前）的历史合同。
      */
     @DeleteMapping("/{id}")
-    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Void> delete(@PathVariable Long id) {
+        assertCanManageContracts();
         if (!contractRepo.existsById(id)) {
             throw new RuntimeException("合同记录不存在：" + id);
         }
         contractRepo.deleteById(id);
         return ApiResponse.success();
+    }
+
+    /**
+     * 2026-08 新增：谁能维护"已签署合同"——原来固定 @PreAuthorize("hasAnyRole('ADMIN','STAFF')")，
+     * 现在额外放开给员工角色="法务"的账号（哪怕 SysUser 角色是只读的 AUDITOR，见"账号管理"角色
+     * 标签"财务/法务"）。Employee.role 不在 JWT 里，没法直接写在 @PreAuthorize 的 SpEL 表达式上，
+     * 所以改成方法内部手动判断，其余合同相关的这三个写接口保持完全一样的权限口径。
+     */
+    private void assertCanManageContracts() {
+        if (RoleUtil.canWrite()) return;
+        if ("法务".equals(employeeRoleUtil.getCurrentEmployeeRole())) return;
+        throw new RuntimeException("无权限维护红人已签署合同信息");
     }
 
     private Brand resolveBrand(Long brandId) {
