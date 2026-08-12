@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.service.impl;
 
 import com.lusuoria.settlement.entity.CollaborationTracking;
+import com.lusuoria.settlement.entity.ExchangeRateCache;
 import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.enums.CollaborationProgress;
@@ -9,6 +10,7 @@ import com.lusuoria.settlement.enums.PendingApprovalCategory;
 import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.enums.PendingApprovalStatus;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
+import com.lusuoria.settlement.repository.ExchangeRateCacheRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
 import com.lusuoria.settlement.repository.PendingApprovalRepository;
 import com.lusuoria.settlement.util.MultiValueUtil;
@@ -22,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
@@ -31,12 +34,15 @@ import java.util.stream.Collectors;
 /**
  * 待处理事项 - 业务逻辑
  *
- * 只依赖 Repository（CollaborationTrackingRepository/InfluencerRequirementRepository），
- * 不依赖 CollaborationTrackingService，避免"删除要经过审核 -> 审核通过要执行删除"这个链路
- * 形成 Service 之间的循环依赖——同样的原因，两个模块各自的 requestDelete() 也都不调用本
- * Service，而是直接操作 PendingApprovalRepository 现场复刻一份等价逻辑（见
- * InfluencerRequirementService.requestDelete() 的注释）。本 Service 反过来依赖了
- * InfluencerRequirementService（只用它的 refreshCompletedAt()），所以这个方向不能颠倒。
+ * 只依赖 Repository（CollaborationTrackingRepository/InfluencerRequirementRepository/
+ * ExchangeRateCacheRepository），不依赖 CollaborationTrackingService，避免"删除要经过审核 ->
+ * 审核通过要执行删除"这个链路形成 Service 之间的循环依赖——同样的原因，两个模块各自的
+ * requestDelete() 也都不调用本 Service，而是直接操作 PendingApprovalRepository 现场复刻
+ * 一份等价逻辑（见 InfluencerRequirementService.requestDelete() 的注释）；
+ * executeExecutorCostModify() 里的汇率自动回填同理，复制了一份
+ * CollaborationTrackingService.fillMissingExchangeRateFromCache()，不是注入调用。本 Service
+ * 反过来依赖了 InfluencerRequirementService（只用它的 refreshCompletedAt()），所以这个方向
+ * 不能颠倒。
  *
  * 目前有两种类别，同一条业务记录上可能同时存在两种互不相关的"待审核"事项，
  * 所有按目标记录查/判重的方法都必须带上 category 条件，不能只按 targetModule+targetId 查
@@ -55,6 +61,7 @@ public class PendingApprovalService {
     @Autowired private InfluencerRequirementRepository requirementRepo;
     @Autowired private InfluencerRequirementService requirementService;
     @Autowired private ProfitCalculator profitCalculator;
+    @Autowired private ExchangeRateCacheRepository exchangeRateCacheRepo;
 
     /**
      * 发起删除申请。如果这条记录已经有一条"待审核"的删除申请，直接复用（不重复创建）。
@@ -359,9 +366,36 @@ public class PendingApprovalService {
             // 申请提交时就是按系统梯度现算的值（见 CollaborationTrackingService.setExecutorCost()
             // 的"非首次修改"分支），不是 ADMIN 手动特批，标记成 false
             t.setExecutorCostOverridden(false);
+            // 汇率缺失自动回填（2026-08 新增，Shawn 反馈）：这条记录如果是老数据、汇率一直是
+            // 0/空（比如踩过 doSave() 那个已修复的 bug），走到这里重算利润前先按发布月份从
+            // 汇率维护回填一次，不然重算出来的公司利润（人民币）还是0。逻辑跟
+            // CollaborationTrackingService.fillMissingExchangeRateFromCache() 完全一样，这里
+            // 复制一份而不是注入 CollaborationTrackingService 来调用——本类头顶注释已经解释过
+            // 为什么不能依赖 CollaborationTrackingService（CollaborationTrackingService 已经
+            // 依赖了本类，反过来注入会形成 Service 间循环依赖，Spring Boot 2.6+ 默认在启动时
+            // 直接报错，不是运行时才发现）。
+            fillMissingExchangeRateFromCache(t);
             profitCalculator.calculate(t);
         }
         trackingRepo.save(t);
+    }
+
+    /** 跟 CollaborationTrackingService.fillMissingExchangeRateFromCache() 是同一份逻辑，
+     * 复制过来专供 executeExecutorCostModify() 用——不能反过来注入 CollaborationTrackingService
+     * 调用它，见本类头顶的循环依赖说明。 */
+    private boolean fillMissingExchangeRateFromCache(CollaborationTracking t) {
+        boolean exchangeRateInvalid = t.getExchangeRate() == null
+                || t.getExchangeRate().compareTo(BigDecimal.ZERO) <= 0;
+        if (!exchangeRateInvalid || t.getPublishDate() == null) return false;
+        ExchangeRateCache cache = exchangeRateCacheRepo
+                .findByYearMonth(new SimpleDateFormat("yyyyMM").format(t.getPublishDate()))
+                .orElse(null);
+        if (cache != null && cache.getUsdToCny() != null
+                && cache.getUsdToCny().compareTo(BigDecimal.ZERO) > 0) {
+            t.setExchangeRate(cache.getUsdToCny());
+            return true;
+        }
+        return false;
     }
 
     /**
