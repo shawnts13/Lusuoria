@@ -1542,8 +1542,14 @@ public class CollaborationTrackingService {
      * 记录大多是因为"汇率维护"保存某个月份汇率的时候，这条记录还没有发布时间（发布时间是
      * 后补的），当时没被那次批量覆盖覆盖到（见 ExchangeRateService.saveRate()，那个方法只
      * 覆盖"当时"已经落在这个月的记录）。这里按记录自己的发布时间反查"汇率维护"里对应月份
-     * 是否已经配置了汇率，配置了就直接回填；发布时间为空、或者对应月份汇率压根没配置过，
-     * 没法自动判断该用哪个汇率，跳过不动，计入"仍然缺失"数量里，由调用方决定要不要提示。
+     * 是否已经配置了汇率，配置了就直接回填；对应月份汇率压根没配置过，没法自动判断该用哪个
+     * 汇率，跳过不动，计入"仍然缺失"数量里，由调用方决定要不要提示。
+     *
+     * 2026-08-12 修复（Shawn 反馈）：还没有发布时间的记录（视频压根还没发布）一律不参与这段
+     * 汇率检查——没有发布时间就没有"应该用哪个月份的汇率"这回事，这不是"汇率缺失异常"，是
+     * "视频还没发布"这个正常状态，不该被算进"仍然缺失"的异常数量里、也不该提示用户去"补
+     * 发布时间"（发布时间不是想补就能补的，视频确实还没发布）。只有已发布却查不到汇率的，
+     * 才是真正需要处理的异常。
      *
      * 2026-08 新增：顺带按费率梯度重新计算所有符合条件记录的内部执行成本——内部执行成本
      * 2026-08 起完全由系统按梯度价算（见 setExecutorCost()），存量数据里有不少是当初手动填的、
@@ -1598,12 +1604,14 @@ public class CollaborationTrackingService {
         int stillMissingExchangeRateCount = 0;
         int actuallyChangedProfitCount = 0;
         for (CollaborationTracking t : all) {
-            boolean rateInvalid = t.getExchangeRate() == null
-                    || t.getExchangeRate().compareTo(java.math.BigDecimal.ZERO) <= 0;
+            // 2026-08-12 修复（Shawn 反馈）：视频还没发布（没有发布时间）的记录，汇率是0/空
+            // 本来就是正常状态——压根没有"应该用哪个月份的汇率"这回事，不算汇率异常，不该被
+            // 计进 stillMissingExchangeRateCount 让用户误以为要去"补发布时间"或"配置汇率"才能
+            // 修复；只有已经发布（有发布时间）却仍然查不到有效汇率的，才是真正需要处理的异常。
+            boolean rateInvalid = t.getPublishDate() != null
+                    && (t.getExchangeRate() == null || t.getExchangeRate().compareTo(java.math.BigDecimal.ZERO) <= 0);
             if (rateInvalid) {
-                ExchangeRateCache cache = t.getPublishDate() != null
-                        ? exchangeRateCacheRepo.findByYearMonth(monthFormat.format(t.getPublishDate())).orElse(null)
-                        : null;
+                ExchangeRateCache cache = exchangeRateCacheRepo.findByYearMonth(monthFormat.format(t.getPublishDate())).orElse(null);
                 if (cache != null && cache.getUsdToCny() != null
                         && cache.getUsdToCny().compareTo(java.math.BigDecimal.ZERO) > 0) {
                     t.setExchangeRate(cache.getUsdToCny());
@@ -1642,11 +1650,11 @@ public class CollaborationTrackingService {
         }
         if (stillMissingExchangeRateCount > 0) {
             msg.append("；另有 ").append(stillMissingExchangeRateCount)
-               .append(" 条记录汇率仍然是0或缺失，原因是：还没有填写视频发布时间，或者发布时间所在月份还没有在"
-                       + "\"汇率维护\"配置汇率——请先补上发布时间/配置好对应月份的汇率，再点一次\"重新计算利润\"修复");
+               .append(" 条记录已发布，但发布时间所在月份还没有在\"汇率维护\"配置汇率，汇率仍然是0或缺失——"
+                       + "请先配置好对应月份的汇率，再点一次\"重新计算利润\"修复");
         }
         if (fixedExchangeRateCount == 0 && stillMissingExchangeRateCount == 0) {
-            msg.append("；没有发现汇率异常（0或缺失）的记录");
+            msg.append("；没有发现汇率异常（0或缺失）的记录（视频还没发布的记录本来就不需要汇率，不算异常）");
         }
 
         msg.append("\n内部执行成本：已按费率梯度重新计算 ").append(recomputedExecutorCostCount).append(" 条");
@@ -1851,6 +1859,11 @@ public class CollaborationTrackingService {
 
         // 执行成本改完之后，顺带刷新这批记录的下游字段（含利润相关字段，但不写进下面的提示
         // 文案——见方法注释）
+        //
+        // 注：这里不需要像 recomputeAllProfits() 那样额外排除"还没发布"的记录——
+        // result.inScopeRecords 完全来自 buildExecCostGroups()，而那边的分组条件本来就要求
+        // t.getPublishDate() != null，所以走到这里的记录一定已经发布，下面统计到的
+        // "汇率缺失/异常"天然就是真正的异常，不会误伤还没发布的记录。
         int exchangeRateMissingCount = 0;
         for (CollaborationTracking t : result.inScopeRecords) {
             boolean rateInvalid = t.getExchangeRate() == null
