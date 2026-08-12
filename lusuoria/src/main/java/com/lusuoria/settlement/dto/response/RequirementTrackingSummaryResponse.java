@@ -28,6 +28,9 @@ public class RequirementTrackingSummaryResponse {
      * 模块逐条查）。可能为空——还没发布的记录本来就没有这个值。
      */
     private Date publishDate;
+    /** 这条红人合作跟踪记录的创建时间（2026-08 新增，Shawn 要求），取 CollaborationTracking
+     * 自己的 createdAt，展示在"视频发布时间"列前面。 */
+    private Date createdAt;
     /**
      * 这条记录对应需求里的第几个条目（1-based，按条目在需求里的创建顺序编号），
      * 不落库、现算——按 (videoType, platform, 两个单价) 精确匹配到具体条目，跟

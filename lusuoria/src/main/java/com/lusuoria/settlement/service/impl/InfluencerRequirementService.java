@@ -926,6 +926,7 @@ public class InfluencerRequirementService {
             r.setProgressLabel(t.getProgress() != null ? t.getProgress().getLabel() : null);
             r.setProgress(t.getProgress() != null ? t.getProgress().name() : null);
             r.setPublishDate(t.getPublishDate());
+            r.setCreatedAt(t.getCreatedAt());
             r.setItemIndex(matchItemIndex(items, t));
             r.setInfluencerUnitCostPrice(t.getInfluencerCost());
             r.setClientUnitPrice(t.getClientPrice());
