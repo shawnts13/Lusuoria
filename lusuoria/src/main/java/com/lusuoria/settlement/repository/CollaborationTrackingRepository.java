@@ -138,6 +138,12 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      * influencerId（2026-07 新增）：红人管理模块"合作中项目/已完结项目"下钻的"查看全部"
      * 精确跳转用——accountName 是模糊匹配（LIKE），账号名互为子串的两个红人会串号，
      * influencerId 是精确匹配，不受文本子串影响。两者可以同时传（一般只会传一个）。
+     *
+     * onlyMissingRequirementNo（2026-08 新增）：前端"查看未绑定需求编号的记录"按钮用，
+     * 硬筛选出"内部需求编号"（internalRequirementNo）为空的记录——这类记录没有关联到
+     * "红人需求管理"的任何需求，方便排查/补关联。为 false/null 时完全不影响原有筛选结果，
+     * 可以跟 onlyIncomplete/onlyUnpublished/onlyMyResponsibility 同时生效（互不影响，
+     * 纯 AND 叠加）。
      */
     @Query("SELECT c FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false " +
@@ -167,7 +173,8 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "     com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
            "     com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)) " +
            "AND (:onlyUnpublished = false OR ((c.publishLink IS NULL OR c.publishLink = '') " +
-           "     AND (c.progress IS NULL OR c.progress <> com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)))")
+           "     AND (c.progress IS NULL OR c.progress <> com.lusuoria.settlement.enums.CollaborationProgress.DELAYED))) " +
+           "AND (:onlyMissingRequirementNo = false OR c.internalRequirementNo IS NULL)")
     Page<CollaborationTracking> findByFilters(
             @Param("brandId") Long brandId,
             @Param("teamId") Long teamId,
@@ -191,6 +198,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("onlyMyResponsibility") Boolean onlyMyResponsibility,
             @Param("onlyIncomplete") Boolean onlyIncomplete,
             @Param("onlyUnpublished") Boolean onlyUnpublished,
+            @Param("onlyMissingRequirementNo") Boolean onlyMissingRequirementNo,
             Pageable pageable);
 
     /**
@@ -235,7 +243,8 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "     com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
            "     com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)) " +
            "AND (:onlyUnpublished = false OR ((c.publishLink IS NULL OR c.publishLink = '') " +
-           "     AND (c.progress IS NULL OR c.progress <> com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)))")
+           "     AND (c.progress IS NULL OR c.progress <> com.lusuoria.settlement.enums.CollaborationProgress.DELAYED))) " +
+           "AND (:onlyMissingRequirementNo = false OR c.internalRequirementNo IS NULL)")
     List<Object[]> findLitePriorityProjectionByFilters(
             @Param("brandId") Long brandId,
             @Param("teamId") Long teamId,
@@ -259,6 +268,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("onlyMyResponsibility") Boolean onlyMyResponsibility,
             @Param("onlyIncomplete") Boolean onlyIncomplete,
             @Param("onlyUnpublished") Boolean onlyUnpublished,
+            @Param("onlyMissingRequirementNo") Boolean onlyMissingRequirementNo,
             Sort sort);
 
 

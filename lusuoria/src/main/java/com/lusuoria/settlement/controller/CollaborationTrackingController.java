@@ -90,6 +90,7 @@ public class CollaborationTrackingController {
             @RequestParam(defaultValue = "false") boolean onlyMyResponsibility,
             @RequestParam(defaultValue = "false") boolean onlyIncomplete,
             @RequestParam(defaultValue = "false") boolean onlyUnpublished,
+            @RequestParam(defaultValue = "false") boolean onlyMissingRequirementNo,
             @RequestParam(defaultValue = "id") String sortBy,
             @RequestParam(defaultValue = "desc") String sortDir,
             @RequestParam(defaultValue = "0")  int page,
@@ -135,13 +136,15 @@ public class CollaborationTrackingController {
                         progress, influencerPaymentProgress, videoType, videoMonthParam, videoDateStartParam, videoDateEndParam,
                         internalProjectNo, internalRequirementNo,
                         clientOrderId, clientPaymentBatch, projectManagerId,
-                        priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, onlyUnpublished, sort, pageable)
+                        priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, onlyUnpublished,
+                        onlyMissingRequirementNo, sort, pageable)
                 : trackingRepo.findByFilters(
                         brandId, teamId, countryMarket, accountName, influencerId, platform,
                         progress, influencerPaymentProgress, videoType, videoMonthParam, videoDateStartParam, videoDateEndParam,
                         internalProjectNo, internalRequirementNo,
                         clientOrderId, clientPaymentBatch, projectManagerId,
-                        priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, onlyUnpublished, pageable);
+                        priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, onlyUnpublished,
+                        onlyMissingRequirementNo, pageable);
 
         // 批量标记"当前是否有待审核的删除申请 / 进度倒退申请"，避免逐行查库
         Set<Long> pendingDeleteIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(
@@ -203,13 +206,14 @@ public class CollaborationTrackingController {
             String internalProjectNo, String internalRequirementNo,
             String clientOrderId, String clientPaymentBatch, Long projectManagerId,
             Long priorityEmployeeId, boolean prioritizeFinance, boolean onlyMyResponsibility, boolean onlyIncomplete,
-            boolean onlyUnpublished, Sort sort, Pageable pageable) {
+            boolean onlyUnpublished, boolean onlyMissingRequirementNo, Sort sort, Pageable pageable) {
         List<Object[]> liteRows = trackingRepo.findLitePriorityProjectionByFilters(
                 brandId, teamId, countryMarket, accountName, influencerId, platform,
                 progress, influencerPaymentProgress, videoType, videoMonthParam, videoDateStartParam, videoDateEndParam,
                 internalProjectNo, internalRequirementNo,
                 clientOrderId, clientPaymentBatch, projectManagerId,
-                priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, onlyUnpublished, sort);
+                priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, onlyUnpublished,
+                onlyMissingRequirementNo, sort);
 
         List<Long> bucket0 = new ArrayList<>(); // 未完成 + 未加入结款批次
         List<Long> bucket1 = new ArrayList<>(); // 未完成 + 已加入结款批次
@@ -512,7 +516,7 @@ public class CollaborationTrackingController {
                 brandId, teamId, countryMarket, accountName, null, platform,
                 progress, influencerPaymentProgress, videoType, videoMonthParam, videoDateStartParam, videoDateEndParam,
                 internalProjectNo, internalRequirementNo,
-                clientOrderId, clientPaymentBatch, projectManagerId, null, false, false, false, false, all).getContent();
+                clientOrderId, clientPaymentBatch, projectManagerId, null, false, false, false, false, false, all).getContent();
         // canViewFull：汇率/其他外部成本/内部执行成本/毛利/提成/公司利润这些财务字段，
         // 只有导出的人是 ADMIN/AUDITOR，或员工角色是"管理层"/"财务"才包含在导出文件里，
         // 复用 ProjectFieldVisibility 的 FULL 层级判定，跟列表页/表单页这批字段的可见规则一致
