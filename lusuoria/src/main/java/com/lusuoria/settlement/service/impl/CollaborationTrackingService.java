@@ -716,6 +716,15 @@ public class CollaborationTrackingService {
         if (RoleUtil.canEditExchangeRate()) {
             tracking.setExchangeRate(req.getExchangeRate());
         }
+        // 汇率缺失自动回填（2026-08 修复，Shawn 反馈：很多 Excel 批量导入/非 ADMIN 编辑保存
+        // 的记录，视频已发布、发布月份在"汇率维护"里也配置了汇率，但汇率字段一直是0/空）——
+        // 根因是上面这条 canEditExchangeRate() 的 ADMIN-only 限制：Excel 导入是异步线程，
+        // SecurityContext 是空的，RoleUtil.canEditExchangeRate() 恒为 false；非 ADMIN 的
+        // 项目负责人/执行人员通过"编辑"表单保存同样进不了这个分支——两种情况下 exchangeRate
+        // 都会一直停留在 null/0，此前这里没有任何兜底，只能靠"重新计算利润"手动按钮才会修好。
+        // 这里补上跟 updateStatus()/recomputeAllProfits() 同一套自动回填逻辑：只在汇率缺失/
+        // 异常且发布时间所在月份已经配置了汇率时才回填，不影响 ADMIN 已经手动填对的值。
+        fillMissingExchangeRateFromCache(tracking);
 
         // 其他外部成本：按角色 + 是否本人负责/执行 决定能不能改
         // （不满足条件时忽略请求体里的值，保留数据库原值，不报错，简单地"改了也不生效"）
@@ -1018,20 +1027,11 @@ public class CollaborationTrackingService {
         // ADMIN 账号走状态流转把进度推进到"已发布（未结算）"、顺手在这个弹窗里填了视频发布
         // 时间后，这条记录的汇率仍然是0/空，公司利润（人民币）跟着一起是0，得等有人手动点
         // "重新计算利润"才会修好。现在改成：只要这条记录汇率缺失/非法、且发布时间所在月份
-        // 已经在"汇率维护"里配置了汇率，这里就当场自动回填；并且不管这次操作有没有牵涉发布
+        // 已经在"汇率维护"里配置了汇率，这里就当场自动回填（见 fillMissingExchangeRateFromCache()，
+        // doSave()/recomputeAllProfits() 共用同一份逻辑）；并且不管这次操作有没有牵涉发布
         // 信息，每次状态流转都重新跑一遍利润计算，跟 doSave()"每次保存都重新算一遍"保持一致，
         // 不再依赖"重新计算利润"这个手动按钮兜底
-        boolean exchangeRateInvalid = t.getExchangeRate() == null
-                || t.getExchangeRate().compareTo(java.math.BigDecimal.ZERO) <= 0;
-        if (exchangeRateInvalid && t.getPublishDate() != null) {
-            ExchangeRateCache cache = exchangeRateCacheRepo
-                    .findByYearMonth(new SimpleDateFormat("yyyyMM").format(t.getPublishDate()))
-                    .orElse(null);
-            if (cache != null && cache.getUsdToCny() != null
-                    && cache.getUsdToCny().compareTo(java.math.BigDecimal.ZERO) > 0) {
-                t.setExchangeRate(cache.getUsdToCny());
-            }
-        }
+        fillMissingExchangeRateFromCache(t);
         profitCalculator.calculate(t);
 
         // 进度真正变化时才刷新"进度最近更新时间"（供进度滞留提醒批次用），原样提交回去
@@ -1614,7 +1614,6 @@ public class CollaborationTrackingService {
     @Transactional
     public String recomputeAllProfits() {
         List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
-        SimpleDateFormat monthFormat = new SimpleDateFormat("yyyyMM");
 
         // ---- 内部执行成本：按费率梯度分组重新计算，必须先算完再进下面的利润重算循环，
         // 这样 profitCalculator.calculate() 才能用上更新后的金额。分组/逐组重算的逻辑抽到了
@@ -1642,10 +1641,7 @@ public class CollaborationTrackingService {
             boolean rateInvalid = t.getPublishDate() != null
                     && (t.getExchangeRate() == null || t.getExchangeRate().compareTo(java.math.BigDecimal.ZERO) <= 0);
             if (rateInvalid) {
-                ExchangeRateCache cache = exchangeRateCacheRepo.findByYearMonth(monthFormat.format(t.getPublishDate())).orElse(null);
-                if (cache != null && cache.getUsdToCny() != null
-                        && cache.getUsdToCny().compareTo(java.math.BigDecimal.ZERO) > 0) {
-                    t.setExchangeRate(cache.getUsdToCny());
+                if (fillMissingExchangeRateFromCache(t)) {
                     fixedExchangeRateCount++;
                 } else {
                     stillMissingExchangeRateCount++;
@@ -1714,6 +1710,32 @@ public class CollaborationTrackingService {
         if (before == null && after == null) return false;
         if (before == null || after == null) return true;
         return before.compareTo(after) != 0;
+    }
+
+    /**
+     * 汇率缺失/异常（null 或 &lt;=0）时，按发布时间所在月份从"汇率维护"（ExchangeRateCache）
+     * 自动回填——doSave()/updateStatus()/recomputeAllProfits() 三处共用（2026-08 抽取，此前
+     * 三处各自维护一份几乎一样的代码）。只在有发布时间、且该月份已经配置了有效汇率
+     * （非null、大于0）时才回填；发布时间为空（还没发布，没有"该用哪个月份汇率"这回事）或
+     * 汇率本身已经是合法值时，直接跳过，不做任何改动。
+     *
+     * 返回 true 表示这次真的回填了一个新值（原来缺失/异常，现在补上了），调用方可选用这个
+     * 返回值统计"修复了几条"（如 recomputeAllProfits()），也可以完全不管返回值、单纯当兜底
+     * 调用（如 doSave()/updateStatus()）。
+     */
+    private boolean fillMissingExchangeRateFromCache(CollaborationTracking t) {
+        boolean exchangeRateInvalid = t.getExchangeRate() == null
+                || t.getExchangeRate().compareTo(java.math.BigDecimal.ZERO) <= 0;
+        if (!exchangeRateInvalid || t.getPublishDate() == null) return false;
+        ExchangeRateCache cache = exchangeRateCacheRepo
+                .findByYearMonth(new SimpleDateFormat("yyyyMM").format(t.getPublishDate()))
+                .orElse(null);
+        if (cache != null && cache.getUsdToCny() != null
+                && cache.getUsdToCny().compareTo(java.math.BigDecimal.ZERO) > 0) {
+            t.setExchangeRate(cache.getUsdToCny());
+            return true;
+        }
+        return false;
     }
 
     /**
