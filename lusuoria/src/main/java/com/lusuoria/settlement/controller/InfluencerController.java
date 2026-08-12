@@ -260,12 +260,19 @@ public class InfluencerController {
             inf = new Influencer();
             inf.setIsDeleted(false);
         }
+        // 2026-08 性能修复：domainSyncService.sync() 会把 influencers 整表扫一遍算"哪些领域
+        // 还在用"，之前不管这次保存有没有改"所属领域"都无条件跑一遍——红人表越大，"保存"按钮
+        // 就越慢，是这个接口卡顿的主因。这条记录的所属领域没变时，sync() 必然是个空操作（没有
+        // 领域被新增，也不会有领域因为这条记录而失去最后一个使用者），所以只在真的变了的时候
+        // 才跑，下面 setDomains 之后再比较新旧值
+        String domainsBeforeSave = inf.getDomains();
 
         inf.setInfluencerType(req.getInfluencerType());
         inf.setAccountName(req.getAccountName());
         inf.setCountryMarket(req.getCountryMarket());
         inf.setPlatform(req.getPlatform());
-        inf.setDomains(listToStr(req.getDomains(), "\n"));
+        String domainsAfterSave = listToStr(req.getDomains(), "\n");
+        inf.setDomains(domainsAfterSave);
         inf.setFollowerCount(req.getFollowerCount());
         inf.setLinks(listToStr(req.getLinks(), "\n"));
         inf.setEmail(req.getEmail());
@@ -336,7 +343,10 @@ public class InfluencerController {
             // else：已经是有效关联，不用动
         }
 
-        domainSyncService.sync();
+        // 所属领域没变就跳过整表扫描，见上面 domainsBeforeSave 处的说明
+        if (!java.util.Objects.equals(domainsBeforeSave, domainsAfterSave)) {
+            domainSyncService.sync();
+        }
         influencerCache.refresh();
         attachBrandTeamPairs(Collections.singletonList(saved));
         return ApiResponse.success(saved);
@@ -364,7 +374,11 @@ public class InfluencerController {
         }
         inf.setIsDeleted(true);
         influencerRepo.save(inf);
-        domainSyncService.sync();
+        // 只有这条被删的记录本身带了所属领域时，才可能有领域因此失去最后一个使用者，
+        // 才需要跑整表扫描；没有领域字段的记录删除必然是空操作
+        if (inf.getDomains() != null && !inf.getDomains().trim().isEmpty()) {
+            domainSyncService.sync();
+        }
         influencerCache.refresh();
         return ApiResponse.success();
     }
