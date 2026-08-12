@@ -394,12 +394,14 @@ public class PayslipService {
                 .getOrDefault(managerId, Collections.emptyMap())
                 .getOrDefault(executorId, Collections.emptyList());
         List<PayslipDimensionRow> rows = buildDimensionRowsForOrders(ordersForPair);
-        sortExecutorRowsByTier(managerId, executorId, rows);
+        Map<String, List<ExecutorPayRateTier>> tiersByType =
+                fetchTiersByExecutorAndType(managerId).getOrDefault(executorId, Collections.emptyMap());
+        sortExecutorRowsByTier(tiersByType, rows);
         for (PayslipDimensionRow r : rows) {
             r.setExecutorId(executorId);
             r.setExecutorName(employeeNameOf(executorId));
         }
-        rows = withTierSummaries(managerId, executorId, rows);
+        rows = withTierSummaries(tiersByType, rows);
 
         ExecutorWageConfirmation confirmation = wageConfirmationRepo
                 .findByManagerIdAndExecutorIdAndYearMonthAndIsDeletedFalse(managerId, executorId, yearMonth)
@@ -906,6 +908,9 @@ public class PayslipService {
                                                        Map<Long, ExecutorWageConfirmation> confirmationsForThisManager) {
         List<Long> execIds = new ArrayList<>(execOrdersUnderPm.keySet());
         execIds.sort(Comparator.comparing(this::employeeNameOf, Comparator.nullsLast(Comparator.naturalOrder())));
+        // 这个负责人名下所有执行人员的费率梯度一次查完，下面循环里按 execId 从内存取，不再
+        // 每个执行人员各查一次库（见 fetchTiersByExecutorAndType 方法注释）
+        Map<Long, Map<String, List<ExecutorPayRateTier>>> tiersByExecThenType = fetchTiersByExecutorAndType(managerId);
 
         List<PayslipDimensionRow> displayRows = new ArrayList<>();
         List<PayslipDimensionRow> allDetail = new ArrayList<>();
@@ -919,13 +924,15 @@ public class PayslipService {
             if (execConfirmed) {
                 groupRows = readExecutorWageSnapshotRows(confirmation);
             } else {
+                Map<String, List<ExecutorPayRateTier>> tiersByType =
+                        tiersByExecThenType.getOrDefault(execId, Collections.emptyMap());
                 groupRows = buildDimensionRowsForOrders(execOrdersUnderPm.get(execId));
-                sortExecutorRowsByTier(managerId, execId, groupRows);
+                sortExecutorRowsByTier(tiersByType, groupRows);
                 for (PayslipDimensionRow r : groupRows) {
                     r.setExecutorId(execId);
                     r.setExecutorName(execName);
                 }
-                groupRows = withTierSummaries(managerId, execId, groupRows);
+                groupRows = withTierSummaries(tiersByType, groupRows);
             }
             PayslipDimensionRow subtotal = sumRowsAsSubtotal(groupRows);
             subtotal.setBrandName(execName + " 小计");
@@ -956,6 +963,10 @@ public class PayslipService {
             if (e.getValue().containsKey(execId)) pmIds.add(e.getKey());
         }
         pmIds.sort(Comparator.comparing(this::employeeNameOf, Comparator.nullsLast(Comparator.naturalOrder())));
+        // 这个执行人员涉及的所有项目负责人的费率梯度一次性批量查完，下面循环里按
+        // (pmId,execId) 从内存取，不再每个项目负责人各查一次库（见 fetchTiersByManagerThenExecutorAndType）
+        Map<Long, Map<Long, Map<String, List<ExecutorPayRateTier>>>> tiersByManagerThenExecThenType =
+                fetchTiersByManagerThenExecutorAndType(pmIds);
 
         List<PayslipDimensionRow> displayRows = new ArrayList<>();
         List<PayslipDimensionRow> allDetail = new ArrayList<>();
@@ -972,9 +983,11 @@ public class PayslipService {
                 groupRows = readExecutorWageSnapshotRows(confirmation);
             } else {
                 List<CollaborationTracking> ordersForPair = byPmThenExec.get(pmId).get(execId);
+                Map<String, List<ExecutorPayRateTier>> tiersByType = tiersByManagerThenExecThenType
+                        .getOrDefault(pmId, Collections.emptyMap()).getOrDefault(execId, Collections.emptyMap());
                 groupRows = buildDimensionRowsForOrders(ordersForPair);
-                sortExecutorRowsByTier(pmId, execId, groupRows);
-                groupRows = withTierSummaries(pmId, execId, groupRows);
+                sortExecutorRowsByTier(tiersByType, groupRows);
+                groupRows = withTierSummaries(tiersByType, groupRows);
             }
             for (PayslipDimensionRow r : groupRows) r.setProjectManagerName(pmName);
 
@@ -1014,26 +1027,53 @@ public class PayslipService {
      * 视频数也相同时排序稳定）。同一档位配置只有0/1档，即"每条固定价"或没配置梯度的视频类型，走
      * tierRankForUnitPrice 兜底逻辑，效果等同于不分档、组内直接按视频数倒序。
      */
-    private void sortExecutorRowsByTier(Long managerId, Long executorId, List<PayslipDimensionRow> rows) {
-        Set<String> videoTypeKeys = new LinkedHashSet<>();
-        for (PayslipDimensionRow r : rows) {
-            if (r.getVideoType() != null) videoTypeKeys.add(r.getVideoType());
+    /** 单个负责人名下配置的全部执行人员费率梯度一次查完，按 executorId→videoType 分组存进内存，
+     *  供 {@link #sortExecutorRowsByTier}/{@link #withTierSummaries} 查表用，不再各自查库。 */
+    private Map<Long, Map<String, List<ExecutorPayRateTier>>> fetchTiersByExecutorAndType(Long managerId) {
+        Map<Long, Map<String, List<ExecutorPayRateTier>>> result = new HashMap<>();
+        for (ExecutorPayRateTier t : executorPayRateTierRepo.findByManagerIdAndIsDeletedFalseOrderByMinCountAsc(managerId)) {
+            result.computeIfAbsent(t.getExecutorId(), k -> new HashMap<>())
+                    .computeIfAbsent(t.getVideoType().name(), k -> new ArrayList<>())
+                    .add(t);
         }
-        Map<String, List<ExecutorPayRateTier>> tiersByType = new HashMap<>();
-        for (String key : videoTypeKeys) {
-            try {
-                VideoType vt = VideoType.valueOf(key);
-                tiersByType.put(key, executorPayRateTierRepo
-                        .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(managerId, executorId, vt));
-            } catch (IllegalArgumentException e) {
-                // key 是行数据自己带的 videoType 字段值，理论上必然是合法的 VideoType 枚举名——
-                // 走到这里说明数据有问题（比如枚举值改名/废弃后遗留的旧数据），之前静默当作
-                // "没配置梯度"处理，日志里完全查不到，这里记一下方便定位是哪条数据
-                log.warn("排序时 VideoType.valueOf 失败，未知视频类型：{}，managerId={}，executorId={}",
-                        key, managerId, executorId);
-                tiersByType.put(key, Collections.emptyList());
+        return result;
+    }
+
+    /** 一批负责人（执行人员视角跨多个项目负责人时用）版本，按 managerId→executorId→videoType
+     *  分组；findByManagerIdInAndIsDeletedFalse 本身不带排序，这里补上按 minCount 升序，
+     *  跟上面单负责人版本（数据库层 OrderByMinCountAsc）的顺序保持一致。 */
+    private Map<Long, Map<Long, Map<String, List<ExecutorPayRateTier>>>> fetchTiersByManagerThenExecutorAndType(
+            Collection<Long> managerIds) {
+        Map<Long, Map<Long, Map<String, List<ExecutorPayRateTier>>>> result = new HashMap<>();
+        for (ExecutorPayRateTier t : executorPayRateTierRepo.findByManagerIdInAndIsDeletedFalse(managerIds)) {
+            result.computeIfAbsent(t.getManagerId(), k -> new HashMap<>())
+                    .computeIfAbsent(t.getExecutorId(), k -> new HashMap<>())
+                    .computeIfAbsent(t.getVideoType().name(), k -> new ArrayList<>())
+                    .add(t);
+        }
+        for (Map<Long, Map<String, List<ExecutorPayRateTier>>> byExec : result.values()) {
+            for (Map<String, List<ExecutorPayRateTier>> byType : byExec.values()) {
+                for (List<ExecutorPayRateTier> tiers : byType.values()) {
+                    tiers.sort(Comparator.comparing(ExecutorPayRateTier::getMinCount));
+                }
             }
         }
+        return result;
+    }
+
+    /**
+     * 2026-08-13 性能修复：这个方法（以及紧跟着调用的 {@link #withTierSummaries}）之前各自独立
+     * 按 (managerId,executorId,videoType) 现查一次 executorPayRateTierRepo——同一对 (manager,
+     * executor) 会被查两次（排序一次、判断要不要加梯度小结行再查一次），而且这整套逻辑在工资单
+     * 列表页（{@link #listForMonth}）里每个项目负责人名下的每个执行人员都要走一遍：负责人越多、
+     * 名下执行人员/涉及的视频类型越多，查询次数就跟着线性甚至更快地增长——跟 InfluencerController
+     * 那次 DomainSyncService 问题不是同一段代码，但同一类"单看一次调用不贵，整页所有人加起来就
+     * 很贵"的 N+1，是 Shawn 反馈"工资单页面刷新很久"的另一个成因。现在改成调用方（
+     * {@link #fetchTiersByExecutorAndType}/{@link #fetchTiersByManagerThenExecutorAndType}）
+     * 按 managerId（或一批 managerId）一次性把梯度配置整个查出来传进来，这两个方法都只做内存
+     * 里的 Map 查找，不再各自查库。
+     */
+    private void sortExecutorRowsByTier(Map<String, List<ExecutorPayRateTier>> tiersByType, List<PayslipDimensionRow> rows) {
         Map<PayslipDimensionRow, Integer> tierRankByRow = new IdentityHashMap<>();
         for (PayslipDimensionRow r : rows) {
             List<ExecutorPayRateTier> tiers = tiersByType.getOrDefault(r.getVideoType(), Collections.emptyList());
@@ -1086,39 +1126,29 @@ public class PayslipService {
      * 漏掉也不会重复。传入的 rows 必须已经按 sortExecutorRowsByTier 排过序（同一视频类型的行
      * 是连续的一段），否则这里按"视频类型变化"切分段落的逻辑会不对。
      */
-    private List<PayslipDimensionRow> withTierSummaries(Long managerId, Long executorId, List<PayslipDimensionRow> sortedRows) {
+    private List<PayslipDimensionRow> withTierSummaries(Map<String, List<ExecutorPayRateTier>> tiersByType,
+                                                          List<PayslipDimensionRow> sortedRows) {
         if (sortedRows.isEmpty()) return sortedRows;
         List<PayslipDimensionRow> result = new ArrayList<>();
         String currentType = null;
         List<PayslipDimensionRow> currentTypeRows = new ArrayList<>();
         for (PayslipDimensionRow row : sortedRows) {
             if (!Objects.equals(row.getVideoType(), currentType)) {
-                appendTierSummaryIfNeeded(managerId, executorId, currentType, currentTypeRows, result);
+                appendTierSummaryIfNeeded(tiersByType, currentType, currentTypeRows, result);
                 currentType = row.getVideoType();
                 currentTypeRows = new ArrayList<>();
             }
             result.add(row);
             currentTypeRows.add(row);
         }
-        appendTierSummaryIfNeeded(managerId, executorId, currentType, currentTypeRows, result);
+        appendTierSummaryIfNeeded(tiersByType, currentType, currentTypeRows, result);
         return result;
     }
 
-    private void appendTierSummaryIfNeeded(Long managerId, Long executorId, String videoTypeKey,
+    private void appendTierSummaryIfNeeded(Map<String, List<ExecutorPayRateTier>> tiersByType, String videoTypeKey,
                                             List<PayslipDimensionRow> rowsForType, List<PayslipDimensionRow> result) {
         if (videoTypeKey == null || rowsForType.isEmpty()) return;
-        VideoType videoType;
-        try {
-            videoType = VideoType.valueOf(videoTypeKey);
-        } catch (IllegalArgumentException e) {
-            // 同 sortExecutorRowsByTier 的说明：videoTypeKey 理论上必然是合法枚举名，
-            // 走到这里说明数据有问题，之前静默跳过整段"梯度小计行"，日志里查不到痕迹
-            log.warn("追加梯度小计行时 VideoType.valueOf 失败，未知视频类型：{}，managerId={}，executorId={}",
-                    videoTypeKey, managerId, executorId);
-            return;
-        }
-        List<ExecutorPayRateTier> tiers = executorPayRateTierRepo
-                .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(managerId, executorId, videoType);
+        List<ExecutorPayRateTier> tiers = tiersByType.getOrDefault(videoTypeKey, Collections.emptyList());
         // 只有1档=每条固定价，不存在"跨档"的问题，不需要这行说明
         if (tiers.size() <= 1) return;
 
