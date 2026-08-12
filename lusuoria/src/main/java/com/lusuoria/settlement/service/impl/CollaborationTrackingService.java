@@ -1806,6 +1806,11 @@ public class CollaborationTrackingService {
      * 执行人员没有编辑汇率的权限（RoleUtil.canEditExchangeRate() 仅 ADMIN），遇到汇率缺失/异常
      * 的记录只统计条数、提示联系管理层处理，不擅自回填。
      *
+     * 2026-08-12 起，返回给前端的提示文案里不出现任何"利润"字样（Shawn 明确要求）——项目负责人/
+     * 执行人员本来就看不到毛利/可分配利润/提成/公司利润这些字段（ProjectFieldVisibility），
+     * 提示里提这些他们看不到的东西没有意义；汇率异常这类情况也只报"汇率缺失或异常"这个原因
+     * 本身，不牵扯"公司利润不准确"这种利润相关的措辞。字段本身仍然照常刷新，只是不写进提示文案。
+     *
      * @param employeeRole 当前登录账号关联的员工角色（EmployeeRoleUtil.getCurrentEmployeeRole()），
      *                      必须是"管理层"/"项目负责人"/"执行人员"之一，否则视为越权直接拒绝——
      *                      前端按钮虽然只对这三种角色展示，但这里必须服务端再校验一遍，不能只靠
@@ -1844,26 +1849,14 @@ public class CollaborationTrackingService {
             return "没有找到符合条件的记录，无需计算";
         }
 
-        // 执行成本改完之后，顺带刷新这批记录的利润相关字段——见方法注释
+        // 执行成本改完之后，顺带刷新这批记录的下游字段（含利润相关字段，但不写进下面的提示
+        // 文案——见方法注释）
         int exchangeRateMissingCount = 0;
-        int actuallyChangedProfitCount = 0;
         for (CollaborationTracking t : result.inScopeRecords) {
             boolean rateInvalid = t.getExchangeRate() == null
                     || t.getExchangeRate().compareTo(java.math.BigDecimal.ZERO) <= 0;
             if (rateInvalid) exchangeRateMissingCount++;
-
-            java.math.BigDecimal beforeGross = t.getGrossProfit();
-            java.math.BigDecimal beforeDistributable = t.getDistributableProfit();
-            java.math.BigDecimal beforeCommission = t.getCommissionAmount();
-            java.math.BigDecimal beforeCompanyProfit = t.getCompanyNetProfit();
-            java.math.BigDecimal beforeRmbRevenue = t.getRmbRevenue();
             profitCalculator.calculate(t);
-            boolean profitChanged = bigDecimalChanged(beforeGross, t.getGrossProfit())
-                    || bigDecimalChanged(beforeDistributable, t.getDistributableProfit())
-                    || bigDecimalChanged(beforeCommission, t.getCommissionAmount())
-                    || bigDecimalChanged(beforeCompanyProfit, t.getCompanyNetProfit())
-                    || bigDecimalChanged(beforeRmbRevenue, t.getRmbRevenue());
-            if (profitChanged) actuallyChangedProfitCount++;
         }
         trackingRepo.saveAll(result.inScopeRecords);
 
@@ -1882,11 +1875,9 @@ public class CollaborationTrackingService {
                .append(String.join("、", result.noRateSkippedCombos))
                .append("，请联系管理层配置后再重新计算");
         }
-        msg.append("\n项目毛利/可分配利润/提成/公司利润等利润相关字段已同步刷新，其中 ")
-           .append(actuallyChangedProfitCount).append(" 条数值发生了变化");
         if (exchangeRateMissingCount > 0) {
             msg.append("；另有 ").append(exchangeRateMissingCount)
-               .append(" 条记录汇率缺失或异常，公司利润（人民币）暂时不准确，请联系管理层在\"汇率维护\"里补充配置后重新计算");
+               .append(" 条记录汇率缺失或异常，请联系管理层在\"汇率维护\"里补充配置后重新计算");
         }
         return msg.toString();
     }
