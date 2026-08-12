@@ -46,6 +46,7 @@ public class InfluencerController {
     @Autowired private InfluencerBrandTeamRepository influencerBrandTeamRepo;
     @Autowired private InfluencerExcelHandler excelHandler;
     @Autowired private CollaborationTrackingRepository trackingRepo;
+    @Autowired private com.lusuoria.settlement.repository.InfluencerRequirementRepository requirementRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private DomainCache domainCache;
@@ -332,6 +333,16 @@ public class InfluencerController {
     public ApiResponse<Void> delete(@PathVariable Long id) {
         Influencer inf = influencerRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("红人不存在"));
+        // 删除前拦截校验（2026-08 新增）：这个红人名下只要还有未软删的红人合作跟踪/红人需求
+        // 记录（不分进度/状态），就不允许删除，避免这些记录的 influencerId 变成悬空引用——
+        // 之前这里没有任何校验，删了以后关联记录上的红人名字会因为缓存/查询按
+        // isDeleted=false 过滤而"消失"，用户毫无感知
+        long trackingCount = trackingRepo.countByInfluencerIdAndIsDeletedFalse(id);
+        long requirementCount = requirementRepo.countByInfluencerIdAndIsDeletedFalse(id);
+        if (trackingCount > 0 || requirementCount > 0) {
+            throw new RuntimeException("该红人名下还有 " + trackingCount + " 条红人合作跟踪记录、"
+                    + requirementCount + " 条红人需求记录未删除，无法删除，请先处理这些关联记录");
+        }
         inf.setIsDeleted(true);
         influencerRepo.save(inf);
         domainSyncService.sync();

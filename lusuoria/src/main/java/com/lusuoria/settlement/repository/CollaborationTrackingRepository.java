@@ -22,6 +22,14 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     Optional<CollaborationTracking> findByIdAndIsDeletedFalse(Long id);
 
     /**
+     * 红人管理删除红人前的拦截校验专用（2026-08 新增）：只要这个红人名下还有一条未删除的
+     * 跟踪记录（不分进度/状态，进行中还是已完结都算），就不允许删除该红人——否则这条跟踪
+     * 记录的 influencerId 会变成指向一个已软删红人的悬空引用，后续查询按 isDeleted=false
+     * 过滤时该红人名字就会从这条记录上"消失"。
+     */
+    long countByInfluencerIdAndIsDeletedFalse(Long influencerId);
+
+    /**
      * Excel 批量导入优化专用：一次性查出这批红人名下所有未删除的跟踪记录，
      * 在内存里做查重匹配，避免导入循环里每一行都单独查一次数据库。
      */

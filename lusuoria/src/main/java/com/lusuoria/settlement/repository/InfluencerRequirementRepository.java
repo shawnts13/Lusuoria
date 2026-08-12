@@ -22,6 +22,13 @@ public interface InfluencerRequirementRepository extends JpaRepository<Influence
     Optional<InfluencerRequirement> findByInternalRequirementNoAndIsDeletedFalse(String internalRequirementNo);
 
     /**
+     * 红人管理删除红人前的拦截校验专用（2026-08 新增），道理跟 CollaborationTrackingRepository
+     * 的 countByInfluencerIdAndIsDeletedFalse 一样：这个红人名下只要还有一条未删除的需求记录
+     * 就不允许删除，避免留下指向已软删红人的悬空 influencerId。
+     */
+    long countByInfluencerIdAndIsDeletedFalse(Long influencerId);
+
+    /**
      * 跟 findByInternalRequirementNoAndIsDeletedFalse 一样，但加悲观写锁（2026-08 新增）。
      * 专供 InfluencerRequirementService.validateTrackingLinkage() 校验"需求条目剩余名额"时使用——
      * 原来那里是"先查一遍已占用数，再跟 videoCount 比较"，中间没有锁，两个人几乎同时给同一个
