@@ -117,6 +117,15 @@
             <version>1.23.0</version>
         </dependency>
 
+        <!-- 数据库每日备份zip加密（2026-08 新增）：java.util.zip 内置API不支持加密压缩包，
+             用 zip4j 生成带密码的 zip（AES-256加密），Windows/Mac自带解压工具、7-Zip/WinRAR
+             都能识别并弹密码框 -->
+        <dependency>
+            <groupId>net.lingala.zip4j</groupId>
+            <artifactId>zip4j</artifactId>
+            <version>2.11.5</version>
+        </dependency>
+
         <!-- Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

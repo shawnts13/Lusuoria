@@ -56,6 +56,9 @@ backup:
   google-drive:
     # 目标 Google Drive 文件夹 id（来自 https://drive.google.com/drive/folders/<这一段>）
     folder-id: ${GOOGLE_DRIVE_BACKUP_FOLDER_ID:1KNz3r_SDDxkupki7i2b6zXgL_CDdZjAp}
+  # 备份zip的解压密码（2026-08 新增，Shawn 指定）：可用 DB_BACKUP_ZIP_PASSWORD 环境变量
+  # 覆盖轮换，不设置也有默认值直接可用
+  zip-password: ${DB_BACKUP_ZIP_PASSWORD:vicky0903!}
   google-oauth:
     client-id: ${GOOGLE_OAUTH_CLIENT_ID:}
     client-secret: ${GOOGLE_OAUTH_CLIENT_SECRET:}

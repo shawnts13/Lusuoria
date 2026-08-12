@@ -6,6 +6,10 @@ import com.google.api.services.drive.model.File;
 import com.google.api.services.drive.model.FileList;
 import com.lusuoria.settlement.entity.DbBackupAlert;
 import com.lusuoria.settlement.repository.DbBackupAlertRepository;
+import net.lingala.zip4j.ZipFile;
+import net.lingala.zip4j.model.ZipParameters;
+import net.lingala.zip4j.model.enums.AesKeyStrength;
+import net.lingala.zip4j.model.enums.EncryptionMethod;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,7 +21,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -31,14 +34,16 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 
 /**
  * 数据库每日全量备份（2026-07-29 新增）：每天北京时间凌晨3点半跑一次 pg_dump 全量备份，压缩成
  * zip，上传到 Google Drive 指定文件夹，只保留最近5份（超出的旧文件删掉），失败了在"待处理"
  * 模块生成一条提醒（见 {@link DbBackupAlert}），提供重试；一旦有一次备份成功（不管是定时任务
  * 自己第二天又成功了，还是有人手动点了重试成功），提醒就会消失。
+ *
+ * zip压缩包带密码（2026-08 新增，见 {@link #zipPassword}）：备份内容是全量数据库导出，Google
+ * Drive 文件夹本身权限管得再严，链接一旦泄露/误分享出去谁都能直接看到全部数据，加密码多一层
+ * 保护——解压时 Windows/Mac 自带工具、7-Zip/WinRAR 都会弹密码输入框。
  *
  * pg_dump 走的是跟应用本身一样的 Supabase 连接串（见 application.yml 的
  * spring.datasource.url/username/password），单独开一个进程/连接，不占用 HikariCP 连接池
@@ -59,6 +64,7 @@ public class DbBackupService {
     @Value("${spring.datasource.username}") private String dbUsername;
     @Value("${spring.datasource.password}") private String dbPassword;
     @Value("${backup.google-drive.folder-id}") private String driveFolderId;
+    @Value("${backup.zip-password}") private String zipPassword;
 
     @Autowired private GoogleDriveAuthService googleDriveAuthService;
     @Autowired private DbBackupAlertRepository alertRepo;
@@ -142,12 +148,17 @@ public class DbBackupService {
         return sb.toString();
     }
 
+    /** 生成带密码的 zip（AES-256加密，见 {@link #zipPassword}）——2026-08 起改用 zip4j，
+     * 内置的 java.util.zip 没有加密能力，加不了密码 */
     private void zipFile(Path source, Path zipTarget) throws IOException {
-        try (OutputStream fos = Files.newOutputStream(zipTarget);
-             ZipOutputStream zos = new ZipOutputStream(fos)) {
-            zos.putNextEntry(new ZipEntry(source.getFileName().toString()));
-            Files.copy(source, zos);
-            zos.closeEntry();
+        ZipParameters params = new ZipParameters();
+        params.setEncryptFiles(true);
+        params.setEncryptionMethod(EncryptionMethod.AES);
+        params.setAesKeyStrength(AesKeyStrength.KEY_STRENGTH_256);
+        try (ZipFile zip = new ZipFile(zipTarget.toFile(), zipPassword.toCharArray())) {
+            zip.addFile(source.toFile(), params);
+        } catch (net.lingala.zip4j.exception.ZipException e) {
+            throw new IOException("生成加密备份zip失败：" + e.getMessage(), e);
         }
     }
 
