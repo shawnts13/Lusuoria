@@ -100,6 +100,17 @@ public class CollaborationTrackingService {
      *  记录才会撞上，重试一两次基本必中，留够余量设成 3 次 */
     private static final int PROJECT_NO_CONFLICT_MAX_RETRY = 3;
 
+    /** "状态流转"到这8个前期制作流程状态（待客户出brief~已发布未结算，即"已加入客户未结算
+     * 列表"/"客户已结算"/"折损"以外的全部状态）时，同步提供"客户方的项目订单"输入框、可选填写
+     * （2026-08 新增，Shawn 要求：拿到订单号就顺手登记，不用等到"已加入客户未结算列表"那一步
+     * 才能填）。跟下面 JOINED_CLIENT_UNSETTLED_LIST/SETTLED 那条"按品牌方配置强制要求填写"的
+     * 规则是两回事——这里永远不强制、永远不会因为空值报错。 */
+    private static final Set<CollaborationProgress> EARLY_STAGE_CLIENT_ORDER_ID_PROGRESSES = java.util.EnumSet.of(
+            CollaborationProgress.PENDING_CLIENT_BRIEF, CollaborationProgress.CONTRACT_SENT,
+            CollaborationProgress.INFLUENCER_ORDERED, CollaborationProgress.SHOOTING_GUIDE_SENT,
+            CollaborationProgress.PENDING_DRAFT, CollaborationProgress.PENDING_REVISION,
+            CollaborationProgress.PENDING_PUBLISH, CollaborationProgress.PUBLISHED_UNSETTLED);
+
     /** 这次 DataIntegrityViolationException 是不是 internal_project_no 唯一约束冲突导致的
      *  （ProjectNoAllocator.allocate() 的并发竞态，见其类注释）——只有这种情况才值得自动重试，
      *  别的唯一约束冲突（比如"采买旧视频原链接"查重）重试也没用，应该照样把错误抛给用户 */
@@ -822,10 +833,14 @@ public class CollaborationTrackingService {
         // （已发布未结算/已加入客户未结算列表/客户已结算）之间流转，不能碰前期制作流程的状态
         // 或"折损"。删除/进度倒退这两个操作走 assertOwnerOrAdmin，财务本来就不是记录的项目
         // 负责人/执行人员，天然会被那边挡掉，这里不用重复处理。
+        // 2026-08 起：项目负责人/执行人员/IT后勤如果账号也是 AUDITOR 档（比如只给只读+状态
+        // 流转、没有常规写权限），同样放行——跟下面 requireFinanceForSettlementProgress() 放宽
+        // 的是同一条业务规则，见 EmployeeRoleUtil.canSetSettlementProgressExtraRole()。
         boolean isAdminOrStaff = "ADMIN".equals(RoleUtil.getCurrentRole()) || "STAFF".equals(RoleUtil.getCurrentRole());
         if (!isAdminOrStaff) {
             String currentEmployeeRole = employeeRoleUtil.getCurrentEmployeeRole();
-            if (!"财务".equals(currentEmployeeRole) && !"管理层".equals(currentEmployeeRole)) {
+            boolean isFinanceOrManagement = "财务".equals(currentEmployeeRole) || "管理层".equals(currentEmployeeRole);
+            if (!isFinanceOrManagement && !employeeRoleUtil.canSetSettlementProgressExtraRole()) {
                 throw new RuntimeException("无权限执行此操作");
             }
             boolean withinSettlementZone = oldProgress != null && oldProgress.allowsPaymentProgress()
@@ -839,8 +854,10 @@ public class CollaborationTrackingService {
         // "已加入客户未结算列表"/"客户已结算"这两个状态只能由财务/管理层流转进入，
         // 普通员工（项目负责人/执行人员/基础权限）只能流转到"已发布（未结算）"和"折损"这两个终态。
         // 只拦截真正的变动——原样提交回去（值没变）不受影响，跟下面 isSystemManagedChange 的
-        // 放行原则保持一致
-        requireFinanceForSettlementProgress(oldProgress, newProgress, fieldVisibility.resolve().isFull());
+        // 放行原则保持一致。2026-08 起：项目负责人/执行人员/IT后勤也放行（Shawn 反馈），
+        // 见 EmployeeRoleUtil.canSetSettlementProgressExtraRole()
+        requireFinanceForSettlementProgress(oldProgress, newProgress,
+                fieldVisibility.resolve().isFull() || employeeRoleUtil.canSetSettlementProgressExtraRole());
 
         // 倒退检测：红人结款进度当前已有值 + 视频项目进度当前满足条件 + 这次要改成不满足条件的
         // 另一个状态 —— 这种改动需要走管理员审核，不能直接生效。这条路径本身已经是一个受控动作
@@ -957,6 +974,16 @@ public class CollaborationTrackingService {
             t.setNotes(req.getNotes().trim());
         }
 
+        // 客户方的项目订单——前期制作流程这8个状态（待客户出brief~已发布未结算）可选填写
+        // （2026-08 新增）：有值就更新，没值就保持原样，永远不校验/不报错，纯粹是"拿到订单号
+        // 就顺手登记"，跟下面"已加入客户未结算列表"/"客户已结算"那条强制要求的规则完全独立
+        if (EARLY_STAGE_CLIENT_ORDER_ID_PROGRESSES.contains(newProgress)) {
+            String earlyStageClientOrderId = req.getClientOrderId() != null ? req.getClientOrderId().trim() : null;
+            if (earlyStageClientOrderId != null && !earlyStageClientOrderId.isEmpty()) {
+                t.setClientOrderId(earlyStageClientOrderId);
+            }
+        }
+
         // 客户方的项目订单：品牌方涉及这个字段时（Brand.requiresClientOrderId()），流转到
         // "已加入客户未结算列表"/"客户已结算"需要同步填写，直接更新到这条记录上（2026-08 新增）。
         // 不看是不是真的发生了变化——已经在这两个状态之一的记录也可以借这个弹窗补填/改这个字段，
@@ -1048,23 +1075,27 @@ public class CollaborationTrackingService {
     /**
      * "已加入客户未结算列表"/"客户已结算"这两个状态只能由财务/管理层（ProjectFieldVisibility
      * 判定为 FULL 层级：ADMIN，或关联员工角色是"财务"/"管理层"的 STAFF 账号）流转进入；
-     * 其余角色（项目负责人/执行人员/基础权限的 STAFF）只能流转到"已发布（未结算）"和"折损"
-     * 这两个终态。只拦截真正把值改成这两个状态之一的操作，原样提交回去（值没变，比如
-     * Excel 重新导入同一批已经在这两个状态的记录）不受影响。
+     * 2026-08 起放宽：员工角色是"项目负责人"/"执行人员"/"IT后勤"的账号也放行（Shawn 反馈，
+     * 见 EmployeeRoleUtil.canSetSettlementProgressExtraRole()）。其余角色（基础权限的 STAFF）
+     * 只能流转到"已发布（未结算）"和"折损"这两个终态。只拦截真正把值改成这两个状态之一的
+     * 操作，原样提交回去（值没变，比如 Excel 重新导入同一批已经在这两个状态的记录）不受影响。
      *
-     * isFull 由调用方现场传入，不在这里自己调 fieldVisibility.resolve()——2026-08 修复：
-     * 之前在这里现场解析，doSave() 走 Excel 批量导入这条路径时是在没有 SecurityContext 的
-     * 异步线程（AsyncConfig.importTaskExecutor）里执行的，现场解析永远拿到匿名/空登录态，
-     * 被误判成最低权限档，导致哪怕是 ADMIN/管理层账号发起的导入，只要有一行目标进度是
-     * 这两个状态就会被无条件拒绝（"仅能由财务/管理层设置"）。updateStatus() 走的是正常的
-     * HTTP 请求线程，调用方现场取值就是准的，不受这个问题影响。
+     * canSetSettlementProgress（原参数名 isFull，2026-08 改名以反映放宽后的实际语义——不再
+     * 单纯是"财务字段可见性"）由调用方现场传入，不在这里自己调
+     * fieldVisibility.resolve()/employeeRoleUtil——2026-08 修复：之前在这里现场解析，
+     * doSave() 走 Excel 批量导入这条路径时是在没有 SecurityContext 的异步线程
+     * （AsyncConfig.importTaskExecutor）里执行的，现场解析永远拿到匿名/空登录态，被误判成
+     * 最低权限档，导致哪怕是 ADMIN/管理层账号发起的导入，只要有一行目标进度是这两个状态
+     * 就会被无条件拒绝（"仅能由财务/管理层设置"）。updateStatus() 走的是正常的 HTTP 请求
+     * 线程，调用方现场取值就是准的，不受这个问题影响。
      */
     private void requireFinanceForSettlementProgress(CollaborationProgress oldProgress, CollaborationProgress newProgress,
-                                                       boolean isFull) {
+                                                       boolean canSetSettlementProgress) {
         boolean isSettlementProgress = newProgress == CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST
                 || newProgress == CollaborationProgress.SETTLED;
-        if (isSettlementProgress && newProgress != oldProgress && !isFull) {
-            throw new RuntimeException("\"已加入客户未结算列表\"/\"客户已结算\"这两个状态仅能由财务/管理层设置");
+        if (isSettlementProgress && newProgress != oldProgress && !canSetSettlementProgress) {
+            throw new RuntimeException("\"已加入客户未结算列表\"/\"客户已结算\"这两个状态仅能由财务/管理层/"
+                    + "项目负责人/执行人员/IT后勤设置");
         }
     }
 

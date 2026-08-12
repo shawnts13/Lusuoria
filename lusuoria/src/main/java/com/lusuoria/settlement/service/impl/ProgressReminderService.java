@@ -95,10 +95,18 @@ public class ProgressReminderService {
     private static final Set<ReminderCategory> PROJECT_FLOW_CATEGORIES = EnumSet.of(
             ReminderCategory.PM_EXECUTOR_PROGRESS_STALL, ReminderCategory.FINANCE_PROGRESS_STALL,
             ReminderCategory.REQUIREMENT_INVOICE_OVERDUE, ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE);
-    /** 按具体项目负责人/涉及执行人员定向可见的类别（2026-07 新增 CONTRACT_EXPIRING_SOON） */
+    /** 按具体项目负责人/涉及执行人员定向可见的类别（2026-07 新增 CONTRACT_EXPIRING_SOON，
+     * 2026-08 新增 FINANCE_PROGRESS_STALL——注意 FINANCE_PROGRESS_STALL 这一类是"混合"的：
+     * 同一类别下既有 audienceEmployeeId=null 的"财务角色整体可见"卡片（见
+     * saveFinanceStallReminder），也有 audienceEmployeeId=具体项目负责人 的"按人定向"卡片
+     * （见 saveFinancePmStallReminder）——resolveVisibleReminders() 靠这里按人扫一遍时，
+     * audienceEmployeeId=null 的行天然不会被任何具体 employeeId 匹配上，不影响财务角色的
+     * 那份可见性（走的是另一条 FINANCE_ROLE 分支）；isViewingAsInvolvedExecutor() 已经对
+     * audienceEmployeeId=null 的情况做了短路，不会误把财务当成"顺带涉及的执行人员" */
     private static final Set<ReminderCategory> EMPLOYEE_OWNED_CATEGORIES = EnumSet.of(
             ReminderCategory.PM_EXECUTOR_PROGRESS_STALL, ReminderCategory.REQUIREMENT_INVOICE_OVERDUE,
-            ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE, ReminderCategory.CONTRACT_EXPIRING_SOON);
+            ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE, ReminderCategory.CONTRACT_EXPIRING_SOON,
+            ReminderCategory.FINANCE_PROGRESS_STALL);
     /** 合同相关提醒（法务全量可见，不按具体项目负责人过滤） */
     private static final Set<ReminderCategory> CONTRACT_CATEGORIES = EnumSet.of(
             ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE, ReminderCategory.CONTRACT_EXPIRING_SOON);
@@ -722,8 +730,8 @@ public class ProgressReminderService {
     }
 
     /**
-     * Part D（2026-07 新增，2026-07 修正两次）：财务视角，"已发布（未结算）"/"已加入客户未结算
-     * 列表"长时间没到"客户已结算"，阈值统一14工作日。目前只有1个财务，按角色整体可见
+     * Part D（2026-07 新增，2026-07 修正两次，2026-08 再次放宽）：财务视角，"已发布（未结算）"/
+     * "已加入客户未结算列表"长时间没到"客户已结算"，阈值统一14工作日。财务按角色整体可见
      * （audienceEmployeeRole="财务"），不做按人定向。
      *
      * 按"视频项目进度"和严重度两个维度分桶——两个阶段分开报数，不合并成一句笼统的提醒，
@@ -734,6 +742,15 @@ public class ProgressReminderService {
      * 1-3天档（橙），到了/超过阈值=0天或已超期档（红）；还剩8天以上不提醒。之前用的
      * OverdueUrgency 是"超出阈值之后才分档"（1-3/4-7/8+天超出），这里改用 ReminderUrgency
      * 本身就是"距离阈值还有几天"的语义，直接复用即可，不需要另外发明一套。
+     *
+     * 2026-08 新增（Shawn 反馈）：财务在推进这两个阶段时经常需要项目负责人/执行人员配合
+     * （比如催红人补invoice、核对信息），不能只有财务自己看得到——这里额外按项目负责人归类
+     * （跟 runPmExecutorProgressStall 同一套"按人定向"机制：ProgressReminder.audienceEmployeeId
+     * = 项目负责人，涉及的执行人员通过 involvedEmployeeIds 顺带获得可见性），生成一批独立的
+     * 定向卡片，跟财务角色整体可见的那批卡片并存、互不影响——不合并、不拆分角色整体可见的
+     * 那批（财务视角仍然按进度阶段分两张卡）。不提醒给"IT后勤"（IT后勤不是这条记录的负责人/
+     * 执行人员，没有直接关联）。两批卡片指向同一批底层记录，"标记已处理"按 (category,
+     * trackingId) 定位，两边共用同一份状态，不会各自为政。
      */
     private void runFinanceProgressStall(LocalDate today, Date batchDate) {
         List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
@@ -746,6 +763,14 @@ public class ProgressReminderService {
 
         Map<CollaborationProgress, Map<ReminderUrgency, List<ProgressReminderDetail>>> byProgressAndUrgency
                 = new EnumMap<>(CollaborationProgress.class);
+
+        // 按项目负责人归类的累加器（跟 addToOwnerBucket 是同一个思路，只是这里用 ReminderUrgency
+        // 而不是 OverdueUrgency，addToOwnerBucket 类型写死了 OverdueUrgency，不方便直接复用）
+        Map<String, List<ProgressReminderDetail>> byPmKey = new LinkedHashMap<>();
+        Map<String, Long> pmIdByKey = new HashMap<>();
+        Map<String, ReminderUrgency> pmUrgencyByKey = new HashMap<>();
+        Map<String, Set<Long>> pmInvolvedByKey = new HashMap<>();
+
         for (CollaborationTracking t : all) {
             if (!isFinanceStallCandidate(t.getProgress()) || t.getProgressChangedAt() == null) continue;
             int workdays = WorkdayUtil.countWeekdaysInclusive(toLocalDate(t.getProgressChangedAt()), today);
@@ -757,6 +782,23 @@ public class ProgressReminderService {
                     .computeIfAbsent(t.getProgress(), k -> new EnumMap<>(ReminderUrgency.class))
                     .computeIfAbsent(urgency, k -> new ArrayList<>())
                     .add(buildStallDetail(t, accountNameById, overdueDays, stallThreshold));
+
+            // 项目负责人定向的这份需要一份独立的 detail 对象——同一个 ProgressReminderDetail
+            // 实例不能同时属于两条不同的 ProgressReminder（reminderId 是落库时才回填的外键，
+            // 后写的一次会覆盖前面那次），所以这里用 buildStallDetail() 重新构建一份，不能
+            // 复用上面那份
+            if (t.getProjectManagerId() != null) {
+                Set<Long> involvedExecutor = (t.getExecutorId() != null && !t.getExecutorId().equals(t.getProjectManagerId()))
+                        ? Collections.singleton(t.getExecutorId()) : Collections.emptySet();
+                String key = t.getProjectManagerId() + "|" + urgency.name();
+                byPmKey.computeIfAbsent(key, k -> new ArrayList<>())
+                        .add(buildStallDetail(t, accountNameById, overdueDays, stallThreshold));
+                pmIdByKey.put(key, t.getProjectManagerId());
+                pmUrgencyByKey.put(key, urgency);
+                if (!involvedExecutor.isEmpty()) {
+                    pmInvolvedByKey.computeIfAbsent(key, k -> new LinkedHashSet<>()).addAll(involvedExecutor);
+                }
+            }
         }
 
         for (Map.Entry<CollaborationProgress, Map<ReminderUrgency, List<ProgressReminderDetail>>> progressEntry
@@ -769,6 +811,39 @@ public class ProgressReminderService {
                         FINANCE_ROLE, urgency, details, titleSuffix);
             }
         }
+
+        // 项目负责人定向卡片：不像财务视角那样按进度阶段拆两张卡——项目负责人视角只关心
+        // "我名下有几笔卡在财务这边没结算"，不需要区分具体卡在哪个阶段
+        for (Map.Entry<String, List<ProgressReminderDetail>> entry : byPmKey.entrySet()) {
+            String key = entry.getKey();
+            saveFinancePmStallReminder(batchDate, pmIdByKey.get(key), pmUrgencyByKey.get(key),
+                    entry.getValue(), pmInvolvedByKey.get(key));
+        }
+    }
+
+    /** runFinanceProgressStall() 的项目负责人定向卡片专用，跟 saveFinanceStallReminder()
+     * 共用 ReminderUrgency 语义，但按具体项目负责人（audienceEmployeeId）+ 涉及的执行人员
+     * （involvedEmployeeIds）定向，标题格式仿 saveStallReminder() 的"项目负责人-XX-手下的"。 */
+    private void saveFinancePmStallReminder(Date batchDate, Long audienceEmployeeId, ReminderUrgency urgency,
+                                              List<ProgressReminderDetail> details, Set<Long> involvedExecutorIds) {
+        ProgressReminder reminder = new ProgressReminder();
+        reminder.setIsDeleted(false);
+        reminder.setBatchDate(batchDate);
+        reminder.setCategory(ReminderCategory.FINANCE_PROGRESS_STALL);
+        reminder.setUrgency(urgency);
+        reminder.setAudienceEmployeeRole("项目负责人");
+        reminder.setAudienceEmployeeId(audienceEmployeeId);
+        if (involvedExecutorIds != null && !involvedExecutorIds.isEmpty()) {
+            reminder.setInvolvedEmployeeIds(involvedExecutorIds.stream()
+                    .map(String::valueOf).collect(Collectors.joining("\n")));
+        }
+        reminder.setCount(details.size());
+        Employee emp = employeeCache.findById(audienceEmployeeId);
+        String empName = emp != null ? emp.getName() : ("员工#" + audienceEmployeeId);
+        reminder.setTitle("项目负责人-" + empName + "-手下的" + details.size() + "笔视频项目进度长时间未结算");
+        reminder = reminderRepo.save(reminder);
+        for (ProgressReminderDetail d : details) d.setReminderId(reminder.getId());
+        detailRepo.saveAll(details);
     }
 
     /**
@@ -1282,8 +1357,19 @@ public class ProgressReminderService {
         return details;
     }
 
-    /** 当前登录人不是这条卡片的项目负责人本人，只是作为"涉及的执行人员"看到 */
+    /**
+     * 当前登录人不是这条卡片的项目负责人本人，只是作为"涉及的执行人员"看到。
+     *
+     * audienceEmployeeId == null 时直接短路返回 false（2026-08 补充这个guard，防止重犯
+     * 2026-07-30 那次教训——FINANCE_PROGRESS_STALL 这一类现在混了"财务角色整体可见"
+     * （audienceEmployeeId 恒为 null）和"项目负责人按人定向"两种卡片，前者压根没有具体的
+     * "负责人"，不适用"我是不是负责人本人"这套判断；不加这个guard 的话，任何非空 employeeId
+     * 都会被判定成"不是负责人、只是涉及的执行人员"，再走 filterToMyExecutorRecords 按"记录的
+     * 执行人员是不是我"过滤——财务永远不是任何记录的执行人员，过滤结果永远是空列表，表现为
+     * 卡片写着有N笔、点进详情却是0条）。
+     */
     private boolean isViewingAsInvolvedExecutor(ProgressReminder r) {
+        if (r.getAudienceEmployeeId() == null) return false;
         Long employeeId = employeeRoleUtil.getCurrentEmployeeId();
         return employeeId != null && !employeeId.equals(r.getAudienceEmployeeId());
     }

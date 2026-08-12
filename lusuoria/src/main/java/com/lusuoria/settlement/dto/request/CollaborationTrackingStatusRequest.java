@@ -41,9 +41,13 @@ public class CollaborationTrackingStatusRequest {
     private String clientPaymentBatch;
 
     /**
-     * 客户方的项目订单：只有当 progress 是"已加入客户未结算列表"/"客户已结算"、且该品牌方
-     * 涉及客户方的项目订单（Brand.requiresClientOrderId()）时才需要填写，直接覆盖更新到
-     * 这条记录的 clientOrderId 字段（2026-08 新增）。
+     * 客户方的项目订单：
+     *   - progress 是"待客户出brief"~"已发布（未结算）"这8个前期制作流程状态之一时，可选填写，
+     *     有值才更新，永远不校验（2026-08 新增，"拿到订单号就顺手登记"）；
+     *   - progress 是"已加入客户未结算列表"/"客户已结算"、且该品牌方涉及客户方的项目订单
+     *     （Brand.requiresClientOrderId()）时，必须填写，直接覆盖更新到这条记录的
+     *     clientOrderId 字段（2026-08 新增）。
+     * 见 CollaborationTrackingService.updateStatus()。
      */
     private String clientOrderId;
 

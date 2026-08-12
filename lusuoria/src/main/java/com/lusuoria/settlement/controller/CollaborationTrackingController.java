@@ -550,7 +550,10 @@ public class CollaborationTrackingController {
         // 或者导入改动了已有记录"内部执行人员"的行，会被无差别拒绝），见
         // CollaborationTrackingService.requireFinanceForSettlementProgress() 和 doSave() 里
         // "内部执行人员"那段校验的注释
-        boolean canSetFinanceSettlementProgress = fieldVisibility.resolve().isFull();
+        // 2026-08 起：除了 isFull（ADMIN/AUDITOR，或员工角色=管理层/财务）以外，员工角色是
+        // 项目负责人/执行人员/IT后勤也放行（Shawn 反馈），见 EmployeeRoleUtil.canSetSettlementProgressExtraRole()
+        boolean canSetFinanceSettlementProgress = fieldVisibility.resolve().isFull()
+                || employeeRoleUtil.canSetSettlementProgressExtraRole();
         boolean isAdminOrManagement = RoleUtil.isAdmin() || "管理层".equals(employeeRoleUtil.getCurrentEmployeeRole());
         Long currentEmployeeId = employeeRoleUtil.getCurrentEmployeeId();
         excelHandler.importDataAsync(batch.getId(), fileBytes, RoleUtil.canViewBaselineFinancials(),

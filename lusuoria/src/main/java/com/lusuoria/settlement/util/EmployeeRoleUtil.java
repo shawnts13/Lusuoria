@@ -7,6 +7,10 @@ import com.lusuoria.settlement.repository.SysUserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
+
 /**
  * 当前登录账号关联的员工角色（Employee.role）判定，跟 SysUser.role（ADMIN/STAFF/AUDITOR/GUEST）
  * 无关。多个模块（红人结款、品牌方管理等）的"严格按员工角色限制访问"都基于这个判断，
@@ -35,5 +39,21 @@ public class EmployeeRoleUtil {
     public Long getCurrentEmployeeId() {
         SysUser user = sysUserRepo.findByUsernameAndIsDeletedFalse(RoleUtil.getCurrentUsername()).orElse(null);
         return user != null ? user.getEmployeeId() : null;
+    }
+
+    /** "已加入客户未结算列表"/"客户已结算"这两个状态流转，2026-08 起从"仅财务/管理层"放宽到
+     * 这三个角色也能操作（Shawn 反馈）。 */
+    private static final Set<String> SETTLEMENT_PROGRESS_EXTRA_ROLES =
+            new HashSet<>(Arrays.asList("项目负责人", "执行人员", "IT后勤"));
+
+    /**
+     * 当前登录账号的员工角色是不是"已加入客户未结算列表"/"客户已结算"这两个状态流转权限
+     * 新放宽进来的那三个角色之一（项目负责人/执行人员/IT后勤）。跟
+     * ProjectFieldVisibility.isFull() 是两个独立维度——isFull 决定的是整条记录的财务字段
+     * 可见性（汇率/毛利/提成/公司利润等），这三个角色本身依然看不到这些敏感字段，只是被
+     * 额外允许触发这两个状态流转动作本身。调用方需要跟 isFull 用 || 组合，不能单独替代。
+     */
+    public boolean canSetSettlementProgressExtraRole() {
+        return SETTLEMENT_PROGRESS_EXTRA_ROLES.contains(getCurrentEmployeeRole());
     }
 }
