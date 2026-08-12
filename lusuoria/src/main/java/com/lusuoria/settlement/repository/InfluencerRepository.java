@@ -26,6 +26,17 @@ public interface InfluencerRepository extends JpaRepository<Influencer, Long> {
            "WHERE i.isDeleted = false ORDER BY i.accountName ASC")
     List<Object[]> findSimpleProjections();
 
+    /**
+     * 2026-08-13 性能修复：DomainSyncService.sync() 之前用 findByIsDeletedFalseOrderByAccountNameAsc()
+     * 查全量实体（notes/联系方式/成本字段等全部一起加载）只是为了读 domains 这一列，
+     * 是"红人管理"页面（GET /api/domains 依赖 sync()）和"编辑红人改了所属领域"这两个场景
+     * 保存/切换模块变慢的根因之一——道理跟上面 findSimpleProjections/findIdsByFilters
+     * 这两处精简投影完全一样，红人表越大、字段越多，全量实体加载就越吃亏。sync() 只需要
+     * domains 这一列，改成只查这一列。
+     */
+    @Query("SELECT i.domains FROM Influencer i WHERE i.isDeleted = false AND i.domains IS NOT NULL")
+    List<String> findActiveDomainsRaw();
+
     Optional<Influencer> findByIdAndIsDeletedFalse(Long id);
 
     Optional<Influencer> findByAccountNameAndIsDeletedFalse(String accountName);

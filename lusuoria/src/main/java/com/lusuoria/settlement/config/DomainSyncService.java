@@ -24,15 +24,18 @@ public class DomainSyncService {
 
     public void sync() {
         // 收集所有红人实际使用的领域名称
+        // 2026-08-13 性能修复：改用只查 domains 一列的轻量投影（findActiveDomainsRaw），
+        // 不再用 findByIsDeletedFalseOrderByAccountNameAsc() 加载全量实体（notes/联系方式/
+        // 成本字段等一起查出来，这里根本用不上）——见该方法注释。
         Set<String> usedDomains = new HashSet<String>();
-        influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc().forEach(inf -> {
-            if (inf.getDomains() != null && !inf.getDomains().trim().isEmpty()) {
-                for (String d : inf.getDomains().split("[\n,]+")) {
+        for (String domains : influencerRepo.findActiveDomainsRaw()) {
+            if (domains != null && !domains.trim().isEmpty()) {
+                for (String d : domains.split("[\n,]+")) {
                     String dn = d.trim();
                     if (!dn.isEmpty()) usedDomains.add(dn);
                 }
             }
-        });
+        }
 
         // 软删除没有被使用的领域
         List<Domain> allDomains = domainRepo.findByIsDeletedFalseOrderByNameAsc();
