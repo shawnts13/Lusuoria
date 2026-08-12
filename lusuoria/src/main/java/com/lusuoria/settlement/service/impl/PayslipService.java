@@ -909,8 +909,10 @@ public class PayslipService {
         List<Long> execIds = new ArrayList<>(execOrdersUnderPm.keySet());
         execIds.sort(Comparator.comparing(this::employeeNameOf, Comparator.nullsLast(Comparator.naturalOrder())));
         // 这个负责人名下所有执行人员的费率梯度一次查完，下面循环里按 execId 从内存取，不再
-        // 每个执行人员各查一次库（见 fetchTiersByExecutorAndType 方法注释）
-        Map<Long, Map<String, List<ExecutorPayRateTier>>> tiersByExecThenType = fetchTiersByExecutorAndType(managerId);
+        // 每个执行人员各查一次库（见 fetchTiersByExecutorAndType 方法注释）；execIds 为空
+        // （这个负责人这个月没有任何执行人员）时跳过，保持跟改造前一样"没有执行人员就不查库"
+        Map<Long, Map<String, List<ExecutorPayRateTier>>> tiersByExecThenType =
+                execIds.isEmpty() ? Collections.emptyMap() : fetchTiersByExecutorAndType(managerId);
 
         List<PayslipDimensionRow> displayRows = new ArrayList<>();
         List<PayslipDimensionRow> allDetail = new ArrayList<>();
@@ -1031,6 +1033,7 @@ public class PayslipService {
      *  供 {@link #sortExecutorRowsByTier}/{@link #withTierSummaries} 查表用，不再各自查库。 */
     private Map<Long, Map<String, List<ExecutorPayRateTier>>> fetchTiersByExecutorAndType(Long managerId) {
         Map<Long, Map<String, List<ExecutorPayRateTier>>> result = new HashMap<>();
+        if (managerId == null) return result;
         for (ExecutorPayRateTier t : executorPayRateTierRepo.findByManagerIdAndIsDeletedFalseOrderByMinCountAsc(managerId)) {
             result.computeIfAbsent(t.getExecutorId(), k -> new HashMap<>())
                     .computeIfAbsent(t.getVideoType().name(), k -> new ArrayList<>())
@@ -1045,6 +1048,9 @@ public class PayslipService {
     private Map<Long, Map<Long, Map<String, List<ExecutorPayRateTier>>>> fetchTiersByManagerThenExecutorAndType(
             Collection<Long> managerIds) {
         Map<Long, Map<Long, Map<String, List<ExecutorPayRateTier>>>> result = new HashMap<>();
+        // 跟 CollaborationTrackingController 里同一个仓储方法的既有用法保持一致：managerIds 为空
+        // 时不查库，既避免空 IN 子句的边界情况，也保持跟改造前"没有涉及的负责人就不查库"一致
+        if (managerIds == null || managerIds.isEmpty()) return result;
         for (ExecutorPayRateTier t : executorPayRateTierRepo.findByManagerIdInAndIsDeletedFalse(managerIds)) {
             result.computeIfAbsent(t.getManagerId(), k -> new HashMap<>())
                     .computeIfAbsent(t.getExecutorId(), k -> new HashMap<>())
