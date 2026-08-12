@@ -33,6 +33,10 @@ public interface InfluencerRepository extends JpaRepository<Influencer, Long> {
     /** "提取需求内容"账号匹配用：忽略大小写精确匹配 */
     Optional<Influencer> findByAccountNameIgnoreCaseAndIsDeletedFalse(String accountName);
 
+    /** 不限 isDeleted 的忽略大小写精确匹配，供新建红人时复活同名的已软删除记录用（account_name
+     * 数据库层面有唯一约束，不认软删除，见 InfluencerController.save()） */
+    Optional<Influencer> findByAccountNameIgnoreCase(String accountName);
+
     List<Influencer> findByInfluencerTypeAndIsDeletedFalse(ProjectType type);
 
     @Query("SELECT i FROM Influencer i " +

@@ -111,19 +111,39 @@ public class EmployeeController {
     @Transactional
     public ApiResponse<Employee> save(@Valid @RequestBody EmployeeRequest req) {
         assertCanManageEmployees();
+        // email 为空字符串时存 null，避免违反唯一约束（PostgreSQL 空字符串不等于 null）
+        String email = req.getEmail();
+        String normalizedEmail = email != null && !email.trim().isEmpty() ? email.trim() : null;
+
+        // email 数据库层面有唯一约束（null 不受影响，可以有多个员工都不填邮箱），不认软删除——
+        // 之前这里完全没有判重校验，员工被软删除后同一个邮箱再用来新建员工会直接在 insert
+        // 这一步撞唯一键报错，报出一个用户看不懂的"数据处理失败"（2026-08 修复）。
+        // 命中已软删除的同邮箱记录时复活它，命中未删除的记录、或编辑改邮箱撞上别的员工
+        // （不管对方是否已软删除）都直接拦下报友好错误
         Employee employee;
         if (req.getId() != null) {
             employee = employeeRepo.findByIdAndIsDeletedFalse(req.getId())
                     .orElseThrow(() -> new RuntimeException("员工不存在"));
+            if (normalizedEmail != null && !normalizedEmail.equals(employee.getEmail())) {
+                employeeRepo.findByEmail(normalizedEmail).ifPresent(existing -> {
+                    throw new RuntimeException("邮箱已被使用：" + normalizedEmail);
+                });
+            }
         } else {
-            employee = new Employee();
-            employee.setIsDeleted(false);
+            Employee existing = normalizedEmail != null ? employeeRepo.findByEmail(normalizedEmail).orElse(null) : null;
+            if (existing != null && Boolean.TRUE.equals(existing.getIsDeleted())) {
+                employee = existing;
+                employee.setIsDeleted(false);
+            } else if (existing != null) {
+                throw new RuntimeException("邮箱已被使用：" + normalizedEmail);
+            } else {
+                employee = new Employee();
+                employee.setIsDeleted(false);
+            }
         }
         employee.setName(req.getName());
         employee.setRole(req.getRole());
-        // email 为空字符串时存 null，避免违反唯一约束（PostgreSQL 空字符串不等于 null）
-        String email = req.getEmail();
-        employee.setEmail(email != null && !email.trim().isEmpty() ? email.trim() : null);
+        employee.setEmail(normalizedEmail);
         employee.setContactPhone(req.getContactPhone());
         employee.setHireDate(req.getHireDate());
         employee.setResignDate(req.getResignDate());

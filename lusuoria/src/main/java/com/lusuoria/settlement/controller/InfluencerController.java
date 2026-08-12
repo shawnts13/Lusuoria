@@ -229,18 +229,37 @@ public class InfluencerController {
             inf = influencerRepo.findByIdAndIsDeletedFalse(req.getId())
                     .orElseThrow(() -> new RuntimeException("红人不存在"));
         } else {
+            inf = null; // 占位，下面根据是否命中同名的已软删除记录决定"新建"还是"复活"
+        }
+        // 红人社媒完整名字忽略大小写判重：account_name 在数据库层面有唯一约束（大小写敏感，
+        // 之前出现过"JohnDoe"和"johndoe"被当成两个不同红人分别插入的情况，这里手动加一层
+        // 忽略大小写的校验），且这个约束不认"软删除"——一个红人被软删除后，这个名字在数据库里
+        // 仍然被那一行占用着，之前这里只查未软删除的记录，导致"删除某红人后再用同名重新添加"
+        // 会在校验这一步放行、但真正 insert 时直接撞唯一键，报出一个用户看不懂的"数据处理失败"
+        // （2026-08 修复）。现在改成不限 isDeleted 查一次：命中已软删除的同名记录时，新建
+        // 走"复活"分支——原地复用那一行（连带它名下没被清理掉的品牌方-团队关联/合同等历史
+        // 数据一起复活，比插入一条全新的孤儿数据更合理），不再插入新行；命中未删除的记录，
+        // 或者是"编辑改名"撞上了别的红人（不管对方是否已软删除），都跟以前一样直接拦下——
+        // 编辑场景没法把两条不同的红人身份合并成一条，只能报错让用户换个名字
+        Influencer sameNameAny = influencerRepo.findByAccountNameIgnoreCase(req.getAccountName())
+                .filter(existing -> req.getId() == null || !existing.getId().equals(req.getId()))
+                .orElse(null);
+        if (sameNameAny != null) {
+            boolean sameNameIsDeleted = Boolean.TRUE.equals(sameNameAny.getIsDeleted());
+            if (req.getId() == null && sameNameIsDeleted) {
+                inf = sameNameAny;
+                inf.setIsDeleted(false);
+            } else {
+                throw new RuntimeException("红人社媒完整名字 [" + req.getAccountName()
+                        + "] 与" + (sameNameIsDeleted ? "已删除的红人" : "现有红人") + "「"
+                        + sameNameAny.getAccountName() + "」重复（忽略大小写），不能重复添加"
+                        + (sameNameIsDeleted ? "，如需恢复请联系管理员处理该历史记录" : ""));
+            }
+        }
+        if (inf == null) {
             inf = new Influencer();
             inf.setIsDeleted(false);
         }
-        // 红人社媒完整名字忽略大小写判重：数据库的 unique 约束是大小写敏感的，之前出现过
-        // "JohnDoe"和"johndoe"被当成两个不同红人分别插入的情况，这里手动加一层忽略大小写
-        // 的校验，命中且不是自己本身时直接报错，不让重复新建/改名重名
-        influencerRepo.findByAccountNameIgnoreCaseAndIsDeletedFalse(req.getAccountName())
-                .filter(existing -> !existing.getId().equals(req.getId()))
-                .ifPresent(existing -> {
-                    throw new RuntimeException("红人社媒完整名字 [" + req.getAccountName()
-                            + "] 与现有红人「" + existing.getAccountName() + "」重复（忽略大小写），不能重复添加");
-                });
 
         inf.setInfluencerType(req.getInfluencerType());
         inf.setAccountName(req.getAccountName());

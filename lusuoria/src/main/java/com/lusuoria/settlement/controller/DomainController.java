@@ -36,17 +36,31 @@ public class DomainController {
         return ApiResponse.success(all);
     }
 
-    /** 新增领域（在红人编辑表单里新增） */
+    /**
+     * 新增领域（在红人编辑表单里新增）。
+     *
+     * name 数据库层面有唯一约束，不认软删除——领域被软删除后（比如所有用它的红人都改了领域，
+     * DomainSyncService.sync() 会把它标记删除）这个名字仍然被那一行占用着，之前这里只查
+     * 未软删除的记录（existsByNameAndIsDeletedFalse），命中软删除的同名记录时会在这一步放行、
+     * 真正 insert 时才撞唯一键报错，报出一个用户看不懂的"数据处理失败"（2026-08 修复，
+     * DomainCache.getOrCreate() 早就正确处理了这个情况，但那是给 Excel 导入用的，这个
+     * HTTP 接口是各表单手动"新增领域"用的独立入口，之前没接上同一套复活逻辑）。
+     */
     @PostMapping
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Domain> add(@RequestBody String name) {
         name = name.trim().replaceAll("^\"|\"$", "");  // 去掉可能的引号
         if (name.isEmpty()) throw new RuntimeException("领域名称不能为空");
-        if (domainRepo.existsByNameAndIsDeletedFalse(name))
+        Domain domain = domainRepo.findByName(name).orElse(null);
+        if (domain != null && Boolean.TRUE.equals(domain.getIsDeleted())) {
+            domain.setIsDeleted(false);
+        } else if (domain != null) {
             throw new RuntimeException("领域已存在：" + name);
-        Domain domain = new Domain();
-        domain.setName(name);
-        domain.setIsDeleted(false);
+        } else {
+            domain = new Domain();
+            domain.setName(name);
+            domain.setIsDeleted(false);
+        }
         Domain saved = domainRepo.save(domain);
         domainCache.refresh();
         return ApiResponse.success(saved);

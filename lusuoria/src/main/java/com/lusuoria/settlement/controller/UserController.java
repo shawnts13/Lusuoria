@@ -39,15 +39,27 @@ public class UserController {
     @PostMapping
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<UserResponse> create(@Valid @RequestBody UserCreateRequest req) {
-        if (userRepo.existsByUsernameAndIsDeletedFalse(req.getUsername())) {
-            throw new RuntimeException("用户名已存在：" + req.getUsername());
-        }
         if (req.getPassword() == null || req.getPassword().isEmpty()) {
             throw new RuntimeException("新建账号时密码不能为空");
         }
 
-        SysUser user = new SysUser();
-        user.setIsDeleted(false);
+        // username 数据库层面有唯一约束，不认软删除——之前只查未软删除的记录
+        // （existsByUsernameAndIsDeletedFalse），账号被软删除后用同一个用户名重新新建会在
+        // 这一步放行、真正 insert 时才撞唯一键报错（2026-08 修复）。改成不限 isDeleted 查
+        // 一次：命中已软删除的同名账号时复活它（沿用旧账号id，原地复用，不插入新行），命中
+        // 未删除的账号才拦下
+        SysUser existing = userRepo.findByUsername(req.getUsername()).orElse(null);
+        SysUser user;
+        if (existing != null && Boolean.TRUE.equals(existing.getIsDeleted())) {
+            user = existing;
+            user.setIsDeleted(false);
+            user.setLastSeenReminderPopupAt(null); // 当成一个全新账号，不带旧账号的历史弹窗状态
+        } else if (existing != null) {
+            throw new RuntimeException("用户名已存在：" + req.getUsername());
+        } else {
+            user = new SysUser();
+            user.setIsDeleted(false);
+        }
         user.setUsername(req.getUsername());
         user.setPassword(passwordEncoder.encode(req.getPassword()));
         user.setRole(req.getRole());
@@ -61,6 +73,8 @@ public class UserController {
                 throw new RuntimeException("该员工已经绑定了其他账号，一个员工只能绑定一个账号");
             }
             user.setEmployee(emp);
+        } else {
+            user.setEmployee(null); // 复活旧账号时不带旧的员工绑定，除非本次请求重新指定
         }
 
         return ApiResponse.success(toResponse(userRepo.save(user)));
@@ -73,9 +87,12 @@ public class UserController {
         SysUser user = userRepo.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new RuntimeException("用户不存在"));
 
-        if (!user.getUsername().equals(req.getUsername())
-                && userRepo.existsByUsernameAndIsDeletedFalse(req.getUsername())) {
-            throw new RuntimeException("用户名已存在：" + req.getUsername());
+        // 改名撞上别的账号（不管对方是否已软删除）都要拦下——username 唯一约束不认软删除，
+        // 不拦的话真正 save() 时会撞唯一键报错（2026-08 修复，跟新建账号那边同一个根因）
+        if (!user.getUsername().equals(req.getUsername())) {
+            userRepo.findByUsername(req.getUsername()).ifPresent(existing -> {
+                throw new RuntimeException("用户名已存在：" + req.getUsername());
+            });
         }
 
         user.setUsername(req.getUsername());

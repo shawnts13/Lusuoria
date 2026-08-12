@@ -54,21 +54,33 @@ public class InfluencerTeamController {
         Brand brand = brandCache.findById(req.getBrandId());
         if (brand == null) throw new RuntimeException("品牌方不存在");
 
+        // name 数据库层面有唯一约束，不认软删除——之前新建只查未软删除的记录
+        // （existsByNameAndIsDeletedFalse），删除某团队后再用同名重新添加会在这一步放行、
+        // 真正 insert 时才撞唯一键报错（2026-08 修复）。改成不限 isDeleted 查一次
+        // （teamRepo.findByName，之前就已经加好了但一直没接上）：命中已软删除的同名记录时
+        // 复活它，命中未删除的记录、或编辑改名撞上别的团队（不管对方是否已软删除）都直接拦下
         String name = req.getName().trim();
         InfluencerTeam team;
         if (req.getId() != null) {
             team = teamRepo.findById(req.getId())
                     .filter(t -> !Boolean.TRUE.equals(t.getIsDeleted()))
                     .orElseThrow(() -> new RuntimeException("团队不存在"));
-            if (!name.equals(team.getName()) && teamRepo.existsByNameAndIsDeletedFalse(name)) {
-                throw new RuntimeException("团队名称已存在：" + name);
+            if (!name.equals(team.getName())) {
+                teamRepo.findByName(name).ifPresent(existing -> {
+                    throw new RuntimeException("团队名称已存在：" + name);
+                });
             }
         } else {
-            if (teamRepo.existsByNameAndIsDeletedFalse(name)) {
+            InfluencerTeam existing = teamRepo.findByName(name).orElse(null);
+            if (existing != null && Boolean.TRUE.equals(existing.getIsDeleted())) {
+                team = existing;
+                team.setIsDeleted(false);
+            } else if (existing != null) {
                 throw new RuntimeException("团队名称已存在：" + name);
+            } else {
+                team = new InfluencerTeam();
+                team.setIsDeleted(false);
             }
-            team = new InfluencerTeam();
-            team.setIsDeleted(false);
         }
         team.setName(name);
         team.setBrandId(req.getBrandId());

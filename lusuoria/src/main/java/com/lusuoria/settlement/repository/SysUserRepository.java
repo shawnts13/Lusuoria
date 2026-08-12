@@ -19,6 +19,10 @@ public interface SysUserRepository extends JpaRepository<SysUser, Long> {
 
     boolean existsByUsernameAndIsDeletedFalse(String username);
 
+    /** 不限 isDeleted 精确匹配，供新建账号时复活同用户名的已软删除记录用（username 数据库
+     * 层面有唯一约束，不认软删除，见 UserController.create()） */
+    Optional<SysUser> findByUsername(String username);
+
     /** 一个员工只能绑定一个账号：新建/编辑账号关联员工时用来判断这个员工是不是已经被别的账号占用 */
     Optional<SysUser> findByEmployeeIdAndIsDeletedFalse(Long employeeId);
 }

@@ -84,15 +84,31 @@ public class BrandController {
     @PostMapping
     public ApiResponse<Brand> save(@Valid @RequestBody BrandRequest req) {
         if (!canManage()) return ApiResponse.error(403, req.getId() == null ? "无权限新增品牌方" : "无权限编辑品牌方");
+        // name 数据库层面有唯一约束，不认软删除——品牌方被软删除后这个名字仍然被那一行占用着，
+        // 之前新建只查未软删除的记录（existsByNameAndIsDeletedFalse），删除某品牌方后再用
+        // 同名重新添加会在这一步放行、真正 insert 时才撞唯一键报错（2026-08 修复）。改成
+        // 不限 isDeleted 查一次：命中已软删除的同名记录时复活它（原地复用，不插入新行），
+        // 命中未删除的记录、或编辑改名撞上别的品牌方（不管对方是否已软删除）都直接拦下
         Brand brand;
         if (req.getId() != null) {
             brand = brandRepo.findByIdAndIsDeletedFalse(req.getId())
                     .orElseThrow(() -> new RuntimeException("品牌方不存在"));
+            if (!req.getName().equals(brand.getName())) {
+                brandRepo.findByName(req.getName()).ifPresent(existing -> {
+                    throw new RuntimeException("品牌方名称已存在：" + req.getName());
+                });
+            }
         } else {
-            if (brandRepo.existsByNameAndIsDeletedFalse(req.getName()))
+            Brand existing = brandRepo.findByName(req.getName()).orElse(null);
+            if (existing != null && Boolean.TRUE.equals(existing.getIsDeleted())) {
+                brand = existing;
+                brand.setIsDeleted(false);
+            } else if (existing != null) {
                 throw new RuntimeException("品牌方名称已存在：" + req.getName());
-            brand = new Brand();
-            brand.setIsDeleted(false);
+            } else {
+                brand = new Brand();
+                brand.setIsDeleted(false);
+            }
         }
         brand.setName(req.getName());
         brand.setCountryMarket(req.getCountryMarket());
