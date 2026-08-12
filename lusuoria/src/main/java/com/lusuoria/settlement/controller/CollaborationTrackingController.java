@@ -466,6 +466,21 @@ public class CollaborationTrackingController {
         return ApiResponse.success(trackingService.recomputeAllProfits());
     }
 
+    /**
+     * "批量计算执行成本"按钮：范围严格限定在当前登录员工自己身上（不是 ADMIN 的全表按钮），
+     * 具体范围由 CollaborationTrackingService.recomputeExecutorCostsScoped() 按员工角色判定——
+     * 管理层不限定（等同"特殊的项目负责人"），项目负责人只处理自己名下的，执行人员只处理自己
+     * 执行的。前端只对这三种员工角色展示按钮，但权限校验必须在服务层再做一遍（见该方法注释），
+     * 不能只靠前端隐藏按钮。
+     */
+    @PostMapping("/recompute-executor-costs")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    public ApiResponse<String> recomputeExecutorCosts() {
+        String employeeRole = employeeRoleUtil.getCurrentEmployeeRole();
+        Long employeeId = employeeRoleUtil.getCurrentEmployeeId();
+        return ApiResponse.success(trackingService.recomputeExecutorCostsScoped(employeeRole, employeeId));
+    }
+
     // ============ Excel ============
     @GetMapping("/export/excel")
     public void exportExcel(

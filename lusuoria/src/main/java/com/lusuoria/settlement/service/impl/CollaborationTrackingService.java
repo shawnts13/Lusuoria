@@ -1580,87 +1580,19 @@ public class CollaborationTrackingService {
         SimpleDateFormat monthFormat = new SimpleDateFormat("yyyyMM");
 
         // ---- 内部执行成本：按费率梯度分组重新计算，必须先算完再进下面的利润重算循环，
-        // 这样 profitCalculator.calculate() 才能用上更新后的金额 ----
-        Map<String, List<CollaborationTracking>> execCostGroups = new LinkedHashMap<>();
-        for (CollaborationTracking t : all) {
-            if (t.getExecutor() == null || t.getVideoType() == null || t.getPublishDate() == null
-                    || t.getProjectManager() == null) continue;
-            if (t.getProgress() == CollaborationProgress.DELAYED) continue;
-            if (Boolean.TRUE.equals(t.getExecutorCostNotApplicable())) continue;
-            String month = monthFormat.format(t.getPublishDate());
-            String key = t.getProjectManager().getId() + "|" + t.getExecutor().getId() + "|" + t.getVideoType() + "|" + month;
-            execCostGroups.computeIfAbsent(key, k -> new ArrayList<>()).add(t);
-        }
-        // 2026-08 新增：已经在"手下执行人员工资"确认过的 (项目负责人,执行人员,月份) 组合不能
-        // 被这里悄悄改动内部执行成本——确认动作本身有独立的冻结快照（ExecutorWageConfirmation.
-        // detailJson），底层这条记录的数值改了快照不会跟着变，看起来"好像没事"，但一旦这条确认
-        // 之后因为任何别的原因被取消确认再重新确认，就会直接读到这个被批量重算悄悄改过的新值，
-        // 而且完全绕开"内部执行成本二次修改需要项目负责人审批"那套流程（那套流程只挡得住手动
-        // 编辑，挡不住这个批量按钮）。Shawn 2026-08-10 反馈后加的保护，跟下面 executorCostOverridden
-        // 的跳过逻辑并列——只跳过"改动"，不跳过"占用这个月的封顶预算/排位"（已经确认、已经实际
-        // 发生的这几条视频，仍然要算进这个类型当月的累计条数/累计金额里，不然后面还没确认的
-        // 记录反而会因为少算了前面几条而被分到更靠前的档位，间接产生新的偏差）。
-        Set<String> confirmedWageKeys = new HashSet<>();
-        for (ExecutorWageConfirmation c : wageConfirmationRepo.findByConfirmedTrueAndIsDeletedFalse()) {
-            if (c.getExecutorId() == null) continue; // 改造前"整批打包确认"的历史记录，不参与判断
-            confirmedWageKeys.add(c.getManagerId() + "|" + c.getExecutorId() + "|" + c.getYearMonth());
-        }
-
-        int recomputedExecutorCostCount = 0;
-        int overriddenSkippedCount = 0;
-        int outOfRangeSkippedCount = 0;
-        int noRateSkippedCount = 0;
-        Set<String> noRateSkippedCombos = new java.util.TreeSet<>();
-        for (List<CollaborationTracking> group : execCostGroups.values()) {
-            group.sort((a, b) -> {
-                int cmp = a.getPublishDate().compareTo(b.getPublishDate());
-                if (cmp != 0) return cmp;
-                return a.getId().compareTo(b.getId());
-            });
-            CollaborationTracking first = group.get(0);
-            String groupMonth = monthFormat.format(first.getPublishDate());
-            List<ExecutorPayRateTier> tiers = executorPayRateTierRepo
-                    .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(
-                            first.getProjectManager().getId(), first.getExecutor().getId(), first.getVideoType());
-            if (tiers.isEmpty()) {
-                noRateSkippedCount += group.size();
-                noRateSkippedCombos.add(first.getExecutor().getName() + " / " + first.getVideoType().getLabel());
-                continue;
-            }
-            boolean groupWageConfirmed = confirmedWageKeys.contains(
-                    first.getProjectManager().getId() + "|" + first.getExecutor().getId() + "|" + groupMonth);
-            List<CollaborationTracking> processed = new ArrayList<>();
-            for (CollaborationTracking t : group) {
-                if (Boolean.TRUE.equals(t.getExecutorCostOverridden())) {
-                    overriddenSkippedCount++;
-                    processed.add(t); // 已花的钱仍然占用这个类型当月的封顶预算
-                    continue;
-                }
-                // 已确认工资的月份：跳过改动，但不计数、不在结果摘要里提——Shawn 反馈这条提示
-                // 没必要展示（2026-08-10）。跳过本身的保护逻辑不变，见上面 confirmedWageKeys
-                // 的注释；这里同样占用当月封顶预算/排位，不跳过 processed.add()
-                if (groupWageConfirmed) {
-                    processed.add(t);
-                    continue;
-                }
-                int position = processed.size() + 1;
-                ExecutorPayRateTier matched = findMatchingTier(tiers, position);
-                if (matched == null) {
-                    outOfRangeSkippedCount++;
-                } else {
-                    // 2026-08-10 修复（Shawn 反馈）：只有算出来的新值真的跟原值不一样才计入
-                    // "已重新计算"的条数——之前不管新值是不是恰好等于原值都会计数，导致这个数字
-                    // 表达的其实是"过了一遍计算逻辑的条数"，不是"真的被改动的条数"，容易让人误以为
-                    // 有很多记录被改动了。BigDecimal 用 compareTo 而不是 equals，避免 100.00 和
-                    // 100.0 这种精度不同但数值相同的情况被误判成"变了"。
-                    java.math.BigDecimal before = t.getInternalExecutionCost();
-                    java.math.BigDecimal after = capAdjustedRate(matched, processed);
-                    t.setInternalExecutionCost(after);
-                    if (bigDecimalChanged(before, after)) recomputedExecutorCostCount++;
-                }
-                processed.add(t);
-            }
-        }
+        // 这样 profitCalculator.calculate() 才能用上更新后的金额。分组/逐组重算的逻辑抽到了
+        // buildExecCostGroups()/processExecCostGroups()，跟"批量计算执行成本"（项目负责人/
+        // 执行人员/管理层自助按钮，见 recomputeExecutorCostsScoped()）共用同一份，这里传
+        // t -> true 表示不限定范围（ADMIN 的这个按钮本来就是全表处理）。
+        Map<String, List<CollaborationTracking>> execCostGroups = buildExecCostGroups(all);
+        Set<String> confirmedWageKeys = buildConfirmedWageKeys();
+        ExecCostRecomputeResult execResult = new ExecCostRecomputeResult();
+        processExecCostGroups(execCostGroups, confirmedWageKeys, t -> true, execResult);
+        int recomputedExecutorCostCount = execResult.recomputedCount;
+        int overriddenSkippedCount = execResult.overriddenSkippedCount;
+        int outOfRangeSkippedCount = execResult.outOfRangeSkippedCount;
+        int noRateSkippedCount = execResult.noRateSkippedCount;
+        Set<String> noRateSkippedCombos = execResult.noRateSkippedCombos;
 
         int fixedExchangeRateCount = 0;
         int stillMissingExchangeRateCount = 0;
@@ -1743,6 +1675,220 @@ public class CollaborationTrackingService {
         if (before == null && after == null) return false;
         if (before == null || after == null) return true;
         return before.compareTo(after) != 0;
+    }
+
+    /**
+     * 按 (项目负责人,执行人员,视频类型,发布月份) 分组——recomputeAllProfits()（"重新计算利润"，
+     * ADMIN 全表）和 recomputeExecutorCostsScoped()（"批量计算执行成本"，项目负责人/执行人员/
+     * 管理层自助按钮，范围各不相同）共用同一份分组规则，改一处两边都生效。
+     */
+    private Map<String, List<CollaborationTracking>> buildExecCostGroups(List<CollaborationTracking> all) {
+        SimpleDateFormat monthFormat = new SimpleDateFormat("yyyyMM");
+        Map<String, List<CollaborationTracking>> execCostGroups = new LinkedHashMap<>();
+        for (CollaborationTracking t : all) {
+            if (t.getExecutor() == null || t.getVideoType() == null || t.getPublishDate() == null
+                    || t.getProjectManager() == null) continue;
+            if (t.getProgress() == CollaborationProgress.DELAYED) continue;
+            if (Boolean.TRUE.equals(t.getExecutorCostNotApplicable())) continue;
+            String month = monthFormat.format(t.getPublishDate());
+            String key = t.getProjectManager().getId() + "|" + t.getExecutor().getId() + "|" + t.getVideoType() + "|" + month;
+            execCostGroups.computeIfAbsent(key, k -> new ArrayList<>()).add(t);
+        }
+        return execCostGroups;
+    }
+
+    /**
+     * 已经在"手下执行人员工资"确认过的 (项目负责人,执行人员,月份) 组合——批量重算内部执行成本
+     * 时（不管是 ADMIN 的全表按钮还是项目负责人/执行人员/管理层的自助按钮）都不能悄悄改动这些
+     * 组合下的记录，理由见 recomputeAllProfits() 方法注释。
+     */
+    private Set<String> buildConfirmedWageKeys() {
+        Set<String> confirmedWageKeys = new HashSet<>();
+        for (ExecutorWageConfirmation c : wageConfirmationRepo.findByConfirmedTrueAndIsDeletedFalse()) {
+            if (c.getExecutorId() == null) continue; // 改造前"整批打包确认"的历史记录，不参与判断
+            confirmedWageKeys.add(c.getManagerId() + "|" + c.getExecutorId() + "|" + c.getYearMonth());
+        }
+        return confirmedWageKeys;
+    }
+
+    /** processExecCostGroups() 的统计结果 + 实际处理到的记录列表（供调用方决定后续要不要顺带刷新利润字段） */
+    private static class ExecCostRecomputeResult {
+        List<CollaborationTracking> inScopeRecords = new ArrayList<>();
+        int recomputedCount = 0;
+        int overriddenSkippedCount = 0;
+        int outOfRangeSkippedCount = 0;
+        int noRateSkippedCount = 0;
+        Set<String> noRateSkippedCombos = new java.util.TreeSet<>();
+    }
+
+    /**
+     * 按分组逐组重新计算内部执行成本，scopeFilter 决定哪些组属于本次调用的范围——组内的
+     * (项目负责人,执行人员) 是固定的，用组内第一条记录判断整组是否在范围内即可，不在范围内的
+     * 组整组跳过（不影响其它组的排位/封顶累计，因为分组本身已经按 项目负责人+执行人员+视频
+     * 类型+月份 相互隔离）。
+     *
+     * 在范围内的组，不管这一组最终有没有实际改动内部执行成本（比如缺费率梯度配置整组跳过、
+     * 或者组内某条记录本身就是被 ADMIN 特批/工资已确认），组内所有记录都会被收进
+     * result.inScopeRecords——调用方用这个列表决定要不要顺带刷新利润相关字段（"这是我自己
+     * 负责/执行的记录"这个范围判断，跟"这条记录的执行成本这次有没有真的被改"是两件事）。
+     */
+    private void processExecCostGroups(Map<String, List<CollaborationTracking>> execCostGroups,
+                                        Set<String> confirmedWageKeys,
+                                        java.util.function.Predicate<CollaborationTracking> scopeFilter,
+                                        ExecCostRecomputeResult result) {
+        SimpleDateFormat monthFormat = new SimpleDateFormat("yyyyMM");
+        for (List<CollaborationTracking> group : execCostGroups.values()) {
+            group.sort((a, b) -> {
+                int cmp = a.getPublishDate().compareTo(b.getPublishDate());
+                if (cmp != 0) return cmp;
+                return a.getId().compareTo(b.getId());
+            });
+            CollaborationTracking first = group.get(0);
+            if (!scopeFilter.test(first)) continue;
+            result.inScopeRecords.addAll(group);
+
+            String groupMonth = monthFormat.format(first.getPublishDate());
+            List<ExecutorPayRateTier> tiers = executorPayRateTierRepo
+                    .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(
+                            first.getProjectManager().getId(), first.getExecutor().getId(), first.getVideoType());
+            if (tiers.isEmpty()) {
+                result.noRateSkippedCount += group.size();
+                result.noRateSkippedCombos.add(first.getExecutor().getName() + " / " + first.getVideoType().getLabel());
+                continue;
+            }
+            boolean groupWageConfirmed = confirmedWageKeys.contains(
+                    first.getProjectManager().getId() + "|" + first.getExecutor().getId() + "|" + groupMonth);
+            List<CollaborationTracking> processed = new ArrayList<>();
+            for (CollaborationTracking t : group) {
+                if (Boolean.TRUE.equals(t.getExecutorCostOverridden())) {
+                    result.overriddenSkippedCount++;
+                    processed.add(t); // 已花的钱仍然占用这个类型当月的封顶预算
+                    continue;
+                }
+                // 已确认工资的月份：跳过改动，但不计数、不在结果摘要里提——Shawn 反馈这条提示
+                // 没必要展示（2026-08-10）。跳过本身的保护逻辑不变，见 buildConfirmedWageKeys()
+                // 的注释；这里同样占用当月封顶预算/排位，不跳过 processed.add()
+                if (groupWageConfirmed) {
+                    processed.add(t);
+                    continue;
+                }
+                int position = processed.size() + 1;
+                ExecutorPayRateTier matched = findMatchingTier(tiers, position);
+                if (matched == null) {
+                    result.outOfRangeSkippedCount++;
+                } else {
+                    // 只有算出来的新值真的跟原值不一样才计入"已重新计算"的条数，见
+                    // bigDecimalChanged() 的说明
+                    java.math.BigDecimal before = t.getInternalExecutionCost();
+                    java.math.BigDecimal after = capAdjustedRate(matched, processed);
+                    t.setInternalExecutionCost(after);
+                    if (bigDecimalChanged(before, after)) result.recomputedCount++;
+                }
+                processed.add(t);
+            }
+        }
+    }
+
+    /**
+     * "批量计算执行成本"按钮（红人合作跟踪列表页，仅项目负责人/执行人员/管理层可见）：
+     * 复用 recomputeAllProfits() 里"内部执行成本按费率梯度重新计算"那一段逻辑，但范围严格限定
+     * 在当前登录员工自己身上，不是全表——
+     *   - 管理层：等同于"特殊的项目负责人"，不限定，处理全部记录（对应 ADMIN 全表按钮里
+     *     这一部分的行为，但仅限执行成本，不含 ADMIN 专属的汇率自动修复）
+     *   - 项目负责人：只处理 projectManagerId = 自己 的记录，不会碰其他项目负责人名下的
+     *   - 执行人员：只处理 executorId = 自己 的记录，不管这条记录挂在哪个项目负责人名下
+     * 已在"手下执行人员工资"确认过的月份、以及 ADMIN 手动特批（executorCostOverridden）的值，
+     * 同样不会被覆盖——这两条跳过规则是 processExecCostGroups() 内置的，跟 ADMIN 按钮完全一致。
+     *
+     * 执行成本改了之后，顺带对本次范围内的记录调用 ProfitCalculator.calculate() 刷新项目毛利/
+     * 可分配利润/提成/公司利润这些下游字段，避免执行成本改了、利润字段却还是旧值这种不一致
+     * （2026-08 Shawn 明确要求）。但不做 ADMIN 按钮那种"汇率缺失自动按月份回填"——项目负责人/
+     * 执行人员没有编辑汇率的权限（RoleUtil.canEditExchangeRate() 仅 ADMIN），遇到汇率缺失/异常
+     * 的记录只统计条数、提示联系管理层处理，不擅自回填。
+     *
+     * @param employeeRole 当前登录账号关联的员工角色（EmployeeRoleUtil.getCurrentEmployeeRole()），
+     *                      必须是"管理层"/"项目负责人"/"执行人员"之一，否则视为越权直接拒绝——
+     *                      前端按钮虽然只对这三种角色展示，但这里必须服务端再校验一遍，不能只靠
+     *                      前端隐藏按钮
+     * @param employeeId   当前登录账号关联的员工 id（EmployeeRoleUtil.getCurrentEmployeeId()），
+     *                      管理层以外的角色必须非空，否则无法确定范围
+     */
+    @Transactional
+    public String recomputeExecutorCostsScoped(String employeeRole, Long employeeId) {
+        boolean isManagement = "管理层".equals(employeeRole);
+        boolean isProjectManager = "项目负责人".equals(employeeRole);
+        boolean isExecutor = "执行人员".equals(employeeRole);
+        if (!isManagement && !isProjectManager && !isExecutor) {
+            throw new RuntimeException("当前账号无权限执行\"批量计算执行成本\"");
+        }
+        if (!isManagement && employeeId == null) {
+            throw new RuntimeException("当前账号未关联员工，无法确定计算范围");
+        }
+
+        java.util.function.Predicate<CollaborationTracking> scopeFilter;
+        if (isManagement) {
+            scopeFilter = t -> true;
+        } else if (isProjectManager) {
+            scopeFilter = t -> t.getProjectManager() != null && employeeId.equals(t.getProjectManager().getId());
+        } else {
+            scopeFilter = t -> t.getExecutor() != null && employeeId.equals(t.getExecutor().getId());
+        }
+
+        List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
+        Map<String, List<CollaborationTracking>> execCostGroups = buildExecCostGroups(all);
+        Set<String> confirmedWageKeys = buildConfirmedWageKeys();
+        ExecCostRecomputeResult result = new ExecCostRecomputeResult();
+        processExecCostGroups(execCostGroups, confirmedWageKeys, scopeFilter, result);
+
+        if (result.inScopeRecords.isEmpty()) {
+            return "没有找到符合条件的记录，无需计算";
+        }
+
+        // 执行成本改完之后，顺带刷新这批记录的利润相关字段——见方法注释
+        int exchangeRateMissingCount = 0;
+        int actuallyChangedProfitCount = 0;
+        for (CollaborationTracking t : result.inScopeRecords) {
+            boolean rateInvalid = t.getExchangeRate() == null
+                    || t.getExchangeRate().compareTo(java.math.BigDecimal.ZERO) <= 0;
+            if (rateInvalid) exchangeRateMissingCount++;
+
+            java.math.BigDecimal beforeGross = t.getGrossProfit();
+            java.math.BigDecimal beforeDistributable = t.getDistributableProfit();
+            java.math.BigDecimal beforeCommission = t.getCommissionAmount();
+            java.math.BigDecimal beforeCompanyProfit = t.getCompanyNetProfit();
+            java.math.BigDecimal beforeRmbRevenue = t.getRmbRevenue();
+            profitCalculator.calculate(t);
+            boolean profitChanged = bigDecimalChanged(beforeGross, t.getGrossProfit())
+                    || bigDecimalChanged(beforeDistributable, t.getDistributableProfit())
+                    || bigDecimalChanged(beforeCommission, t.getCommissionAmount())
+                    || bigDecimalChanged(beforeCompanyProfit, t.getCompanyNetProfit())
+                    || bigDecimalChanged(beforeRmbRevenue, t.getRmbRevenue());
+            if (profitChanged) actuallyChangedProfitCount++;
+        }
+        trackingRepo.saveAll(result.inScopeRecords);
+
+        StringBuilder msg = new StringBuilder("本次扫描 " + result.inScopeRecords.size()
+                + " 条记录，内部执行成本按费率梯度重新计算 " + result.recomputedCount + " 条");
+        if (result.overriddenSkippedCount > 0) {
+            msg.append("；").append(result.overriddenSkippedCount).append(" 条是 ADMIN 手动特批的值，未覆盖");
+        }
+        if (result.outOfRangeSkippedCount > 0) {
+            msg.append("；").append(result.outOfRangeSkippedCount)
+               .append(" 条超出了当前配置的梯度覆盖范围，未改动，请联系管理层补充档位配置");
+        }
+        if (result.noRateSkippedCount > 0) {
+            msg.append("；另有 ").append(result.noRateSkippedCount)
+               .append(" 条因为以下组合还没配置过费率梯度、跳过未处理：")
+               .append(String.join("、", result.noRateSkippedCombos))
+               .append("，请联系管理层配置后再重新计算");
+        }
+        msg.append("\n项目毛利/可分配利润/提成/公司利润等利润相关字段已同步刷新，其中 ")
+           .append(actuallyChangedProfitCount).append(" 条数值发生了变化");
+        if (exchangeRateMissingCount > 0) {
+            msg.append("；另有 ").append(exchangeRateMissingCount)
+               .append(" 条记录汇率缺失或异常，公司利润（人民币）暂时不准确，请联系管理层在\"汇率维护\"里补充配置后重新计算");
+        }
+        return msg.toString();
     }
 
     private String emptyToNull(String s) {
