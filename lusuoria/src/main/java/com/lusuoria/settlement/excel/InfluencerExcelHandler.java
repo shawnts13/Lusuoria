@@ -259,6 +259,12 @@ public class InfluencerExcelHandler {
      * 不含"服务国家/市场"——那个字段选项太多（140+个国家），且已经在隐藏的 _lists sheet
      * 里做了下拉框，不需要在这里重复展示。这个 sheet 加在最后，不是 workbook 的第 0 个
      * sheet，不影响 importData() 的解析（固定从 getSheetAt(0) 读）。
+     *
+     * "跟进人"这一列（2026-08 新增）：只列角色为"项目负责人"或"执行人员"的员工——法务/IT/
+     * 财务/管理层不负责跟进红人，跟新建红人表单里"跟进人"下拉框的过滤规则保持一致（见
+     * InfluencerFormModal.vue 的 FOLLOWER_ROLES）。注意导入校验（doImport 里的
+     * employeeCache.findByName）目前还是按名字匹配任意员工、不按角色过滤，这里只是参考
+     * 提示，不是强校验。
      */
     private void appendOptionsReferenceSheet(XSSFWorkbook wb) {
         List<String> brandNames = new ArrayList<String>();
@@ -281,6 +287,13 @@ public class InfluencerExcelHandler {
         for (com.lusuoria.settlement.entity.Domain d : domainCache.getAll()) domainNames.add(d.getName());
         Collections.sort(domainNames);
 
+        List<String> followerNames = new ArrayList<String>();
+        for (Employee e : employeeCache.getAll()) {
+            String role = e.getRole();
+            if ("项目负责人".equals(role) || "执行人员".equals(role)) followerNames.add(e.getName());
+        }
+        Collections.sort(followerNames);
+
         LinkedHashMap<String, List<String>> cols = new LinkedHashMap<String, List<String>>();
         cols.put("品牌方（来自品牌方管理，最新数据）", brandNames);
         cols.put("品牌方/团队（格式化后可直接复制粘贴到\"品牌方-团队\"列，来自品牌方/红人团队管理，最新数据）", brandTeamPairs);
@@ -288,6 +301,7 @@ public class InfluencerExcelHandler {
         cols.put("红人类型", Arrays.asList(InfluencerOptions.INFLUENCER_TYPES));
         cols.put("建联情况", Arrays.asList(InfluencerOptions.CONTACT_STATUSES));
         cols.put("平台", Arrays.asList(InfluencerOptions.PLATFORMS));
+        cols.put("跟进人（角色为\"项目负责人\"或\"执行人员\"的员工，来自员工管理，最新数据）", followerNames);
         ExcelReferenceSheetHelper.append(wb, "可选值参考", cols);
     }
 

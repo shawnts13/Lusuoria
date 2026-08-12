@@ -289,6 +289,10 @@ public class CollaborationTrackingExcelHandler {
      * （代码里维护的枚举常量）列出来，供操作人核对怎么填。不含"服务国家/市场"——那是每个
      * 红人自己维护的自由文本，没有统一的可选值列表。这个 sheet 加在最后，不是 workbook 的
      * 第 0 个 sheet，不影响 importData() 的解析（固定从 getSheetAt(0) 读）。
+     *
+     * "项目负责人"/"内部执行人员（可选）"这两列（2026-08 新增）：跟 doImport() 里的角色
+     * 过滤规则保持一致（项目负责人=角色"项目负责人"或"管理层"，内部执行人员=角色"执行人员"），
+     * 之前这两列虽然有导入校验但参考 sheet 上完全没提示可以填哪些人，只能靠试错。
      */
     private void appendOptionsReferenceSheet(XSSFWorkbook wb) {
         List<String> brandNames = new ArrayList<String>();
@@ -306,12 +310,24 @@ public class CollaborationTrackingExcelHandler {
             if (b != null) brandTeamPairs.add(b.getName() + "/" + t.getName());
         }
 
+        List<String> projectManagerNames = new ArrayList<String>();
+        List<String> executorNames = new ArrayList<String>();
+        for (Employee e : employeeCache.getAll()) {
+            String role = e.getRole();
+            if ("项目负责人".equals(role) || "管理层".equals(role)) projectManagerNames.add(e.getName());
+            if ("执行人员".equals(role)) executorNames.add(e.getName());
+        }
+        Collections.sort(projectManagerNames);
+        Collections.sort(executorNames);
+
         LinkedHashMap<String, List<String>> cols = new LinkedHashMap<String, List<String>>();
         cols.put("品牌方（来自品牌方管理，最新数据）", brandNames);
         cols.put("品牌方/团队（格式：品牌方/团队，来自品牌方/红人团队管理，最新数据）", brandTeamPairs);
         cols.put("合作平台", Arrays.asList(com.lusuoria.settlement.config.InfluencerOptions.PLATFORMS));
         cols.put("视频项目进度", Arrays.asList(PROGRESS_LABELS));
         cols.put("项目视频类型", Arrays.asList(VIDEO_TYPE_LABELS));
+        cols.put("项目负责人（角色为\"项目负责人\"或\"管理层\"的员工，来自员工管理，最新数据）", projectManagerNames);
+        cols.put("内部执行人员（角色为\"执行人员\"的员工，来自员工管理，最新数据）", executorNames);
         ExcelReferenceSheetHelper.append(wb, "可选值参考", cols);
     }
 
