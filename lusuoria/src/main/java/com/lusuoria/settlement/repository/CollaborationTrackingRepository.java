@@ -36,10 +36,19 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     List<CollaborationTracking> findByInfluencerIdInAndIsDeletedFalse(List<Long> influencerIds);
 
     /**
-     * Excel 批量导入优化专用：一次性取出所有未删除记录的内部项目编号，
-     * 在内存里做唯一性判断和序号分配，避免导入循环里每一行都单独查一次数据库。
+     * Excel 批量导入优化专用：一次性取出所有内部项目编号，在内存里做唯一性判断和序号分配，
+     * 避免导入循环里每一行都单独查一次数据库。
+     *
+     * 2026-08 修复：这里之前是 WHERE c.isDeleted = false，只取未删除记录的编号——但
+     * internal_project_no 在数据库层面是永久唯一约束，不认软删除，也不会像
+     * old_material_source_link_normalized 那样在删除时被清空腾出来复用（内部项目编号设计上
+     * 就是永久占用、不重新分配的，见字段注释）。单条保存/批量新建走的 ProjectNoAllocator
+     * 本来就查全表不限 isDeleted，唯独这条 Excel 批量导入专用的内存索引漏了这个条件，导致
+     * "软删除一条跟踪记录后，重新导入同一份Excel（红人/品牌方/团队/月份都一样，会算出同一个
+     * 候选编号）"会在内存查重这一步误判"没被占用"，真正 insert 时才在数据库层面撞唯一键
+     * 报错（uk_..._internal_project_no）。去掉 isDeleted 过滤，取全表已用过的编号即可。
      */
-    @Query("SELECT c.internalProjectNo FROM CollaborationTracking c WHERE c.isDeleted = false")
+    @Query("SELECT c.internalProjectNo FROM CollaborationTracking c")
     List<String> findAllInternalProjectNos();
 
     boolean existsByInternalProjectNo(String internalProjectNo);
