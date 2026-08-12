@@ -280,7 +280,39 @@ public class CollaborationTrackingExcelHandler {
         }
 
         for (int i = 0; i < hc; i++) sheet.setColumnWidth(i, 18 * 256);
+        appendOptionsReferenceSheet(wb);
         writeOut(wb, response, "红人合作跟踪导入模板");
+    }
+
+    /**
+     * 追加"可选值参考"sheet：品牌方/团队（数据库最新数据）+ 合作平台/视频项目进度/项目视频类型
+     * （代码里维护的枚举常量）列出来，供操作人核对怎么填。不含"服务国家/市场"——那是每个
+     * 红人自己维护的自由文本，没有统一的可选值列表。这个 sheet 加在最后，不是 workbook 的
+     * 第 0 个 sheet，不影响 importData() 的解析（固定从 getSheetAt(0) 读）。
+     */
+    private void appendOptionsReferenceSheet(XSSFWorkbook wb) {
+        List<String> brandNames = new ArrayList<String>();
+        for (Brand b : brandCache.getAll()) brandNames.add(b.getName());
+        Collections.sort(brandNames);
+
+        List<String> brandTeamPairs = new ArrayList<String>();
+        List<InfluencerTeam> teams = new ArrayList<InfluencerTeam>(teamCache.getAll());
+        teams.sort(Comparator.comparing((InfluencerTeam t) -> {
+            Brand b = brandCache.findById(t.getBrandId());
+            return b != null ? b.getName() : "";
+        }).thenComparing(InfluencerTeam::getName));
+        for (InfluencerTeam t : teams) {
+            Brand b = brandCache.findById(t.getBrandId());
+            if (b != null) brandTeamPairs.add(b.getName() + "/" + t.getName());
+        }
+
+        LinkedHashMap<String, List<String>> cols = new LinkedHashMap<String, List<String>>();
+        cols.put("品牌方（来自品牌方管理，最新数据）", brandNames);
+        cols.put("品牌方/团队（格式：品牌方/团队，来自品牌方/红人团队管理，最新数据）", brandTeamPairs);
+        cols.put("合作平台", Arrays.asList(com.lusuoria.settlement.config.InfluencerOptions.PLATFORMS));
+        cols.put("视频项目进度", Arrays.asList(PROGRESS_LABELS));
+        cols.put("项目视频类型", Arrays.asList(VIDEO_TYPE_LABELS));
+        ExcelReferenceSheetHelper.append(wb, "可选值参考", cols);
     }
 
     // ============ 导入 ============
