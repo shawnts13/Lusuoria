@@ -510,7 +510,15 @@ public class InfluencerExcelHandler {
                 }
 
                 boolean isNew = (inf == null);
+                // 2026-08 修复：isDirty() 要比较"改之前"和"改之后"两份独立数据，但下面的字段
+                // 全是在 inf 这个对象上原地 set 的——如果不在这里先克隆一份"改之前"的快照，
+                // 后面 isDirty(original, inf) 的 original 又是从 existingMap 重新 get 出来的
+                // 同一个引用（跟 inf 是同一个对象，字段早被原地改掉了），本质是对象跟自己比，
+                // 永远判定"无变化"，导致本该更新的红人一条都没进 toSave、没有真正写库——哪怕
+                // 导入历史提示"成功"，字段其实根本没改到
+                Influencer original = null;
                 if (isNew) { inf = new Influencer(); inf.setIsDeleted(false); }
+                else { original = new Influencer(); org.springframework.beans.BeanUtils.copyProperties(inf, original); }
 
                 inf.setInfluencerType(parseType(typeStr));
                 inf.setAccountName(accountName);
@@ -653,7 +661,6 @@ public class InfluencerExcelHandler {
                     existingMap.put(nameKey(accountName), inf);  // 防止同一 Excel 里重复 accountName 被误判
                     successCount++;
                 } else {
-                    Influencer original = existingMap.get(nameKey(accountName));
                     if (isDirty(original, inf)) {
                         toSave.add(inf);
                         updateCount++;
