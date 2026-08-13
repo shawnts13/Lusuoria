@@ -129,6 +129,12 @@ public class CollaborationTrackingExcelHandler {
     private static final String MONEY_FIELD_HINT =
         "该字段必须是数字，支持公式（只要算出来的结果是数字即可），不支持填写文本备注";
 
+    /** 模板里"视频发布链接"表头的提示语（Excel 原生批注，鼠标悬停可见） */
+    private static final String PUBLISH_LINK_HINT =
+        "支持填多条（同一个单元格内用回车换行分隔，跟\"合作平台\"一样），每条链接必须能从域名"
+        + "识别出对应的合作平台（如 instagram.com -> Instagram），且识别出的平台必须已经出现在"
+        + "\"合作平台\"列里，否则这一行会导入失败";
+
     private static final String[] VIDEO_TYPE_LABELS = {
         "实拍新视频", "实拍新图片", "AI新素材", "旧素材重发"
     };
@@ -247,6 +253,8 @@ public class CollaborationTrackingExcelHandler {
 
         // "视频发布时间"表头加一条批注提示前置条件，避免误填
         addHeaderComment(sheet, wb, colIdxMap, "视频发布时间", PUBLISH_DATE_HINT);
+        // "视频发布链接"表头加一条批注提示支持多条+需要跟"合作平台"对得上
+        addHeaderComment(sheet, wb, colIdxMap, "视频发布链接", PUBLISH_LINK_HINT);
         // 两个金额列加批注提示必须是数字，避免误填文本备注
         addHeaderComment(sheet, wb, colIdxMap, "红人视频制作与发布成本（美金）", MONEY_FIELD_HINT);
         addHeaderComment(sheet, wb, colIdxMap, "客户合作价格（美金）", MONEY_FIELD_HINT);
@@ -257,7 +265,7 @@ public class CollaborationTrackingExcelHandler {
         ex.put("红人社媒完整名字", "bigdogtech");
         ex.put("合作平台", "Instagram\nTikTok");
         ex.put("需求内容(具体产品名)", "手持游戏机");
-        ex.put("视频发布链接", "https://instagram.com/p/xxx");
+        ex.put("视频发布链接", "https://instagram.com/p/xxx\nhttps://www.tiktok.com/@bigdogtech/video/xxx");
         ex.put("视频发布时间", "2026-04-09");
         ex.put("视频项目进度", "已发布（未结算）");
         ex.put("项目视频类型", "实拍新视频");
@@ -593,12 +601,30 @@ public class CollaborationTrackingExcelHandler {
                 req.setPlatform(platform);
                 req.setDemandContent(demandRaw);
 
-                // 发布链接（兼容多种列名）
-                String publishLink = emptyToNull(firstNonNull(
+                // 发布链接（兼容多种列名）：2026-08 起支持多条（回车分隔，做法跟"合作平台"一致）。
+                // 每一条链接必须能从域名反推出一个合作平台（PlatformTextParser.platformFromUrl），
+                // 且反推出的平台必须已经出现在这一行的"合作平台"里——链接域名比"合作平台"这种
+                // 自由填写/智能提取的列更可靠，两边对不上通常意味着有一边填错了，直接拒绝这一行
+                String publishLinkRaw = emptyToNull(firstNonNull(
                         getStr(row, colMap, "视频发布链接"),
                         getStr(row, colMap, "发布链接(IG reel)"),
                         getStr(row, colMap, "发布链接"),
                         getStr(row, colMap, "主页link")));
+                List<String> publishLinkList = new ArrayList<String>();
+                if (publishLinkRaw != null) {
+                    for (String link : publishLinkRaw.split("\n")) {
+                        String trimmed = link.trim();
+                        if (!trimmed.isEmpty()) publishLinkList.add(trimmed);
+                    }
+                }
+                if (!publishLinkList.isEmpty()) {
+                    String linkError = validatePublishLinks(publishLinkList, platform);
+                    if (linkError != null) {
+                        errors.add("第" + (i + 1) + "行：" + linkError);
+                        continue;
+                    }
+                }
+                String publishLink = publishLinkList.isEmpty() ? null : String.join("\n", publishLinkList);
                 req.setPublishLink(publishLink);
 
                 // 视频发布时间
@@ -788,6 +814,32 @@ public class CollaborationTrackingExcelHandler {
      */
     // 平台文本识别（IG/TT/YT/FB 等缩写）2026-07 起抽到 util/PlatformTextParser，
     // 供这里的 Excel 智能提取 和 红人需求管理模块的"提取需求内容"共用
+
+    /**
+     * 校验"视频发布链接"（可能有多条）：每一条都必须能从域名反推出一个合作平台
+     * （PlatformTextParser.platformFromUrl），且反推出的平台必须已经出现在这一行的
+     * "合作平台"里。全部通过返回 null，否则返回具体报错原因（不含"第N行："前缀，调用方拼接）。
+     */
+    private String validatePublishLinks(List<String> links, String platform) {
+        Set<String> platformSet = new LinkedHashSet<String>();
+        if (platform != null) {
+            for (String p : platform.split("\n")) {
+                String trimmed = p.trim();
+                if (!trimmed.isEmpty()) platformSet.add(trimmed);
+            }
+        }
+        for (String link : links) {
+            String linkPlatform = com.lusuoria.settlement.util.PlatformTextParser.platformFromUrl(link);
+            if (linkPlatform == null) {
+                return "视频发布链接 [" + link + "] 无法根据链接形式识别出对应的合作平台，请核对";
+            }
+            if (!platformSet.contains(linkPlatform)) {
+                return "视频发布链接 [" + link + "] 对应的合作平台是\"" + linkPlatform
+                        + "\"，但\"合作平台\"列里没有这一项，请核对";
+            }
+        }
+        return null;
+    }
 
     // ============ 工具方法 ============
     private CollaborationProgress parseProgress(String label) {

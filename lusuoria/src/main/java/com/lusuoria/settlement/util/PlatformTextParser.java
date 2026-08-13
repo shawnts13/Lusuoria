@@ -40,4 +40,23 @@ public class PlatformTextParser {
                 .matcher(upperText);
         return m.find();
     }
+
+    /**
+     * 根据"视频发布链接"本身的域名反推它属于哪个合作平台（2026-08 新增，供 Excel 导入校验
+     * "视频发布链接"跟"合作平台"列是否对得上用）。链接域名比 extractPlatforms() 依赖的自由
+     * 文本描述更可靠，识别不到时返回 null——调用方应该报错让人核对，而不是像 extractPlatforms()
+     * 那样静默忽略识别不到的部分。
+     */
+    public static String platformFromUrl(String url) {
+        if (url == null || url.trim().isEmpty()) return null;
+        String u = url.trim().toLowerCase();
+        if (u.contains("instagram.com") || u.contains("instagr.am")) return "Instagram";
+        if (u.contains("tiktok.com")) return "TikTok";
+        if (u.contains("youtube.com") || u.contains("youtu.be")) return "YouTube";
+        if (u.contains("facebook.com") || u.contains("fb.watch")) return "Facebook";
+        if (u.contains("weibo.com") || u.contains("weibo.cn")) return "微博";
+        if (u.contains("xiaohongshu.com") || u.contains("xhslink.com")) return "小红书";
+        if (u.contains("douyin.com") || u.contains("iesdouyin.com")) return "抖音";
+        return null;
+    }
 }
