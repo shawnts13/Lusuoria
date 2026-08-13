@@ -90,11 +90,25 @@ public class ProgressReminderService {
     private static final Set<ReminderCategory> PAYMENT_CATEGORIES = EnumSet.of(
             ReminderCategory.COLLAB_PAYMENT_DUE,
             ReminderCategory.INFLUENCER_PAYMENT_DUE, ReminderCategory.INFLUENCER_PAYMENT_RECEIPT_OVERDUE);
-    /** "项目流转后更新提示内容"手动触发范围（2026-07 新增，不含 CONTRACT_EXPIRING_SOON——
-     * 那一类是按日历/合同到期日驱动的，不是按"进度流转"驱动的，只在每天3点主批次里跑） */
+    /** "项目流转后更新提示内容"支持"标记已处理"的范围（2026-07 新增）——这4类都有可靠的
+     * "业务记录是否已经变化"时间戳，能判断一条旧的"标记已处理"快照是否已经过期。
+     * 注意：这个集合同时也是 ACKNOWLEDGEABLE_CATEGORIES 的来源（见下方），不要往这里加
+     * CONTRACT_EXPIRING_SOON——那一类没有可靠的时间戳，不支持"标记已处理"，手动触发范围见
+     * PROJECT_FLOW_RECOMPUTE_CATEGORIES */
     private static final Set<ReminderCategory> PROJECT_FLOW_CATEGORIES = EnumSet.of(
             ReminderCategory.PM_EXECUTOR_PROGRESS_STALL, ReminderCategory.FINANCE_PROGRESS_STALL,
             ReminderCategory.REQUIREMENT_INVOICE_OVERDUE, ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE);
+    /** "项目流转后更新提示内容"手动触发范围（2026-08 起把 CONTRACT_EXPIRING_SOON 也纳入——
+     * 之前这一类严格只在每天3点主批次里跑，改完代码之后要等到第二天3点才能验证效果，体验很差；
+     * 现在允许通过这个按钮立即重算。CONTRACT_EXPIRING_SOON 依然不支持"标记已处理"（见上面
+     * PROJECT_FLOW_CATEGORIES 的注释），所以这里单独维护一个集合，不能直接在
+     * PROJECT_FLOW_CATEGORIES 里加，否则会连带让它变得"可标记已处理"） */
+    private static final Set<ReminderCategory> PROJECT_FLOW_RECOMPUTE_CATEGORIES;
+    static {
+        Set<ReminderCategory> s = EnumSet.copyOf(PROJECT_FLOW_CATEGORIES);
+        s.add(ReminderCategory.CONTRACT_EXPIRING_SOON);
+        PROJECT_FLOW_RECOMPUTE_CATEGORIES = Collections.unmodifiableSet(s);
+    }
     /** 按具体项目负责人/涉及执行人员定向可见的类别（2026-07 新增 CONTRACT_EXPIRING_SOON，
      * 2026-08 新增 FINANCE_PROGRESS_STALL——注意 FINANCE_PROGRESS_STALL 这一类是"混合"的：
      * 同一类别下既有 audienceEmployeeId=null 的"财务角色整体可见"卡片（见
@@ -262,20 +276,25 @@ public class ProgressReminderService {
     }
 
     /**
-     * "项目流转后更新提示内容"手动触发（2026-07 新增，2026-07 新增合同上传逾期）：只重算
-     * PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE/
-     * REQUIREMENT_CONTRACT_OVERDUE 这4类，不影响两类"临近结款"提醒当天已经算好的数据。
+     * "项目流转后更新提示内容"手动触发（2026-07 新增，2026-07 新增合同上传逾期，2026-08 新增
+     * 合同即将到期）：重算 PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL/
+     * REQUIREMENT_INVOICE_OVERDUE/REQUIREMENT_CONTRACT_OVERDUE/CONTRACT_EXPIRING_SOON 这5类，
+     * 不影响两类"临近结款"提醒当天已经算好的数据。CONTRACT_EXPIRING_SOON 本来严格只在每天3点
+     * 主批次里跑，2026-08 起也允许这里手动触发——之前改完团队合同相关的逻辑要等到第二天3点
+     * 才能验证效果，体验很差；纳入之后不影响它"不支持标记已处理"的既有约束（见
+     * PROJECT_FLOW_RECOMPUTE_CATEGORIES 的注释）。
      */
     @Transactional
     public void runProjectFlowBatches() {
         try {
-            clearCategories(PROJECT_FLOW_CATEGORIES);
+            clearCategories(PROJECT_FLOW_RECOMPUTE_CATEGORIES);
             LocalDate today = LocalDate.now(ZoneId.systemDefault());
             Date batchDate = toDate(today);
             runPmExecutorProgressStall(today, batchDate);
             runFinanceProgressStall(today, batchDate);
             runRequirementInvoiceOverdue(today, batchDate);
             runRequirementContractOverdue(today, batchDate);
+            runContractExpiringSoon(today, batchDate);
         } catch (RuntimeException e) {
             log.error("进度提醒（项目流转类）手动重算失败：{}", e.toString(), e);
             throw e;
@@ -1008,7 +1027,8 @@ public class ProgressReminderService {
      *
      * 涉及的项目负责人各自一张卡（跟 Part E/F 一致），执行人员通过 involvedEmployeeIds 获得
      * 可见性。这一类不支持"标记已处理"——TeamContract 不是 BaseEntity，没有 updatedAt，
-     * 没有可靠的"业务记录是否已经变化"时间戳可用，只在每天3点主批次里跑一次。
+     * 没有可靠的"业务记录是否已经变化"时间戳可用。每天3点主批次会自动跑一次，2026-08 起
+     * 也能通过"项目流转后更新提示内容"手动立即触发（见 PROJECT_FLOW_RECOMPUTE_CATEGORIES）。
      */
     private void runContractExpiringSoon(LocalDate today, Date batchDate) {
         List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
