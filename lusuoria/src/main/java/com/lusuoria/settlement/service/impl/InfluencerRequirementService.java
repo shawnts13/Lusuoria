@@ -15,7 +15,7 @@ import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
 import com.lusuoria.settlement.entity.InfluencerBrandTeam;
-import com.lusuoria.settlement.entity.InfluencerContract;
+import com.lusuoria.settlement.entity.TeamContract;
 import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.InfluencerRequirementItem;
 import com.lusuoria.settlement.entity.InfluencerPayment;
@@ -31,7 +31,7 @@ import com.lusuoria.settlement.enums.RequirementSettlementStatus;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
-import com.lusuoria.settlement.repository.InfluencerContractRepository;
+import com.lusuoria.settlement.repository.TeamContractRepository;
 import com.lusuoria.settlement.repository.InfluencerPaymentRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementItemRepository;
@@ -80,7 +80,7 @@ public class InfluencerRequirementService {
     @Autowired private RequirementNoAllocator noAllocator;
     @Autowired private RequirementContentParser contentParser;
     @Autowired private CollaborationTrackingRepository trackingRepo;
-    @Autowired private InfluencerContractRepository influencerContractRepo;
+    @Autowired private TeamContractRepository teamContractRepo;
     @Autowired private InfluencerPaymentRepository paymentRepo;
     @Autowired private PendingApprovalRepository pendingApprovalRepo;
     @Autowired private com.lusuoria.settlement.util.EmployeeRoleUtil employeeRoleUtil;
@@ -499,13 +499,13 @@ public class InfluencerRequirementService {
      * 是"每次需求签一次合同"还是"一年签一次合同"分两套判断"是否已上传合同"：
      *   - 每次需求签一次合同：看需求自己的 contractLink 是否为空（口径对齐
      *     REQUIREMENT_CONTRACT_OVERDUE 提醒批次，只是不按"超出阈值天数"分档）。
-     *   - 一年签一次合同：这类品牌方的合同不走需求自己的 contractLink 字段，而是在"红人管理"
-     *     维护（InfluencerContract，按红人+品牌方+团队各自维护有效期区间），前端"合同链接"列
-     *     也是这么判断的（见 RequirementListPage.vue 的 matchedInfluencerContract）——
-     *     之前这里漏了这一种情况，直接把所有"一年签一次合同"的需求都排除在候选之外，
-     *     导致这类品牌方下大量"红人管理处还没上传合同"的已完成需求，点这个按钮完全查不出来。
-     *     现在改成查这个红人名下的合同，看有没有一条 (品牌方,团队) 匹配、且有效期区间覆盖
-     *     这条需求的"需求月份"，没有匹配上就算"未上传合同"。
+     *   - 一年签一次合同：这类品牌方的合同不走需求自己的 contractLink 字段，而是团队级的
+     *     （TeamContract，2026-08 起团队下所有红人共用同一份合同，按品牌方+团队各自维护有效期
+     *     区间，不再按红人各自维护），在"品牌方/红人团队管理"-"管理团队"里上传，前端"合同链接"
+     *     列也是这么判断的（见 RequirementListPage.vue 的 matchedTeamContract）——之前这里漏了
+     *     这一种情况，直接把所有"一年签一次合同"的需求都排除在候选之外，导致这类品牌方下大量
+     *     "还没上传合同"的已完成需求，点这个按钮完全查不出来。现在改成查这个需求的 (品牌方,团队)
+     *     组合有没有一条合同、且有效期区间覆盖这条需求的"需求月份"，没有匹配上就算"未上传合同"。
      */
     @Transactional(readOnly = true)
     public org.springframework.data.domain.Page<InfluencerRequirement> pageMissingContract(
@@ -515,12 +515,7 @@ public class InfluencerRequirementService {
         List<InfluencerRequirement> all = requirementRepo.findByFiltersNoPaging(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo,
                 completedMonth, pageable.getSort());
-        List<Long> influencerIds = all.stream().map(InfluencerRequirement::getInfluencerId)
-                .filter(java.util.Objects::nonNull).distinct().collect(Collectors.toList());
-        Map<Long, List<InfluencerContract>> contractsByInfluencerId = influencerIds.isEmpty()
-                ? new HashMap<>()
-                : influencerContractRepo.findByInfluencerIdIn(influencerIds).stream()
-                        .collect(Collectors.groupingBy(InfluencerContract::getInfluencerId));
+        Map<String, List<TeamContract>> contractsByBrandTeam = buildContractsByBrandTeam(all);
 
         List<InfluencerRequirement> missing = new ArrayList<>();
         for (InfluencerRequirement r : all) {
@@ -530,16 +525,43 @@ public class InfluencerRequirementService {
             if (InfluencerTeam.isPerRequirementContract(brand, team)) {
                 if (r.getContractLink() != null && !r.getContractLink().trim().isEmpty()) continue;
             } else {
-                List<InfluencerContract> contracts = contractsByInfluencerId.getOrDefault(r.getInfluencerId(), Collections.emptyList());
+                List<TeamContract> contracts = contractsByBrandTeam.getOrDefault(
+                        brandTeamKey(r.getBrandId(), r.getTeamId()), Collections.emptyList());
                 boolean matched = contracts.stream().anyMatch(c ->
-                        java.util.Objects.equals(c.getBrandId(), r.getBrandId())
-                        && java.util.Objects.equals(c.getTeamId(), r.getTeamId())
-                        && monthOverlapsContractRange(r.getRequirementMonth(), c.getStartDate(), c.getEndDate()));
+                        monthOverlapsContractRange(r.getRequirementMonth(), c.getStartDate(), c.getEndDate()));
                 if (matched) continue;
             }
             missing.add(r);
         }
         return paginateAndEnrich(missing, pageable);
+    }
+
+    /** brandId+teamId 两个 Long（teamId 可能为空）拼成的 map key，跟"品牌方/团队"这个组合的
+     *  语义一一对应，供上面 pageMissingContract 和下面按需要时批量查团队合同用 */
+    private String brandTeamKey(Long brandId, Long teamId) {
+        return brandId + "|" + (teamId != null ? teamId : -1L);
+    }
+
+    /** 批量查这批需求各自 (品牌方,团队) 组合下的团队级合同，按 brandTeamKey 分组，避免逐条查库 */
+    private Map<String, List<TeamContract>> buildContractsByBrandTeam(List<InfluencerRequirement> requirements) {
+        Set<Long> teamIds = new HashSet<>();
+        Set<Long> brandIdsWithoutTeam = new HashSet<>();
+        for (InfluencerRequirement r : requirements) {
+            if (r.getTeamId() != null) teamIds.add(r.getTeamId());
+            else if (r.getBrandId() != null) brandIdsWithoutTeam.add(r.getBrandId());
+        }
+        Map<String, List<TeamContract>> result = new HashMap<>();
+        if (!teamIds.isEmpty()) {
+            for (TeamContract c : teamContractRepo.findByTeamIdIn(new ArrayList<>(teamIds))) {
+                result.computeIfAbsent(brandTeamKey(c.getBrandId(), c.getTeamId()), k -> new ArrayList<>()).add(c);
+            }
+        }
+        if (!brandIdsWithoutTeam.isEmpty()) {
+            for (TeamContract c : teamContractRepo.findByBrandIdInAndTeamIdIsNull(new ArrayList<>(brandIdsWithoutTeam))) {
+                result.computeIfAbsent(brandTeamKey(c.getBrandId(), c.getTeamId()), k -> new ArrayList<>()).add(c);
+            }
+        }
+        return result;
     }
 
     /** 需求月份（yyyyMM）是否落在合同有效期区间内，跟前端 RequirementListPage.vue 的
@@ -1174,8 +1196,9 @@ public class InfluencerRequirementService {
     /**
      * 上传/修改合同链接（2026-07 新增）：只针对品牌方"每次需求签一次合同"（Brand.isPerRequirementContract()）
      * 的场景，任何时候都可以点击上传/修改，不像 invoice 那样要求需求先100%完成。品牌方"一年签一次
-     * 合同"时这个接口直接拒绝——那种品牌方的合同改在"红人管理"维护（InfluencerContract），前端按钮
-     * 正常情况下也不会出现，这里是后端兜底。跟 invoice 不同，合同上传不需要联动红人结款进度。
+     * 合同"时这个接口直接拒绝——那种品牌方的合同是团队级的（见 TeamContract），改在
+     * "品牌方/红人团队管理"-"管理团队"维护，前端按钮正常情况下也不会出现，这里是后端兜底。
+     * 跟 invoice 不同，合同上传不需要联动红人结款进度。
      */
     @Transactional
     public InfluencerRequirement uploadContractLink(Long requirementId, String contractLink) {
@@ -1185,7 +1208,7 @@ public class InfluencerRequirementService {
         Brand brand = requirement.getBrandId() != null ? brandCache.findById(requirement.getBrandId()) : null;
         InfluencerTeam team = requirement.getTeamId() != null ? teamCache.findById(requirement.getTeamId()) : null;
         if (!InfluencerTeam.isPerRequirementContract(brand, team)) {
-            throw new RuntimeException("该品牌方/团队是一年签一次合同，请在红人管理处上传");
+            throw new RuntimeException("该品牌方/团队是一年签一次合同，请在\"品牌方/红人团队管理\"-\"管理团队\"处上传");
         }
 
         requirement.setContractLink(contractLink);

@@ -7,14 +7,11 @@ import javax.validation.constraints.NotNull;
 import java.util.Date;
 
 @Data
-public class InfluencerContractRequest {
-    @NotNull(message = "红人不能为空")
-    private Long influencerId;
-
+public class TeamContractRequest {
     @NotNull(message = "请选择品牌方")
     private Long brandId;
 
-    /** 团队可为空（该品牌方下这个红人没有配团队的情况） */
+    /** 团队可为空（该品牌方下没有团队层的情况） */
     private Long teamId;
 
     @NotNull(message = "请选择合同生效日期")

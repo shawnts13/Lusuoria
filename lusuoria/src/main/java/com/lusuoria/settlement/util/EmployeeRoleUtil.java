@@ -56,4 +56,16 @@ public class EmployeeRoleUtil {
     public boolean canSetSettlementProgressExtraRole() {
         return SETTLEMENT_PROGRESS_EXTRA_ROLES.contains(getCurrentEmployeeRole());
     }
+
+    /** "上传/编辑/删除团队级合同"（TeamContract，2026-08 新增，替代原来挂在红人身上的
+     * InfluencerContract）允许的员工角色——项目负责人/执行人员/法务/管理层/IT后勤，
+     * 不含财务（Shawn 明确"财务管钱不管合同文件"）。这是纯 Employee.role 判断，跟
+     * SysUser.role（ADMIN/STAFF/AUDITOR/GUEST）无关——哪怕账号是 GUEST 权限档位，
+     * 只要关联的员工角色在这个集合里就能维护团队合同。 */
+    private static final Set<String> TEAM_CONTRACT_MANAGE_ROLES =
+            new HashSet<>(Arrays.asList("项目负责人", "执行人员", "法务", "管理层", "IT后勤"));
+
+    public boolean canManageTeamContracts() {
+        return TEAM_CONTRACT_MANAGE_ROLES.contains(getCurrentEmployeeRole());
+    }
 }

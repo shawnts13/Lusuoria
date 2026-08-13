@@ -114,8 +114,9 @@ public class InfluencerRequirement extends BaseEntity {
      * 合同链接（2026-07 新增）。品牌方"每次需求签一次合同"时，通过
      * InfluencerRequirementService.uploadContractLink() 写入，任何时候都可以上传/修改，
      * 不像 invoiceLink 那样要求需求先100%完成。品牌方"一年签一次合同"时这个字段不使用——
-     * 那种品牌方的合同链接改在"红人管理"维护（见 InfluencerContract），前端会按品牌方的
-     * Brand.contractCycleType 决定展示这个字段还是跳转去红人管理。
+     * 那种品牌方的合同是团队级的（见 TeamContract，2026-08 起改成团队下所有红人共用同一份，
+     * 不再按红人各自维护），改在"品牌方/红人团队管理"-"管理团队"里维护，前端会按品牌方的
+     * Brand.contractCycleType 决定展示这个字段还是跳转去团队管理。
      */
     @Column(name = "contract_link", columnDefinition = "TEXT")
     private String contractLink;

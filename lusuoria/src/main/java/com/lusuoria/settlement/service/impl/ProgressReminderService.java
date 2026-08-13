@@ -7,7 +7,7 @@ import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.Influencer;
-import com.lusuoria.settlement.entity.InfluencerContract;
+import com.lusuoria.settlement.entity.TeamContract;
 import com.lusuoria.settlement.entity.InfluencerPayment;
 import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.InfluencerTeam;
@@ -23,7 +23,7 @@ import com.lusuoria.settlement.enums.PaymentCycleType;
 import com.lusuoria.settlement.enums.ReminderCategory;
 import com.lusuoria.settlement.enums.ReminderUrgency;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
-import com.lusuoria.settlement.repository.InfluencerContractRepository;
+import com.lusuoria.settlement.repository.TeamContractRepository;
 import com.lusuoria.settlement.repository.InfluencerPaymentRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
@@ -115,7 +115,7 @@ public class ProgressReminderService {
     @Autowired private ProgressReminderDetailRepository detailRepo;
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private InfluencerRepository influencerRepo;
-    @Autowired private InfluencerContractRepository influencerContractRepo;
+    @Autowired private TeamContractRepository teamContractRepo;
     @Autowired private InfluencerRequirementRepository requirementRepo;
     @Autowired private InfluencerRequirementService requirementService;
     @Autowired private InfluencerPaymentRepository influencerPaymentRepo;
@@ -931,7 +931,7 @@ public class ProgressReminderService {
      * Part F（2026-07 新增，2026-07 改成团队优先/品牌方兜底）：需求完成进度100%后长时间未上传
      * 合同——只针对"每次需求签一次合同"的场景（{@link InfluencerTeam#isPerRequirementContract}：
      * 先看需求关联的团队有没有覆盖设置，没有就退回品牌方级别配置）；"一年签一次合同"的场景暂时
-     * 不做这类提醒（那种场景改由红人在"红人管理"维护年度合同，不是每个需求单独催，见
+     * 不做这类提醒（那种场景改由团队级维护年度合同，不是每个需求单独催，见
      * runContractExpiringSoon）。阈值14工作日，分组/归类逻辑完全跟 Part E（Invoice逾期）一致，
      * 按需求关联的合作跟踪记录的项目负责人归类。
      */
@@ -988,15 +988,17 @@ public class ProgressReminderService {
     }
 
     /**
-     * Part G（2026-07 新增）：品牌方/团队"一年签一次合同"场景下，合同即将到期/已过期的提醒。
-     * 候选范围按"当前存在合作关系"判断（不是按某次需求是否完结）——只要 (红人,品牌方,团队) 这个
-     * 组合下有任意一条未删除的合作跟踪记录，且这个组合的合同签订周期是"一年签一次"
-     * （InfluencerTeam.isPerRequirementContract 判定为 false），就纳入候选；不管底下有多少条
-     * 视频/跟踪记录，只按这个组合整体判断一次、生成一条提醒明细（去重，不会同一红人在同一
-     * 团队下做过多条视频就重复提醒好几遍）。
+     * Part G（2026-07 新增，2026-08 改造）：品牌方/团队"一年签一次合同"场景下，合同即将到期/
+     * 已过期的提醒。候选范围按"当前存在合作关系"判断（不是按某次需求是否完结）——只要
+     * (品牌方,团队) 这个组合下有任意一条未删除的合作跟踪记录（不管挂在哪个红人名下），且这个
+     * 组合的合同签订周期是"一年签一次"（InfluencerTeam.isPerRequirementContract 判定为
+     * false），就纳入候选；不管底下有多少个红人、多少条视频/跟踪记录，只按这个组合整体判断
+     * 一次、生成一条提醒明细。
      *
-     * 到期日优先级：红人自己在这个(品牌方,团队)下"当前"的 InfluencerContract（同一红人同一
-     * 品牌方团队下可能有多条历史合同，取 endDate 最大的一条）> 团队的兜底默认有效期
+     * 2026-08 起：合同从"挂在红人身上"改成"团队级"（TeamContract，团队下所有红人共用同一份
+     * 合同，不再各自维护）——去重维度相应从"红人+品牌方+团队"三元组收窄成"品牌方+团队"二元组，
+     * 同一团队下不同红人不再各自出一条明细。到期日优先级：这个 (品牌方,团队) 组合"当前"的
+     * TeamContract（可能有多条历史合同，取 endDate 最大的一条）> 团队的兜底默认有效期
      * （InfluencerTeam.defaultContractEndDate）> 都没有则跳过（没数据没法判断）。
      *
      * 到期前30天开始提醒，复用 ReminderUrgency 这个枚举类型（跟"进度滞留-财务"一样，只是借用
@@ -1005,35 +1007,43 @@ public class ProgressReminderService {
      * 见 ProgressReminderCardList.vue。
      *
      * 涉及的项目负责人各自一张卡（跟 Part E/F 一致），执行人员通过 involvedEmployeeIds 获得
-     * 可见性。这一类不支持"标记已处理"——InfluencerContract 不是 BaseEntity，没有 updatedAt，
+     * 可见性。这一类不支持"标记已处理"——TeamContract 不是 BaseEntity，没有 updatedAt，
      * 没有可靠的"业务记录是否已经变化"时间戳可用，只在每天3点主批次里跑一次。
      */
     private void runContractExpiringSoon(LocalDate today, Date batchDate) {
         List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
 
-        // 按 (红人,品牌方,团队) 三元组去重成候选合同关系（不看进度/是否完结）
-        Map<String, List<CollaborationTracking>> byTriple = new LinkedHashMap<>();
+        // 按 (品牌方,团队) 二元组去重成候选合同关系（不看进度/是否完结、不看具体是哪个红人）
+        Map<String, List<CollaborationTracking>> byBrandTeam = new LinkedHashMap<>();
         for (CollaborationTracking t : all) {
             if (t.getInfluencerId() == null || t.getBrandId() == null) continue;
-            String key = t.getInfluencerId() + "|" + t.getBrandId() + "|" + (t.getTeamId() != null ? t.getTeamId() : -1L);
-            byTriple.computeIfAbsent(key, k -> new ArrayList<>()).add(t);
+            String key = t.getBrandId() + "|" + (t.getTeamId() != null ? t.getTeamId() : -1L);
+            byBrandTeam.computeIfAbsent(key, k -> new ArrayList<>()).add(t);
         }
-        if (byTriple.isEmpty()) return;
+        if (byBrandTeam.isEmpty()) return;
 
-        // 批量查这批红人的全部合同，避免逐个组合查库；同一 (红人,品牌方,团队) 下可能有多条
+        // 批量查这批 (品牌方,团队) 组合的团队级合同，避免逐个组合查库；同一组合下可能有多条
         // 历史合同，取 endDate 最大的一条作为"当前"合同
-        Set<Long> influencerIds = new HashSet<>();
-        for (List<CollaborationTracking> group : byTriple.values()) influencerIds.add(group.get(0).getInfluencerId());
-        Map<String, InfluencerContract> currentContractByTriple = new HashMap<>();
-        for (InfluencerContract c : influencerContractRepo.findByInfluencerIdIn(new ArrayList<>(influencerIds))) {
-            String key = c.getInfluencerId() + "|" + c.getBrandId() + "|" + (c.getTeamId() != null ? c.getTeamId() : -1L);
-            InfluencerContract existing = currentContractByTriple.get(key);
+        Set<Long> teamIds = new HashSet<>();
+        Set<Long> brandIdsWithoutTeam = new HashSet<>();
+        for (List<CollaborationTracking> group : byBrandTeam.values()) {
+            CollaborationTracking sample = group.get(0);
+            if (sample.getTeamId() != null) teamIds.add(sample.getTeamId());
+            else brandIdsWithoutTeam.add(sample.getBrandId());
+        }
+        List<TeamContract> candidateContracts = new ArrayList<>();
+        if (!teamIds.isEmpty()) candidateContracts.addAll(teamContractRepo.findByTeamIdIn(new ArrayList<>(teamIds)));
+        if (!brandIdsWithoutTeam.isEmpty()) {
+            candidateContracts.addAll(teamContractRepo.findByBrandIdInAndTeamIdIsNull(new ArrayList<>(brandIdsWithoutTeam)));
+        }
+        Map<String, TeamContract> currentContractByBrandTeam = new HashMap<>();
+        for (TeamContract c : candidateContracts) {
+            String key = c.getBrandId() + "|" + (c.getTeamId() != null ? c.getTeamId() : -1L);
+            TeamContract existing = currentContractByBrandTeam.get(key);
             if (existing == null || c.getEndDate().after(existing.getEndDate())) {
-                currentContractByTriple.put(key, c);
+                currentContractByBrandTeam.put(key, c);
             }
         }
-
-        Map<Long, String> accountNameById = buildAccountNameIndex(all);
 
         Map<String, List<ProgressReminderDetail>> byKey = new LinkedHashMap<>();
         Map<String, Long> pmIdByKey = new HashMap<>();
@@ -1044,19 +1054,19 @@ public class ProgressReminderService {
         int overdueMaxDays = thresholdCache.getInt(ReminderCategory.CONTRACT_EXPIRING_SOON, "TIER_OVERDUE_MAX_DAYS", 0);
         int nearMaxDays = thresholdCache.getInt(ReminderCategory.CONTRACT_EXPIRING_SOON, "TIER_NEAR_MAX_DAYS", 14);
 
-        for (Map.Entry<String, List<CollaborationTracking>> tripleEntry : byTriple.entrySet()) {
-            List<CollaborationTracking> group = tripleEntry.getValue();
+        for (Map.Entry<String, List<CollaborationTracking>> brandTeamEntry : byBrandTeam.entrySet()) {
+            List<CollaborationTracking> group = brandTeamEntry.getValue();
             CollaborationTracking sample = group.get(0);
             Brand brand = brandCache.findById(sample.getBrandId());
             InfluencerTeam team = sample.getTeamId() != null ? teamCache.findById(sample.getTeamId()) : null;
             if (InfluencerTeam.isPerRequirementContract(brand, team)) continue; // 只处理"一年签一次"的组合
 
-            InfluencerContract individual = currentContractByTriple.get(tripleEntry.getKey());
+            TeamContract current = currentContractByBrandTeam.get(brandTeamEntry.getKey());
             Date endDate;
             String sourceLabel;
-            if (individual != null) {
-                endDate = individual.getEndDate();
-                sourceLabel = "按红人个人合同判断";
+            if (current != null) {
+                endDate = current.getEndDate();
+                sourceLabel = "按团队合同判断";
             } else if (team != null && team.getDefaultContractEndDate() != null) {
                 endDate = team.getDefaultContractEndDate();
                 sourceLabel = "按团队兜底默认有效期判断";
@@ -1082,15 +1092,16 @@ public class ProgressReminderService {
                 detail.setTrackingId(sample.getId());
                 detail.setBrandName(brand != null ? brand.getName() : null);
                 detail.setTeamName(team != null ? team.getName() : null);
-                detail.setAccountName(accountNameById.get(sample.getInfluencerId()));
                 detail.setDemandContent(sourceLabel);
                 detail.setCycleDays(expiryWindowDays);
                 detail.setDeadlineDate(endDate);
                 detail.setOverdueDays((int) Math.max(0, -daysRemaining));
-                // requirementId 这一列这类没有对应的"需求"，借用来存红人 id，供前端"查看详情"
-                // 直接跳转打开该红人的编辑弹窗（"已签署合同"区块），不是 REQUIREMENT_INVOICE_OVERDUE/
-                // REQUIREMENT_CONTRACT_OVERDUE 那种真正的需求 id
-                detail.setRequirementId(sample.getInfluencerId());
+                // 2026-08 起"查看详情"跳转到"品牌方/红人团队管理"-"管理团队"的团队级合同入口，
+                // 按品牌方+团队定位，不再是某个具体红人：requirementId 复用存 teamId（该品牌方
+                // 没有团队层时为空），internalRequirementNo 复用存 brandId（字符串形式），
+                // 前端 goToDetail() 靠这两个字段拼跳转链接
+                detail.setRequirementId(sample.getTeamId());
+                detail.setInternalRequirementNo(String.valueOf(sample.getBrandId()));
 
                 String key = pmEntry.getKey() + "|" + urgency.name();
                 byKey.computeIfAbsent(key, k -> new ArrayList<>()).add(detail);
@@ -1136,7 +1147,7 @@ public class ProgressReminderService {
         reminder.setCount(details.size());
         Employee emp = audienceEmployeeId != null ? employeeCache.findById(audienceEmployeeId) : null;
         String empName = emp != null ? emp.getName() : ("员工#" + audienceEmployeeId);
-        reminder.setTitle("项目负责人-" + empName + "-手下的" + details.size() + "个红人合作，合同签订周期即将到期或已到期，请跟进续签");
+        reminder.setTitle("项目负责人-" + empName + "-手下的" + details.size() + "个品牌方团队，合同签订周期即将到期或已到期，请跟进续签");
         reminder = reminderRepo.save(reminder);
         for (ProgressReminderDetail d : details) d.setReminderId(reminder.getId());
         detailRepo.saveAll(details);
@@ -1392,10 +1403,11 @@ public class ProgressReminderService {
             }).collect(Collectors.toList());
         }
 
-        // CONTRACT_EXPIRING_SOON：trackingId 只是这个 (红人,品牌方,团队) 组合下随便挑的一条
-        // 占位记录（见 runContractExpiringSoon），不能只看这一条的执行人员是不是我——要把这条
-        // 占位记录还原成完整的 (红人,品牌方,团队) 三元组，再看这个组合下所有未删除的合作跟踪
-        // 记录里有没有我作为执行人员的（只要有一条就算，因为这条提醒本身是按这个组合整体展示的）
+        // CONTRACT_EXPIRING_SOON：trackingId 只是这个 (品牌方,团队) 组合下随便挑的一条占位记录
+        // （见 runContractExpiringSoon，2026-08 起去重维度是品牌方+团队，不再看具体红人），
+        // 不能只看这一条的执行人员是不是我——要把这条占位记录还原成完整的 (品牌方,团队)
+        // 二元组，再看这个组合下所有未删除的合作跟踪记录（不限红人）里有没有我作为执行人员的
+        // （只要有一条就算，因为这条提醒本身是按这个组合整体展示的）
         if (category == ReminderCategory.CONTRACT_EXPIRING_SOON) {
             List<Long> sampleIds = details.stream().map(ProgressReminderDetail::getTrackingId)
                     .filter(Objects::nonNull).distinct().collect(Collectors.toList());
@@ -1407,8 +1419,7 @@ public class ProgressReminderService {
                 CollaborationTracking sample = sampleById.get(d.getTrackingId());
                 if (sample == null) return false;
                 return allActive.stream()
-                        .anyMatch(t -> Objects.equals(t.getInfluencerId(), sample.getInfluencerId())
-                                && Objects.equals(t.getBrandId(), sample.getBrandId())
+                        .anyMatch(t -> Objects.equals(t.getBrandId(), sample.getBrandId())
                                 && Objects.equals(t.getTeamId(), sample.getTeamId())
                                 && employeeId.equals(t.getExecutorId()));
             }).collect(Collectors.toList());

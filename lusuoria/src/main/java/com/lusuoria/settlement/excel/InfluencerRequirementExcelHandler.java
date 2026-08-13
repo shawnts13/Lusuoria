@@ -4,11 +4,11 @@ import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.Influencer;
-import com.lusuoria.settlement.entity.InfluencerContract;
+import com.lusuoria.settlement.entity.TeamContract;
 import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.InfluencerRequirementItem;
 import com.lusuoria.settlement.entity.InfluencerTeam;
-import com.lusuoria.settlement.repository.InfluencerContractRepository;
+import com.lusuoria.settlement.repository.TeamContractRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementItemRepository;
 import org.apache.poi.ss.usermodel.*;
@@ -35,7 +35,7 @@ public class InfluencerRequirementExcelHandler {
 
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private InfluencerRequirementItemRepository itemRepo;
-    @Autowired private InfluencerContractRepository influencerContractRepo;
+    @Autowired private TeamContractRepository teamContractRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private InfluencerTeamCache teamCache;
 
@@ -77,8 +77,8 @@ public class InfluencerRequirementExcelHandler {
         cols.add("需求条目明细");
         cols.add("完整需求内容");
 
-        // 这两列可能是"该品牌方是一年签一次合同，请在红人管理处查看"这种较长的提示文案，
-        // 单独放宽列宽 + 允许换行，避免跟其他短文本列一样挤成一坨
+        // 这两列可能是"该品牌方是一年签一次合同，请在'品牌方/红人团队管理'处查看"这种较长的
+        // 提示文案，单独放宽列宽 + 允许换行，避免跟其他短文本列一样挤成一坨
         Set<Integer> wrapWideCols = new HashSet<>(Arrays.asList(cols.indexOf("Invoice链接"), cols.indexOf("合同链接")));
 
         Row headerRow = sheet.createRow(0);
@@ -102,13 +102,24 @@ public class InfluencerRequirementExcelHandler {
         if (!infIds.isEmpty()) {
             for (Influencer inf : influencerRepo.findAllById(infIds)) accountNameById.put(inf.getId(), inf.getAccountName());
         }
-        // "合同链接"列，品牌方/团队是"一年签一次合同"时要按 (红人,品牌方,团队,需求月份) 去匹配
-        // 红人管理里维护的合同（见 InfluencerContract 类注释），一次性批量查出这批红人的全部
-        // 合同，避免逐条查库
-        Map<Long, List<InfluencerContract>> contractsByInfluencerId = new HashMap<>();
-        if (!infIds.isEmpty()) {
-            for (InfluencerContract c : influencerContractRepo.findByInfluencerIdIn(new ArrayList<>(infIds))) {
-                contractsByInfluencerId.computeIfAbsent(c.getInfluencerId(), k -> new ArrayList<>()).add(c);
+        // "合同链接"列，品牌方/团队是"一年签一次合同"时要按 (品牌方,团队,需求月份) 去匹配
+        // "品牌方/红人团队管理"里维护的团队级合同（见 TeamContract 类注释），一次性批量查出
+        // 这批需求涉及的全部合同，避免逐条查库
+        Set<Long> teamIds = new HashSet<>();
+        Set<Long> brandIdsWithoutTeam = new HashSet<>();
+        for (InfluencerRequirement r : list) {
+            if (r.getTeamId() != null) teamIds.add(r.getTeamId());
+            else if (r.getBrandId() != null) brandIdsWithoutTeam.add(r.getBrandId());
+        }
+        Map<String, List<TeamContract>> contractsByBrandTeam = new HashMap<>();
+        if (!teamIds.isEmpty()) {
+            for (TeamContract c : teamContractRepo.findByTeamIdIn(new ArrayList<>(teamIds))) {
+                contractsByBrandTeam.computeIfAbsent(brandTeamKey(c.getBrandId(), c.getTeamId()), k -> new ArrayList<>()).add(c);
+            }
+        }
+        if (!brandIdsWithoutTeam.isEmpty()) {
+            for (TeamContract c : teamContractRepo.findByBrandIdInAndTeamIdIsNull(new ArrayList<>(brandIdsWithoutTeam))) {
+                contractsByBrandTeam.computeIfAbsent(brandTeamKey(c.getBrandId(), c.getTeamId()), k -> new ArrayList<>()).add(c);
             }
         }
 
@@ -136,7 +147,7 @@ public class InfluencerRequirementExcelHandler {
             setCellStr(row, c++, r.getSettlementStatus() != null ? r.getSettlementStatus().getLabel() : "-", nor);
             setCellStr(row, c++, r.getCreatedAt() != null ? dtf.format(r.getCreatedAt()) : "", nor);
             setCellStr(row, c++, invoiceCell(r, brand), wrap);
-            setCellStr(row, c++, contractCell(r, brand, team, contractsByInfluencerId), wrap);
+            setCellStr(row, c++, contractCell(r, brand, team, contractsByBrandTeam), wrap);
             setCellStr(row, c++, itemsSummary(itemsByReqId.getOrDefault(r.getId(), Collections.emptyList())), wrap);
             setCellStr(row, c++, r.getFullRequirementContent(), wrap);
         }
@@ -173,23 +184,28 @@ public class InfluencerRequirementExcelHandler {
     /**
      * "合同链接"列文案，逻辑跟前端 RequirementListPage.vue 的 contractCellState() 保持一致：
      * 品牌方/团队是"每次需求签一次合同"时看需求自己的 contractLink；是"一年签一次合同"时
-     * 按 (品牌方,团队,需求月份) 去匹配红人管理里维护的合同，匹配上展示那条合同的链接，
-     * 没匹配上展示引导文案（Excel 场景下是只读查看，所以文案用"查看"而不是前端那句"上传"）。
+     * 按 (品牌方,团队,需求月份) 去匹配"品牌方/红人团队管理"里维护的团队级合同，匹配上展示
+     * 那条合同的链接，没匹配上展示引导文案（Excel 场景下是只读查看，所以文案用"查看"而不是
+     * 前端那句"上传"）。
      */
     private String contractCell(InfluencerRequirement r, Brand brand, InfluencerTeam team,
-                                 Map<Long, List<InfluencerContract>> contractsByInfluencerId) {
+                                 Map<String, List<TeamContract>> contractsByBrandTeam) {
         if (InfluencerTeam.isPerRequirementContract(brand, team)) {
             return r.getContractLink() != null ? r.getContractLink() : "";
         }
-        List<InfluencerContract> contracts = contractsByInfluencerId.getOrDefault(r.getInfluencerId(), Collections.emptyList());
-        for (InfluencerContract c : contracts) {
-            if (Objects.equals(c.getBrandId(), r.getBrandId())
-                    && Objects.equals(c.getTeamId(), r.getTeamId())
-                    && monthOverlapsContractRange(r.getRequirementMonth(), c.getStartDate(), c.getEndDate())) {
+        List<TeamContract> contracts = contractsByBrandTeam.getOrDefault(
+                brandTeamKey(r.getBrandId(), r.getTeamId()), Collections.emptyList());
+        for (TeamContract c : contracts) {
+            if (monthOverlapsContractRange(r.getRequirementMonth(), c.getStartDate(), c.getEndDate())) {
                 return c.getContractLink();
             }
         }
-        return "该品牌方是一年签一次合同，请在红人管理处查看";
+        return "该品牌方是一年签一次合同，请在\"品牌方/红人团队管理\"处查看";
+    }
+
+    /** brandId+teamId 拼成的 map key，跟 InfluencerRequirementService 里的同名方法是同一套约定 */
+    private String brandTeamKey(Long brandId, Long teamId) {
+        return brandId + "|" + (teamId != null ? teamId : -1L);
     }
 
     /**

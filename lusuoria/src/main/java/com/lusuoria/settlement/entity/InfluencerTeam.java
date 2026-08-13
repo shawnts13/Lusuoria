@@ -40,10 +40,10 @@ public class InfluencerTeam extends BaseEntity {
     private Boolean forcePerRequirementContract;
 
     /**
-     * 兜底默认合同到期日期（品牌方是"一年签一次合同"时才有意义）：团队下的红人如果本人没有
-     * 单独关联生效中的合同（InfluencerContract），合同上传提醒按这个日期判断是否快到期。
-     * 只需要到期日期这一个值（2026-07 曾误加过一个"生效起始日期"，用户确认过一直约定的是
-     * 单个日期选择器，不是区间，已去掉）。
+     * 兜底默认合同到期日期（品牌方是"一年签一次合同"时才有意义）：这个团队如果没有生效中的
+     * 团队级合同（TeamContract，2026-08 起团队下所有红人共用同一份合同，不再按红人各自维护），
+     * 合同上传提醒按这个日期判断是否快到期。只需要到期日期这一个值（2026-07 曾误加过一个
+     * "生效起始日期"，用户确认过一直约定的是单个日期选择器，不是区间，已去掉）。
      */
     @Temporal(TemporalType.DATE)
     @Column(name = "default_contract_end_date")
