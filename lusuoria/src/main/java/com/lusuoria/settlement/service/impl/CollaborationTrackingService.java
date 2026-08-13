@@ -675,6 +675,27 @@ public class CollaborationTrackingService {
                         + "] 在项目负责人名下配置的\"" + tracking.getVideoType().getLabel()
                         + "\"费率梯度覆盖不到这个月第几条这个数字，请先去\"员工管理\"/\"执行人员管理\"补充档位配置后再保存这条记录");
             }
+        } else if (newExecutorId != null && tracking.getVideoType() != null
+                && tracking.getProgress() != CollaborationProgress.DELAYED
+                && tracking.getInternalExecutionCost() == null
+                && !Boolean.TRUE.equals(tracking.getExecutorCostOverridden())
+                && !Boolean.TRUE.equals(tracking.getExecutorCostNotApplicable())) {
+            // 2026-08 修复（Shawn 反馈"有些记录本该有内部执行成本却是空的"）：这次保存没有改动
+            // 执行人员/视频类型，但这条记录的内部执行成本目前还是空的——典型场景是"先指定执行
+            // 人员（当时还没有发布时间，autoComputeExecutorCostOnAssignment() 算不出来，静默
+            // 跳过）、后续单独补上发布时间"：单条编辑表单分两步填是这样，Excel 批量导入更常见——
+            // 第一次导入先建档（还没发布，没有发布时间/链接），后面等视频真正发布了再导入一次
+            // 只更新发布时间/链接，这一行没有重新指定执行人员，"编辑时自动流转到已发布"那段逻辑
+            // 弹的"设置内部执行成本"提示也只在单条编辑场景生效（needExecutorCost 是前端弹窗用的
+            // 瞬态字段，批量导入没有交互界面可弹），批量导入完全没有别的地方会补这个值，只能靠
+            // 管理层/项目负责人/执行人员自己想起来点"批量计算执行成本"才能补上——现在只要这次
+            // 保存已经凑齐了发布时间等全部条件，顺手在这里也补一次，不用等用户想起来。
+            // 跟上面那个分支的关键区别：这里是"顺手补"，不是用户主动改动执行人员触发的操作，
+            // 所以配置缺失/超出梯度覆盖范围时静默跳过（沿用 autoComputeExecutorCostOnAssignment()
+            // 的软失败语义），不抛异常打断这次保存——用户可能只是想改个备注，不该被一个他们
+            // 完全没意识到在触发的校验挡住。
+            autoComputeExecutorCostOnAssignment(tracking, tracking.getExecutor(),
+                    existingOrNull != null ? existingOrNull.getId() : null);
         }
 
         // ===== 2026-07 从"项目订单"模块迁移过来的成本/利润字段，写权限沿用原来的分级规则 =====
