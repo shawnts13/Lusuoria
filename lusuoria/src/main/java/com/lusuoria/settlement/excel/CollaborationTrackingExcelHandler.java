@@ -74,7 +74,10 @@ public class CollaborationTrackingExcelHandler {
     // 列定义：[列名, 权限档位(0=都能看/1=canViewSensitive即非GUEST/2=canViewFull即管理层财务ADMIN/AUDITOR), 是否仅导出(1=模板不含)]
     private static final String[][] COLUMNS = {
         {"内部需求编号（可选，关联红人需求管理）", "0", "0"},
-        {"内部项目编号",               "0", "1"},  // 系统自动生成，不是用户填的，只在导出里展示，不放进导入模板
+        {"内部项目编号",               "0", "1"},  // 系统自动生成，不是用户填的，只在导出里展示，不放进导入模板；
+                                                    // 2026-08 起：从"导出"下载下来的文件带着这一列改一改再传回来，
+                                                    // 导入时会优先按这一列精确匹配要更新哪条存量记录（见 importData()
+                                                    // 里"定位这一行对应的存量记录"那段注释）
         {"品牌方",                     "0", "0"},
         {"红人团队",                   "0", "0"},  // 该红人在此品牌方下有多个团队可选时必须填写，否则可留空
         {"服务国家/市场",              "0", "0"},  // 该红人维护了多个服务国家/市场时必须填写，否则可留空
@@ -492,13 +495,22 @@ public class CollaborationTrackingExcelHandler {
                         .add(rel);
             }
             // 2. 这批红人名下已有的跟踪记录，建好查重索引（发布链接+发布时间查重只在同一个红人
-            //    名下才有意义，按这批红人查没问题）
+            //    名下才有意义，按这批红人查没问题）；同时建好"内部项目编号"精确匹配索引和
+            //    "内部需求编号"分组索引（2026-08 新增，供 matchByComposite() 用，见其注释）
             for (CollaborationTracking existing : trackingRepo.findByInfluencerIdInAndIsDeletedFalse(allInfluencerIds)) {
                 if (existing.getPublishLink() != null && existing.getPublishDate() != null) {
                     bulkCtx.dedupIndex.put(
                             CollaborationTrackingService.BulkLookupContext.dedupKey(
                                     existing.getInfluencerId(), existing.getPublishLink(), existing.getPublishDate()),
                             existing);
+                }
+                if (existing.getInternalProjectNo() != null) {
+                    bulkCtx.projectNoLookup.put(existing.getInternalProjectNo(), existing);
+                }
+                if (existing.getInternalRequirementNo() != null) {
+                    bulkCtx.requirementNoIndex
+                            .computeIfAbsent(existing.getInternalRequirementNo(), k -> new ArrayList<CollaborationTracking>())
+                            .add(existing);
                 }
             }
         }
@@ -746,18 +758,60 @@ public class CollaborationTrackingExcelHandler {
                 }
                 req.setNotes(getStr(row, colMap, "备注"));
 
-                // ---- 查重：红人 + 发布链接 + 发布时间 完全相同 -> 更新已有记录，而不是新建 ----
-                // 用批量预加载好的内存索引查，不再逐行查数据库
+                // ---- 定位这一行对应的存量记录（决定是"更新"还是"新建"），按精确度从高到低依次尝试 ----
                 boolean isUpdate = false;
                 CollaborationTracking existingOrNull = null;
-                if (publishLink != null && publishDate != null) {
+
+                // 1) 内部项目编号：唯一定位到具体一条记录，精确度最高。这一列不在导入模板里
+                //    （COLUMNS 表里标了"仅导出"），但从"导出"下载下来的文件天然带着这一列，
+                //    照原样改一改再传回来就能用，不用手填。红人对不上时报错，避免误改到别的红人的记录
+                String projectNoRaw = emptyToNull(getStr(row, colMap, "内部项目编号"));
+                if (projectNoRaw != null) {
+                    existingOrNull = bulkCtx.projectNoLookup.get(projectNoRaw.trim());
+                    if (existingOrNull == null) {
+                        errors.add("第" + (i + 1) + "行：内部项目编号 [" + projectNoRaw + "] 在系统里找不到对应的存量记录，请核对");
+                        continue;
+                    }
+                    if (!java.util.Objects.equals(existingOrNull.getInfluencerId(), req.getInfluencerId())) {
+                        errors.add("第" + (i + 1) + "行：内部项目编号 [" + projectNoRaw + "] 对应的记录不属于红人 ["
+                                + accountName + "]，请核对，避免误改到别的红人的记录");
+                        continue;
+                    }
+                }
+
+                // 2) 没有内部项目编号时的"后门"：内部需求编号+红人+合作平台+需求内容+两个金额
+                //    （+发布时间，如果这一行填了）——同一需求条目名额>1时会有多条记录共享完全
+                //    相同的组合，光凭这几项定位不到唯一一条时，发布时间能帮忙进一步缩小；
+                //    还是缩小不到唯一一条就报错，让人补内部项目编号或视频发布时间
+                if (existingOrNull == null && req.getInternalRequirementNo() != null) {
+                    List<CollaborationTracking> candidates = matchByComposite(bulkCtx, req.getInternalRequirementNo(),
+                            req.getInfluencerId(), platform, demandRaw, req.getInfluencerCost(), req.getClientPrice(),
+                            publishDate);
+                    if (candidates.size() > 1) {
+                        errors.add("第" + (i + 1) + "行：按\"内部需求编号+红人+合作平台+需求内容+两个金额\""
+                                + (publishDate != null ? "+视频发布时间" : "") + "定位到" + candidates.size()
+                                + "条存量记录，无法唯一确定要更新哪一条，请填写\"内部项目编号\""
+                                + (publishDate == null ? "，或者补填\"视频发布时间\"以精确到具体哪一天" : ""));
+                        continue;
+                    }
+                    if (candidates.size() == 1) {
+                        existingOrNull = candidates.get(0);
+                    }
+                }
+
+                // 3) 最后兜底：红人 + 发布链接 + 发布时间 完全相同（2026-08 前唯一的匹配方式）——
+                //    这条链路本质上假设"发布链接"这个字段本身不变，如果这次导入恰好就是要改
+                //    发布链接（比如给已发布的记录追加更多平台的链接），新旧链接文本对不上，
+                //    这条链路天然匹配不到，得靠上面 1)/2) 两条路径
+                if (existingOrNull == null && publishLink != null && publishDate != null) {
                     existingOrNull = bulkCtx.dedupIndex.get(
                             CollaborationTrackingService.BulkLookupContext.dedupKey(
                                     req.getInfluencerId(), publishLink, publishDate));
-                    if (existingOrNull != null) {
-                        req.setId(existingOrNull.getId());
-                        isUpdate = true;
-                    }
+                }
+
+                if (existingOrNull != null) {
+                    req.setId(existingOrNull.getId());
+                    isUpdate = true;
                 }
                 // 注："客户方的项目订单"现在就是一个普通的录入字段（"项目订单"模块已废弃），
                 // 改这个字段不再有任何联动限制
@@ -839,6 +893,69 @@ public class CollaborationTrackingExcelHandler {
             }
         }
         return null;
+    }
+
+    /**
+     * "内部项目编号"不可用时的兜底匹配路径：按"内部需求编号+红人+合作平台+需求内容+两个金额
+     * （+发布时间，如果这一行填了）"在这个需求编号名下的存量记录里找候选。合作平台按集合比较
+     * （不看顺序），需求内容/金额精确比较。同一需求条目名额>1时，本来就会有多条记录共享完全
+     * 相同的（合作平台、需求内容、两个金额）组合，光凭这几项区分不出来——填了发布时间的话
+     * 再按发布时间（精确到天）进一步缩小。
+     *
+     * @return 候选列表：为空表示这条路径没找到任何匹配（调用方应转去下一种兜底方式）；
+     *         正好 1 条表示唯一定位成功；大于 1 条表示歧义，调用方应报错让人补充信息
+     */
+    private List<CollaborationTracking> matchByComposite(CollaborationTrackingService.BulkLookupContext bulkCtx,
+            String requirementNo, Long influencerId, String platform, String demandContent,
+            java.math.BigDecimal influencerCost, java.math.BigDecimal clientPrice, Date publishDate) {
+        List<CollaborationTracking> bucket = bulkCtx.requirementNoIndex.get(requirementNo);
+        if (bucket == null || bucket.isEmpty()) return Collections.emptyList();
+
+        Set<String> platformSet = toPlatformSet(platform);
+        String demandTrim = demandContent != null ? demandContent.trim() : null;
+        List<CollaborationTracking> candidates = new ArrayList<CollaborationTracking>();
+        for (CollaborationTracking t : bucket) {
+            if (!java.util.Objects.equals(t.getInfluencerId(), influencerId)) continue;
+            if (!toPlatformSet(t.getPlatform()).equals(platformSet)) continue;
+            String tDemand = t.getDemandContent() != null ? t.getDemandContent().trim() : null;
+            if (!java.util.Objects.equals(tDemand, demandTrim)) continue;
+            if (!moneyEqual(t.getInfluencerCost(), influencerCost)) continue;
+            if (!moneyEqual(t.getClientPrice(), clientPrice)) continue;
+            candidates.add(t);
+        }
+        if (candidates.size() <= 1 || publishDate == null) return candidates;
+
+        // 候选不止一条、且这一行填了发布时间：按发布时间（精确到天）进一步缩小
+        List<CollaborationTracking> byDate = new ArrayList<CollaborationTracking>();
+        for (CollaborationTracking t : candidates) {
+            if (t.getPublishDate() != null && isSameDay(t.getPublishDate(), publishDate)) byDate.add(t);
+        }
+        return byDate.isEmpty() ? candidates : byDate;
+    }
+
+    private Set<String> toPlatformSet(String platform) {
+        Set<String> set = new HashSet<String>();
+        if (platform != null) {
+            for (String p : platform.split("\n")) {
+                String trimmed = p.trim();
+                if (!trimmed.isEmpty()) set.add(trimmed);
+            }
+        }
+        return set;
+    }
+
+    private boolean moneyEqual(java.math.BigDecimal a, java.math.BigDecimal b) {
+        if (a == null || b == null) return a == b;
+        return a.compareTo(b) == 0;
+    }
+
+    private boolean isSameDay(Date a, Date b) {
+        java.util.Calendar ca = java.util.Calendar.getInstance();
+        ca.setTime(a);
+        java.util.Calendar cb = java.util.Calendar.getInstance();
+        cb.setTime(b);
+        return ca.get(java.util.Calendar.YEAR) == cb.get(java.util.Calendar.YEAR)
+                && ca.get(java.util.Calendar.DAY_OF_YEAR) == cb.get(java.util.Calendar.DAY_OF_YEAR);
     }
 
     // ============ 工具方法 ============

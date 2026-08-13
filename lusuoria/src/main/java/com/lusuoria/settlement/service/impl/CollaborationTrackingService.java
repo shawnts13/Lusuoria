@@ -177,6 +177,15 @@ public class CollaborationTrackingService {
         public Map<Long, Map<Long, List<InfluencerBrandTeam>>> brandTeamMap = new HashMap<>();
         /** 查重索引：key 见 dedupKey()，value 是已存在的跟踪记录 */
         public Map<String, CollaborationTracking> dedupIndex = new HashMap<>();
+        /** 内部项目编号 -> 存量记录（2026-08 新增，Excel 导入"精确匹配更新哪一条"专用，
+         * 见 CollaborationTrackingExcelHandler 对"内部项目编号"列的处理） */
+        public Map<String, CollaborationTracking> projectNoLookup = new HashMap<>();
+        /** 内部需求编号 -> 该需求编号下、这批红人名下的存量记录列表（2026-08 新增，"内部需求编号+
+         * 红人+合作平台+需求内容+两个金额（+发布时间，如果有）"这条不依赖内部项目编号的匹配路径
+         * 专用，见 CollaborationTrackingExcelHandler.matchByComposite() —— 同一需求条目名额>1时
+         * 会有多条记录共享完全相同的组合，所以这里存的是列表，具体怎么从候选里挑出唯一一条交给
+         * 调用方） */
+        public Map<String, List<CollaborationTracking>> requirementNoIndex = new HashMap<>();
         /** 归一化后的旧素材链接 -> 占用这个链接的跟踪记录（2026-08 起存整条记录而不是只存 id，
          * 报重复采买错误时要带上占用者的内部项目编号） */
         public Map<String, CollaborationTracking> normalizedLinkOwner = new HashMap<>();
