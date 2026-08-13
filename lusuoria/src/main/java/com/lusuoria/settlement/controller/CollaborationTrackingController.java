@@ -492,6 +492,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) Long teamId,
             @RequestParam(required = false) String countryMarket,
             @RequestParam(required = false) String accountName,
+            @RequestParam(required = false) Long influencerId,
             @RequestParam(required = false) String platform,
             @RequestParam(required = false) CollaborationProgress progress,
             @RequestParam(required = false) InfluencerPaymentProgress influencerPaymentProgress,
@@ -504,19 +505,33 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) String clientOrderId,
             @RequestParam(required = false) String clientPaymentBatch,
             @RequestParam(required = false) Long projectManagerId,
+            @RequestParam(defaultValue = "false") boolean onlyMyResponsibility,
+            @RequestParam(defaultValue = "false") boolean onlyIncomplete,
+            @RequestParam(defaultValue = "false") boolean onlyUnpublished,
+            @RequestParam(defaultValue = "false") boolean onlyMissingRequirementNo,
             HttpServletResponse response) throws IOException {
         // 导出按当前筛选条件，取全部（不分页）
         PageRequest all = PageRequest.of(0, Integer.MAX_VALUE, Sort.by(Sort.Direction.DESC, "id"));
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
         String videoDateStartParam = (videoDateStart == null || videoDateStart.trim().isEmpty()) ? null : videoDateStart.trim();
         String videoDateEndParam = (videoDateEnd == null || videoDateEnd.trim().isEmpty()) ? null : videoDateEnd.trim();
-        // 导出是整份文件全量拿走，不需要"优先展示"/"只看我负责的"/"只看未完成的"/"只看未发布的"
-        // 这几个参数，传 null/false
+        // 2026-08 修复（Shawn 反馈）：之前这里无条件传 influencerId=null、
+        // onlyMyResponsibility/onlyIncomplete/onlyUnpublished/onlyMissingRequirementNo
+        // 全部传 false，不管前端实际筛选状态是什么，导致点了"查看未绑定需求编号的记录"这类
+        // 快捷筛选按钮（或红人管理下钻带的 influencerId 精确筛选）之后再导出，导出的还是
+        // 忽略这些筛选条件的全量/半全量数据，跟列表页当前看到的对不上。改成跟 list() 一样
+        // 老老实实按前端传来的这几个参数筛，导出结果才会跟列表页当前筛选状态一致。
+        // priorityEmployeeId/prioritizeFinance 只有 onlyMyResponsibility=true 时才真正影响
+        // 筛选结果（findByFilters 的 WHERE 子句），但跟 list() 一样无条件算一次，成本很低。
+        Long priorityEmployeeId = resolvePriorityEmployeeId();
+        boolean prioritizeFinance = resolvePrioritizeFinance();
         List<CollaborationTracking> list = trackingRepo.findByFilters(
-                brandId, teamId, countryMarket, accountName, null, platform,
+                brandId, teamId, countryMarket, accountName, influencerId, platform,
                 progress, influencerPaymentProgress, videoType, videoMonthParam, videoDateStartParam, videoDateEndParam,
                 internalProjectNo, internalRequirementNo,
-                clientOrderId, clientPaymentBatch, projectManagerId, null, false, false, false, false, false, all).getContent();
+                clientOrderId, clientPaymentBatch, projectManagerId,
+                priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, onlyUnpublished,
+                onlyMissingRequirementNo, all).getContent();
         // canViewFull：汇率/其他外部成本/内部执行成本/毛利/提成/公司利润这些财务字段，
         // 只有导出的人是 ADMIN/AUDITOR，或员工角色是"管理层"/"财务"才包含在导出文件里，
         // 复用 ProjectFieldVisibility 的 FULL 层级判定，跟列表页/表单页这批字段的可见规则一致

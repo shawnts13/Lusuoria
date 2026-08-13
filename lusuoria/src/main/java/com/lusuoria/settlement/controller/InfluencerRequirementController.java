@@ -246,15 +246,43 @@ public class InfluencerRequirementController {
             @RequestParam(required = false) String requirementMonth,
             @RequestParam(required = false) String internalRequirementNo,
             @RequestParam(required = false) String completedMonth,
+            @RequestParam(defaultValue = "false") boolean onlyIncomplete,
+            @RequestParam(defaultValue = "false") boolean onlyMissingInvoice,
+            @RequestParam(defaultValue = "false") boolean onlyMissingContract,
+            @RequestParam(defaultValue = "false") boolean onlyUnsettled,
             HttpServletResponse response) throws IOException {
         PageRequest all = PageRequest.of(0, Integer.MAX_VALUE, Sort.by(Sort.Direction.DESC, "id"));
         String completedMonthParam = (completedMonth == null || completedMonth.trim().isEmpty())
                 ? null : completedMonth.trim();
-        List<InfluencerRequirement> list = requirementRepo.findByFilters(
-                brandId, teamId, accountName, requirementMonth, internalRequirementNo,
-                completedMonthParam, all).getContent();
+        // 2026-08 修复（Shawn 反馈，跟红人合作跟踪的导出是同一类问题）：之前这里完全不认
+        // onlyIncomplete/onlyMissingInvoice/onlyMissingContract/onlyUnsettled 这4个"查看XX的
+        // 需求"快捷筛选按钮，永远走 findByFilters 这条"全部需求"默认路径，导致点了快捷筛选按钮
+        // 之后再导出，导出的是忽略这个筛选条件的数据，跟列表页当前看到的对不上。改成跟 list()
+        // 完全一样的分支逻辑——四个开关互斥，各自路由到对应的 service 方法，只是这里 pageable
+        // 传"取全部"而不是列表页的分页参数。
+        Page<InfluencerRequirement> page;
+        if (onlyIncomplete) {
+            page = requirementService.pageIncomplete(
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, completedMonthParam, all);
+        } else if (onlyMissingInvoice) {
+            page = requirementService.pageMissingInvoice(
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, completedMonthParam, all);
+        } else if (onlyMissingContract) {
+            page = requirementService.pageMissingContract(
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, completedMonthParam, all);
+        } else if (onlyUnsettled) {
+            if (!paymentAccessUtil.canManage()) throw new RuntimeException("无权限导出未结款的需求");
+            page = requirementService.pageUnsettled(
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, completedMonthParam, all);
+        } else {
+            page = requirementRepo.findByFilters(
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, completedMonthParam, all);
+        }
+        List<InfluencerRequirement> list = page.getContent();
         // "需求完成进度"分子是瞬态字段，findByFilters 查出来的实体不会自动带上，导出前批量补一次
-        // （口径/写法跟 InfluencerRequirementService 分页接口给列表页用的完全一致）
+        // （口径/写法跟 InfluencerRequirementService 分页接口给列表页用的完全一致）。上面几个
+        // pageXxx() 分支内部已经通过 paginateAndEnrich() 补过一次，这里再补一遍是无害的重复
+        // 赋值，图的是不用在每个分支各自判断要不要补，保持这段逻辑简单
         List<String> nos = list.stream().map(InfluencerRequirement::getInternalRequirementNo)
                 .filter(java.util.Objects::nonNull).collect(Collectors.toList());
         Map<String, Integer> completedByNo = requirementService.completedCountByNos(nos);

@@ -148,12 +148,32 @@ public class InfluencerController {
         return ApiResponse.success(inf);
     }
 
+    /**
+     * 2026-08 修复（Shawn 反馈，红人合作跟踪/红人需求管理导出同一类问题）：之前这里只认
+     * influencerType 一个筛选条件，列表页其余的筛选（平台/国家市场/领域/品牌方/团队/粉丝量
+     * 区间/关键词）导出时全部被忽略，导致筛选完再导出，导出的还是不受这些筛选影响的数据。
+     * 改成跟 list() 一样走 findIdsByFilters，取全部匹配 id 后按同一个排序取出来，只是不做
+     * list() 那个"合作中/已完结项目优先"的分页专属重排——导出是拿走全部数据，不需要那层
+     * 只服务于"翻页浏览体验"的排序。
+     */
     @GetMapping("/export/excel")
     public void exportExcel(@RequestParam(required = false) ProjectType influencerType,
+                            @RequestParam(required = false) String platform,
+                            @RequestParam(required = false) String countryMarket,
+                            @RequestParam(required = false) String domain,
+                            @RequestParam(required = false) Long brandId,
+                            @RequestParam(required = false) Long teamId,
+                            @RequestParam(required = false) Long followerMin,
+                            @RequestParam(required = false) Long followerMax,
+                            @RequestParam(required = false) String keyword,
                             HttpServletResponse response) throws IOException {
-        List<Influencer> list = influencerType != null
-                ? influencerRepo.findByInfluencerTypeAndIsDeletedFalse(influencerType)
-                : influencerRepo.findByIsDeletedFalseOrderByAccountNameAsc();
+        List<Long> ids = influencerRepo.findIdsByFilters(
+                influencerType, platform, countryMarket, domain, brandId, teamId,
+                followerMin, followerMax, keyword, Sort.by(Sort.Direction.ASC, "accountName"));
+        Map<Long, Influencer> byId = influencerRepo.findAllById(ids).stream()
+                .collect(Collectors.toMap(Influencer::getId, inf -> inf));
+        List<Influencer> list = ids.stream().map(byId::get)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toList());
         attachBrandTeamPairs(list);
         excelHandler.export(list, RoleUtil.canViewBaselineFinancials(), response);
     }

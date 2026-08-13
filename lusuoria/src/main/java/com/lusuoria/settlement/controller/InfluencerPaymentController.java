@@ -120,14 +120,40 @@ public class InfluencerPaymentController {
         return ApiResponse.success(paymentService.listItems(id));
     }
 
-    /** 导出 - 管理层/财务/法务 */
+    /**
+     * 导出 - 管理层/财务/法务。
+     *
+     * 2026-08 修复（Shawn 反馈，红人合作跟踪/红人需求管理/红人管理导出同一类问题）：之前这里
+     * 只认 settlementMonth 一个筛选条件，列表页其余的筛选（品牌方/团队/内部需求编号/付款状态/
+     * 结款单号/"查看未上传发票的记录"）导出时全部被忽略，导致筛选完再导出，导出的还是不受这些
+     * 筛选影响的数据。改成跟 list() 走完全一样的筛选逻辑，只是 pageable 传"取全部"。
+     */
     @GetMapping("/export/excel")
     public void exportExcel(@RequestParam(required = false) String settlementMonth,
+                            @RequestParam(required = false) Long brandId,
+                            @RequestParam(required = false) Long teamId,
+                            @RequestParam(required = false) String internalRequirementNo,
+                            @RequestParam(required = false) InfluencerPaymentStatus paymentStatus,
+                            @RequestParam(required = false) String paymentNo,
+                            @RequestParam(defaultValue = "false") boolean onlyMissingReceipt,
                             HttpServletResponse response) throws IOException {
         if (!accessUtil.canView()) { response.sendError(403, "无权限导出红人结款"); return; }
-        List<InfluencerPayment> payments = settlementMonth != null && !settlementMonth.isEmpty()
-                ? paymentRepo.findBySettlementMonthAndIsDeletedFalse(settlementMonth)
-                : paymentRepo.findByIsDeletedFalse();
+        boolean filterByTeam = teamId != null;
+        List<Long> matchingIds = filterByTeam ? paymentTeamRepo.findPaymentIdsByTeamId(teamId) : Collections.emptyList();
+        if (matchingIds.isEmpty()) matchingIds = Collections.singletonList(-1L);
+        boolean filterByReqNo = internalRequirementNo != null && !internalRequirementNo.trim().isEmpty();
+        List<Long> reqMatchingIds = filterByReqNo
+                ? trackingRepo.findPaymentIdsByRequirementNo(internalRequirementNo.trim()) : Collections.emptyList();
+        if (reqMatchingIds.isEmpty()) reqMatchingIds = Collections.singletonList(-1L);
+        String trimmedPaymentNo = paymentNo != null && !paymentNo.trim().isEmpty() ? paymentNo.trim() : null;
+        PageRequest all = PageRequest.of(0, Integer.MAX_VALUE,
+                Sort.by(Sort.Direction.DESC, "settlementMonth").and(Sort.by(Sort.Direction.ASC, "paymentNo")));
+
+        List<InfluencerPayment> payments = onlyMissingReceipt
+                ? paymentService.pageMissingReceipt(settlementMonth, brandId, filterByTeam, matchingIds,
+                        filterByReqNo, reqMatchingIds, paymentStatus, trimmedPaymentNo, all).getContent()
+                : paymentRepo.findByFilters(settlementMonth, brandId, filterByTeam, matchingIds,
+                        filterByReqNo, reqMatchingIds, paymentStatus, trimmedPaymentNo, all).getContent();
         paymentService.attachTeamIds(payments);
         excelHandler.export(payments, response);
     }
