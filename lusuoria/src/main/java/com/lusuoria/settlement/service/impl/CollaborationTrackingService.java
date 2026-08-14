@@ -1517,6 +1517,22 @@ public class CollaborationTrackingService {
                 }
                 requestedAmount = suggestion.getSuggestedAmount();
             }
+            // 2026-08 修复（Shawn 反馈"待我审核"里出现过"内部执行成本由¥80.00改为¥80.00"）：
+            // 现算出来的建议金额（或 notApplicable 状态）如果跟这条记录当前的值完全一样，
+            // 说明费率梯度配置自上次保存以来没有实质变化，这次触发只是"重新点了一下"，不构成
+            // 真正的修改，不应该走审核流程去麻烦项目负责人确认一条"改了等于没改"的申请——
+            // 直接按现状返回，不落库、不创建待审核事项。BigDecimal 用 compareTo 而不是 equals
+            // 比较，避免 80.00 和 80.0 这种 scale 不同但数值相等的情况被误判成"有变化"。
+            boolean amountUnchanged = notApplicable
+                    ? Boolean.TRUE.equals(t.getExecutorCostNotApplicable())
+                    : !Boolean.TRUE.equals(t.getExecutorCostNotApplicable())
+                        && requestedAmount != null && t.getInternalExecutionCost() != null
+                        && requestedAmount.compareTo(t.getInternalExecutionCost()) == 0;
+            if (amountUnchanged) {
+                result.setTracking(t);
+                result.setPendingApproval(false);
+                return result;
+            }
             String summary = (t.getBrand() != null ? t.getBrand().getName() : "未知品牌")
                     + " - " + (t.getInfluencer() != null ? t.getInfluencer().getAccountName() : "未知红人");
             pendingApprovalService.requestExecutorCostModify(
