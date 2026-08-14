@@ -360,11 +360,34 @@ public class CollaborationTrackingExcelHandler {
      * 如果现场再去解析登录态，只会拿到空的，见
      * CollaborationTrackingService.requireFinanceForSettlementProgress()、doSave() 里
      * "内部执行人员"那段校验的注释。
+     *
+     * 【Spring 知识点 + 常见坑】@Async 的原理是 AOP 动态代理：Spring 启动时会给这个类生成一个代理
+     * 对象，凡是"从代理对象外部"调用这个方法，代理会拦下来，转手扔进 importTaskExecutor 线程池
+     * 异步执行，方法本身立刻 return（调用方感知不到真正的业务逻辑其实还没跑完）。这带来一个非常
+     * 经典的坑：如果在**同一个类内部**通过 this.importDataAsync(...) 调用（比如加一个包装方法在
+     * 类内部直接调它），会完全绕开代理、变成普通的同步方法调用，@Async 直接失效——这个方法实际上
+     * 只在 Controller 那一层跨类调用，没有踩到这个坑，但以后新增类似的异步方法时要留意。
+     * 另外，@Async 标注在返回 void 的方法上时，方法内部抛出的异常没有任何地方能接住（调用方早就
+     * return 了，异常只会被 Spring 记到日志、默认还是 WARN 级别很容易被忽略）——这也是这个方法
+     * 整个包在 try/catch/finally 里、自己负责把失败状态写回 ImportBatch 记录的原因，不能指望
+     * 异常会自然冒泡到调用方。如果这个方法签名改成返回 Future<T>/CompletableFuture<T>，异常就会
+     * 被包进返回的 Future 里，调用方 .get() 时才会抛出来——那是另一种用法，这里用不上（调用方根本
+     * 不 care 结果，只关心"已经开始跑了"）。
      */
     @org.springframework.scheduling.annotation.Async("importTaskExecutor")
     public void importDataAsync(Long batchId, byte[] fileBytes, boolean canViewSensitive,
                                  boolean canSetFinanceSettlementProgress,
                                  boolean isAdminOrManagement, Long currentEmployeeId) {
+        // 【Java 8 知识点】JpaRepository.findById() 返回的不是 ImportBatch，而是 Optional<ImportBatch>——
+        // 这是 Java 8 引入的一个"可能有值、也可能没有值"的包装容器，目的是逼调用方在拿到结果的
+        // 那一刻就必须显式处理"查不到"的情况，而不是像以前那样直接拿到一个可能是 null 的对象，
+        // 忘记判空、用到的时候才在某一行毫无征兆地抛 NullPointerException。.orElse(null) 是
+        // Optional 众多"取值"方法里最简单的一种：有值就返回里面的值，没有值就返回你指定的默认值
+        // （这里是 null，相当于明确表态"这里我允许拿到 null，后面自己手动判空处理"）；常见的还有
+        // orElseThrow(...)（没值就抛异常）、ifPresent(...)（有值才执行某个操作，配合 Lambda 用）、
+        // map(...)（有值就对里面的值做转换，没值就直接跳过），这个项目里目前主要用 orElse(null)
+        // 这一种最朴素的写法，配合下面这行手动判空，效果上和"以前 findOne() 直接返回可能为 null
+        // 的对象"是一样的，只是 Optional 这层包装强制你在写代码的这一刻就想清楚要怎么处理"没查到"。
         ImportBatch batch = importBatchRepo.findById(batchId).orElse(null);
         if (batch == null) return; // 理论上不会发生，防御性判断
         try {
@@ -434,6 +457,16 @@ public class CollaborationTrackingExcelHandler {
      * 带进度回调的版本：每处理完一批（20行）就回调一次，异步导入用这个版本
      * 把进度实时写回"导入批次"记录，前端"导入历史"页面才能看到"处理中"的具体进度。
      * 同步入口传一个空回调就行，不影响原来的行为。
+     *
+     * 【Java 8 知识点】java.util.function.BiConsumer<Integer, Integer> 是 JDK 自带的"函数式接口"
+     * （只有一个抽象方法 void accept(T, U) 的接口），不用自己再定义一个
+     * "interface ProgressCallback { void onProgress(int processed, int total); }"——凡是"接收两个
+     * 参数、不需要返回值"的回调场景，都可以直接复用这个通用接口。调用方传进来的
+     * (processed, total) -> {...}（比如上面 importDataAsync() 里那段"回写进度"的代码）就是一个
+     * Lambda 表达式，编译器会把它当成 BiConsumer.accept 方法体的实现，本质上等价于 Java 8 之前
+     * 要写一个匿名内部类 new BiConsumer<Integer, Integer>() { public void accept(...) {...} }，
+     * Lambda 只是省掉了这层样板代码。上面那个不需要进度回调的重载方法里传的 (processed, total) -> {}
+     * 是一个"什么都不做"的空实现，用来在不关心进度的调用场景（同步导入）里占位。
      */
     public List<String> importData(InputStream fileStream, boolean canViewSensitive, boolean canSetFinanceSettlementProgress,
                                     boolean isAdminOrManagement, Long currentEmployeeId,

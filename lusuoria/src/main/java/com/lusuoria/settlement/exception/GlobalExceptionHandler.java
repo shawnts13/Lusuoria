@@ -14,6 +14,20 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.util.stream.Collectors;
 
+/**
+ * 【Spring 知识点】@RestControllerAdvice 是 @ControllerAdvice + @ResponseBody 的组合注解，
+ * 让这个类里的方法能够"全局拦截"所有 @RestController 方法体内抛出的异常，不用在每个 Controller
+ * 方法里自己写 try/catch——业务代码该抛异常就直接抛，抛出去之后自然会被这个类接住。
+ * 具体接住哪个异常，靠每个方法上的 @ExceptionHandler(XxxException.class) 声明；一个异常实际抛出
+ * 时，Spring 按"异常类型继承链上离得最近"的原则匹配（比如自己业务代码里 throw new
+ * RuntimeException("品牌方不存在") 这种最基础的 RuntimeException，会被下面
+ * handleRuntimeException 接住；如果是 Spring/JPA 抛出来的 DataAccessException 家族——它也是
+ * RuntimeException 的子类——则会优先匹配更具体的 handleDataAccessException，而不是落到范围更宽的
+ * handleRuntimeException；最后兜底的 @ExceptionHandler(Exception.class) 接住所有其他类型没被
+ * 单独处理过的异常，包括受检异常 checked exception）。
+ * @ResponseStatus(HttpStatus.XXX) 决定这个异常最终以什么 HTTP 状态码返回给前端，跟返回体里
+ * ApiResponse.error() 传的业务错误码是两码事——一个是 HTTP 协议层面的状态，一个是业务层面的。
+ */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
@@ -64,6 +78,19 @@ public class GlobalExceptionHandler {
         return ApiResponse.error(400, e.getMessage());
     }
 
+    /**
+     * 【Java 8 知识点】这几行是典型的 Stream + 方法引用写法，等价于用 for 循环手写：
+     *   List<String> msgs = new ArrayList<>();
+     *   for (FieldError fe : e.getBindingResult().getFieldErrors()) msgs.add(fe.getDefaultMessage());
+     *   String message = String.join("; ", msgs);
+     * .stream() 把 List<FieldError> 转成一个 Stream（不是新集合，是一条"惰性求值"的处理管道，
+     * 后面 .map()/.collect() 这些操作在调用 .collect() 之前实际上都还没真正执行）；
+     * .map(FieldError::getDefaultMessage) 把每个 FieldError 转成它的 getDefaultMessage() 结果——
+     * FieldError::getDefaultMessage 是"方法引用"，等价于写 fe -> fe.getDefaultMessage() 这个
+     * Lambda，只是因为这里就是简单地把参数原样传给一个已有方法，可以省略参数名直接写"类名::方法名"；
+     * .collect(Collectors.joining("; ")) 是流的"终止操作"，把流里所有元素拼接成一个字符串，
+     * 中间用 "; " 分隔——这一步触发前面 map 操作真正执行，并把结果收集成最终值。
+     */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiResponse<Void> handleValidationException(MethodArgumentNotValidException e) {

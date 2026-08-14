@@ -39,6 +39,24 @@ import java.math.RoundingMode;
  *   公司利润（美金） = 项目可分配利润 - 负责人提成
  *   公司利润（人民币） = 公司利润（美金） × 汇率
  */
+/**
+ * 【Java 知识点】全文件的金额计算都用 BigDecimal 而不是 double/float，是因为 double 是二进制浮点数，
+ * 没法精确表示十进制小数（比如 0.1 + 0.2 在 double 里算出来是 0.30000000000000004，不是 0.3），
+ * 金额计算这种"差一分钱都不行"的场景绝对不能用；BigDecimal 内部是按十进制精确存储的，才能保证
+ * 加减乘除结果分毫不差。用法上有两个新手容易踩的坑，全文件的写法已经在规避：
+ * 1）BigDecimal 是不可变对象（immutable），subtract()/multiply()/divide() 这些方法都是"返回一个
+ *    新的 BigDecimal 实例，原对象不变"，不是在原对象上原地修改——所以下面全是
+ *    "xxx.subtract(yyy).setScale(...)" 这种链式写法，每一步都要接住返回值，写成
+ *    "xxx.subtract(yyy);" 不接返回值等于这行代码白写了。
+ * 2）判断两个 BigDecimal 是否"数值相等"要用 compareTo(...) == 0，不能用 equals()——
+ *    BigDecimal.equals() 连小数位数（scale）都要求一致，new BigDecimal("80.00") 和
+ *    new BigDecimal("80.0") 数值相等但 equals() 会返回 false（这也是本项目
+ *    "设置执行成本二次修改需审核"那个 amountUnchanged 判断专门强调用 compareTo 而不是 equals
+ *    的原因）。
+ * setScale(SCALE, RoundingMode.HALF_UP) 是"保留几位小数 + 怎么四舍五入"：SCALE=2 表示保留两位
+ * 小数（分），HALF_UP 是最常见的"四舍五入"（严格地说是"离得较远的那一侧为 0.5 时往上进"，
+ * 跟日常理解的四舍五入基本一致，区别于 HALF_EVEN"银行家舍入"这种更少见的策略）。
+ */
 @Component
 public class ProfitCalculator {
 
