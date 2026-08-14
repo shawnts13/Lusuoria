@@ -72,6 +72,20 @@ public class CommissionBonusService {
         if (manager == null || manager.getBonusTierCurrency() == null || tiers == null || tiers.isEmpty()) {
             return null;
         }
+        // 【业务逻辑说明 + 已知风险，未修复】阶梯档位按 minAmount 升序排列，逐档判断，命中第一个
+        // "amountInChosenCurrency 落在 [minAmount, maxAmount] 区间"的档位就返回——这要求管理层
+        // 在"员工管理"里配置的各档位区间本身互不重叠、首尾相接，代码这里不会校验这个前提，
+        // 配错了（比如两档区间有重叠）就静默按数值较小的那一档命中，不会报错提醒。
+        //
+        // "RMB".equals(...) && monthRate != null 这个条件还有一个更隐蔽的坑：manager 配置的是
+        // RMB 档位、但 monthRate 传了 null（调用方 rateForRange()/汇率维护对应月份还没录入汇率时
+        // 就会发生，见 ExchangeRateService.getRateForMonth() 缺失时 usdToCny 返回 null 的分支），
+        // 这个三元表达式会静默落到 else 分支——直接拿"美金"提成总额 commissionTotalUsd 去跟
+        // "人民币"档位的 minAmount/maxAmount 比较，相当于把一个大约小7倍的数字拿去匹配 RMB 档位，
+        // 大概率会匹配到远低于实际应得的档位（甚至因为数值太小落不进任何档位、直接返回 null 显示
+        // "-"）。目前没有对这种"currency=RMB 但汇率缺失"的组合做任何特殊处理/报错/日志，是一个
+        // 已知但尚未修复的静默风险点，命中概率取决于"当月汇率是否已经在汇率维护页面录入"——正常
+        // 使用流程下汇率通常会提前录好，所以实际触发概率不高，但没有兜底。
         BigDecimal amountInChosenCurrency = "RMB".equals(manager.getBonusTierCurrency()) && monthRate != null
                 ? commissionTotalUsd.multiply(monthRate) : commissionTotalUsd;
         for (CommissionBonusTier tier : tiers) {
