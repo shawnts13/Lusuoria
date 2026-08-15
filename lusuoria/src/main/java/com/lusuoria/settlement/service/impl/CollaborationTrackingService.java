@@ -393,19 +393,27 @@ public class CollaborationTrackingService {
 
         // 品牌方：必须是该红人在红人模块里已关联的"品牌方-团队"对里出现过的品牌方
         // （不管那个品牌方下有没有配团队，只要有关联记录就算数）
-        List<InfluencerBrandTeam> teamOptions = null;
-        if (req.getBrandId() != null) {
-            Brand brand = brandCache.findById(req.getBrandId());
-            if (brand == null) throw new RuntimeException("品牌方不存在：" + req.getBrandId());
-            teamOptions = ctx.getTeamOptions(influencer.getId(), req.getBrandId());
-            if (teamOptions.isEmpty()) {
-                throw new RuntimeException("品牌方 [" + brand.getName() + "] 未在红人模块中关联到该红人，"
-                        + "请先在红人模块维护后再选择");
-            }
-            tracking.setBrand(brand);
-        } else {
-            tracking.setBrand(null);
+        //
+        // 2026-08-15 修复：以前 req.getBrandId() 为空时这里只是悄悄 tracking.setBrand(null)
+        // 放过，不报错——单条表单虽然有"红人只有1个品牌方选项时自动带入"的前端兜底，但没有把
+        // "品牌方"标成必填项；Excel 导入那边"品牌方"列留空时同样什么都不做（这一点原本是照抄
+        // "红人团队"留空即合法的处理方式，但品牌方从来没有"留空也合法"这回事，团队才有）。
+        // 两边任一个疏漏被撞上，就会出现品牌方/红人团队全是空、内部项目编号里品牌方那一段被
+        // 拼成字面量"null"的脏记录（StringBuilder.append(null) 的 Java 行为，ProjectNoGenerator.
+        // buildPrefix() 直接 sb.append(brandName) 没有做 null 判断）。这里改成强制非空，
+        // 同时覆盖新建和编辑两种场景——编辑/Excel 重新导入时如果"品牌方"列被误清空，以前会把
+        // 这条记录本来正确的品牌方悄悄清掉，现在同样会被这里拦下来，不只是新建时的问题。
+        if (req.getBrandId() == null) {
+            throw new RuntimeException("请选择品牌方");
         }
+        Brand brand = brandCache.findById(req.getBrandId());
+        if (brand == null) throw new RuntimeException("品牌方不存在：" + req.getBrandId());
+        List<InfluencerBrandTeam> teamOptions = ctx.getTeamOptions(influencer.getId(), req.getBrandId());
+        if (teamOptions.isEmpty()) {
+            throw new RuntimeException("品牌方 [" + brand.getName() + "] 未在红人模块中关联到该红人，"
+                    + "请先在红人模块维护后再选择");
+        }
+        tracking.setBrand(brand);
 
         // 红人团队：跟着选中的品牌方级联决定，不再是红人库里那个单一的团队字段
         // - 没选品牌方：团队肯定为空

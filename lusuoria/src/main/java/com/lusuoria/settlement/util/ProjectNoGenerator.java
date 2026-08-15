@@ -20,6 +20,14 @@ public class ProjectNoGenerator {
 
     /** 编号前缀（不含序号），用于统计"这个品牌+团队+月份+账号"下已经用了多少个编号 */
     public String buildPrefix(String brandName, String teamName, String projectMonth, String accountName) {
+        // 2026-08-15 补的防御性检查：调用方（CollaborationTrackingService.doSave()）现在已经
+        // 强制要求品牌方非空才会走到这里，正常情况下 brandName 不会是 null；这里额外拦一道，
+        // 是因为 StringBuilder.append(null) 会老老实实拼出字面量"null"这4个字符而不是报错——
+        // 之前就是这样悄悄生成过"null-202608-xxx-001"这种脏内部项目编号的，早发现比晚发现好，
+        // 宁可这里直接抛异常暴露问题，也不要让调用方的疏漏继续变成静默的脏数据
+        if (brandName == null || brandName.trim().isEmpty()) {
+            throw new IllegalArgumentException("生成内部项目编号时品牌方不能为空");
+        }
         String account = sanitizeAccount(accountName);
         StringBuilder sb = new StringBuilder();
         sb.append(brandName);
