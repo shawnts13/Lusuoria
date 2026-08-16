@@ -181,12 +181,20 @@ public class InfluencerRequirementService {
     /**
      * 增量协调条目：按 id 匹配已有条目做更新，没有 id 的是新增，请求里没出现的已有条目视为删除——
      * 但已经有关联的合作跟踪记录（fulfilledCount > 0）的条目不允许删除/改动 videoType、
-     * platform 或两个单价（2026-07 起单价也不能改了——同一需求内 (videoType, platform) 允许
-     * 重复、靠单价区分是哪个条目之后，单价就是判断"一条记录属于哪个条目"的一部分，已经关联
-     * 记录后改单价会导致这些记录跟条目对不上、"已实施"数算错），保证已经实施的记录不会变成
-     * 孤儿。同一需求内 (videoType, 排序后platform) 允许重复（取消唯一限制——同样的视频类型/
-     * 平台组合，实际上可能有不同的视频单价，需要拆成多个条目分别记录），
-     * validateTrackingLinkage 按 (videoType, platform, 两个单价) 精确匹配到具体条目做名额校验。
+     * platform 或两个单价（2026-07 起单价也不能改了——单价是判断"一条记录属于哪个条目"的一部分，
+     * 已经关联记录后改单价会导致这些记录跟条目对不上、"已实施"数算错），保证已经实施的记录不会
+     * 变成孤儿。
+     *
+     * 2026-08-16 修复：(videoType, 排序后platform, 红人成本单价, 客户单价) 完全相同的条目
+     * 现在**禁止**在同一需求内并存——之前"取消唯一限制、允许同组合不同单价拆多个条目"这个
+     * 设计，实现上漏掉了"单价也相同"这种退化情况：fulfilledCountByItemId() 精确匹配是按这四个
+     * 字段一起匹配的，一旦两个条目这四个字段全部相同，同一批合作跟踪记录会被两个条目各自完整
+     * 计入一遍（而不是分摊），导致两个条目都显示"全部占满"，即使其中一个条目实际上从来没有
+     * 关联过任何记录，也会被误判为"已经有关联的红人合作跟踪记录，不能删除"，新条目占的名额
+     * 也会一直显示为0可用（validateNoDuplicateItemKeys() 兜底拦截这种重复，提示改成把视频
+     * 数目合并到已有条目里）。(videoType, platform) 相同但单价不同——这是允许拆分的合理场景，
+     * 不受影响。validateTrackingLinkage 仍按 (videoType, platform, 两个单价) 精确匹配到具体
+     * 条目做名额校验。
      */
     private void applyItems(InfluencerRequirement requirement, List<InfluencerRequirementItemRequest> itemReqs) {
         if (itemReqs == null) itemReqs = new ArrayList<>();
@@ -257,9 +265,36 @@ public class InfluencerRequirementService {
             }
         }
 
+        validateNoDuplicateItemKeys(requirement.getItems());
+
         requirement.setTotalItemCount(totalCount);
         requirement.setTotalClientPrice(totalClient);
         requirement.setTotalInfluencerCost(totalCost);
+    }
+
+    /**
+     * 校验同一需求下不存在 (videoType, 排序后platform, 红人成本单价, 客户单价) 完全相同的两个
+     * 条目——这四个字段是 fulfilledCountByItemId()/validateTrackingLinkage() 判断"一条合作
+     * 跟踪记录属于哪个条目"的全部依据，一旦两个条目这四个字段全都相同就无法区分，会导致同一批
+     * 记录被两个条目各自重复计入，见 applyItems() 顶部 2026-08-16 的说明。条目数量通常很小
+     * （个位数到十几个），O(n²) 两两比较足够，不需要为此建索引/排序。
+     */
+    private void validateNoDuplicateItemKeys(List<InfluencerRequirementItem> items) {
+        for (int i = 0; i < items.size(); i++) {
+            InfluencerRequirementItem a = items.get(i);
+            for (int j = i + 1; j < items.size(); j++) {
+                InfluencerRequirementItem b = items.get(j);
+                if (a.getVideoType() == b.getVideoType()
+                        && java.util.Objects.equals(a.getPlatform(), b.getPlatform())
+                        && amountsEqual(a.getInfluencerUnitCostPrice(), b.getInfluencerUnitCostPrice())
+                        && amountsEqual(a.getClientUnitPrice(), b.getClientUnitPrice())) {
+                    throw new RuntimeException("「" + a.getVideoType().getLabel() + "-"
+                            + a.getPlatform().replace("\n", "、") + "」已存在项目视频类型/合作平台/"
+                            + "红人成本单价/客户单价完全相同的条目，请把新增的项目视频数目合并到该"
+                            + "已有条目里，不要新建重复条目");
+                }
+            }
+        }
     }
 
     /** 平台多选值按字典序排序后换行拼接，保证判重不受选择顺序影响 */
