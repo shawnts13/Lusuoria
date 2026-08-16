@@ -554,6 +554,19 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      */
     List<CollaborationTracking> findByInternalRequirementNoAndIsDeletedFalse(String internalRequirementNo);
 
+    /**
+     * 上面那个单需求版本的批量版（2026-08-16 新增）：ProgressReminderService.
+     * runRequirementInvoiceOverdue()/runRequirementContractOverdue() 之前是在"遍历候选需求"
+     * 的循环里逐条调用单需求版本，是个会随"完成后长时间未上传Invoice/合同的需求数"线性增长的
+     * N+1——这两类候选本来就是"越攒越多、直到有人补上Invoice/合同才会减少"的存量数据，不会
+     * 自然清零，这两个方法又是"项目流转后更新提示内容"手动重算按钮会触发的同步调用，管理层点
+     * 一次按钮就要背等这些请求全部跑完，很容易拖到网关/浏览器超时（Render 免费层 DB 连接池只有
+     * 3 个，这个方法本身还是 @Transactional，慢查询期间一直占着一个连接，可能连带拖慢其它请求）。
+     * 改成一次性按 internalRequirementNo 批量查回来，在内存里 groupingBy 分组，用法见上面两个
+     * 方法——不看 progress 状态，只要关联了就算，含折损，跟单需求版本口径一致。
+     */
+    List<CollaborationTracking> findByInternalRequirementNoInAndIsDeletedFalse(List<String> internalRequirementNos);
+
     /** "存量记录关联需求"候选查询：某个红人名下还没关联任何需求的记录 */
     List<CollaborationTracking> findByInfluencerIdAndInternalRequirementNoIsNullAndIsDeletedFalse(Long influencerId);
 

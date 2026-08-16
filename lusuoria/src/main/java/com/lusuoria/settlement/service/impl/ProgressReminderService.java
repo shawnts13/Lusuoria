@@ -938,6 +938,23 @@ public class ProgressReminderService {
         List<InfluencerRequirement> candidates = requirementRepo.findByIsDeletedFalseAndCompletedAtIsNotNullAndInvoiceLinkIsNull();
         if (candidates.isEmpty()) return;
 
+        // 2026-08-16 修复：之前在下面的循环里逐条需求查一次关联的合作跟踪记录，是个随"完成后
+        // 长时间未上传Invoice的需求数"线性增长的 N+1——这批候选是只会越攒越多、直到有人补上
+        // Invoice才会减少的存量数据，不会自然清零，此方法又是"项目流转后更新提示内容"手动重算
+        // 按钮会同步触发的调用，慢到超出网关/浏览器超时就会表现成"点了没反应、报网络连接失败"，
+        // 后台还没来得及报错（见 CollaborationTrackingRepository.
+        // findByInternalRequirementNoInAndIsDeletedFalse 的说明）。改成一次性批量查回来，按
+        // internalRequirementNo 分组，循环里只读内存 Map，不再逐条查库。
+        List<String> candidateNos = candidates.stream()
+                .map(InfluencerRequirement::getInternalRequirementNo)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toList());
+        Map<String, List<CollaborationTracking>> linkedByNo = trackingRepo
+                .findByInternalRequirementNoInAndIsDeletedFalse(candidateNos).stream()
+                .collect(Collectors.groupingBy(CollaborationTracking::getInternalRequirementNo));
+        // 同一趟顺手把 buildRequirementOverdueDetail 需要的红人账号名也批量查好（原来是
+        // 逐条需求单独查一次 influencerRepo.findById()，同一类 N+1，见该方法的说明）
+        Map<Long, String> accountNameByInfluencerId = buildAccountNameIndexForRequirements(candidates);
+
         Map<String, List<ProgressReminderDetail>> byKey = new LinkedHashMap<>();
         Map<String, Long> pmIdByKey = new HashMap<>();
         Map<String, OverdueUrgency> urgencyByKey = new HashMap<>();
@@ -955,8 +972,7 @@ public class ProgressReminderService {
             OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays, mildMaxDays, moderateMaxDays);
             if (urgency == null) continue;
 
-            List<CollaborationTracking> linked =
-                    trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(r.getInternalRequirementNo());
+            List<CollaborationTracking> linked = linkedByNo.getOrDefault(r.getInternalRequirementNo(), Collections.emptyList());
             if (linked.isEmpty()) continue; // 理论上不会发生（completedAt本身就是靠这些记录算出来的），防御性跳过
             Long placeholderTrackingId = linked.get(0).getId();
 
@@ -972,7 +988,7 @@ public class ProgressReminderService {
             for (Map.Entry<Long, Set<Long>> pmEntry : executorsByPm.entrySet()) {
                 addToOwnerBucket(byKey, pmIdByKey, urgencyByKey, involvedByKey,
                         pmEntry.getKey(), urgency,
-                        buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays, overdueThreshold),
+                        buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays, overdueThreshold, accountNameByInfluencerId),
                         pmEntry.getValue());
             }
         }
@@ -998,6 +1014,16 @@ public class ProgressReminderService {
                 requirementRepo.findByIsDeletedFalseAndCompletedAtIsNotNullAndContractLinkIsNull();
         if (candidates.isEmpty()) return;
 
+        // 2026-08-16 修复：同 runRequirementInvoiceOverdue 的说明——之前逐条需求查一次关联的
+        // 合作跟踪记录，是随候选需求数线性增长的 N+1，改成批量查回来按 internalRequirementNo 分组
+        List<String> candidateNos = candidates.stream()
+                .map(InfluencerRequirement::getInternalRequirementNo)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toList());
+        Map<String, List<CollaborationTracking>> linkedByNo = trackingRepo
+                .findByInternalRequirementNoInAndIsDeletedFalse(candidateNos).stream()
+                .collect(Collectors.groupingBy(CollaborationTracking::getInternalRequirementNo));
+        Map<Long, String> accountNameByInfluencerId = buildAccountNameIndexForRequirements(candidates);
+
         Map<String, List<ProgressReminderDetail>> byKey = new LinkedHashMap<>();
         Map<String, Long> pmIdByKey = new HashMap<>();
         Map<String, OverdueUrgency> urgencyByKey = new HashMap<>();
@@ -1016,8 +1042,7 @@ public class ProgressReminderService {
             OverdueUrgency urgency = OverdueUrgency.fromOverdueDays(overdueDays, mildMaxDays, moderateMaxDays);
             if (urgency == null) continue;
 
-            List<CollaborationTracking> linked =
-                    trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(r.getInternalRequirementNo());
+            List<CollaborationTracking> linked = linkedByNo.getOrDefault(r.getInternalRequirementNo(), Collections.emptyList());
             if (linked.isEmpty()) continue; // 理论上不会发生，防御性跳过
             Long placeholderTrackingId = linked.get(0).getId();
 
@@ -1032,7 +1057,7 @@ public class ProgressReminderService {
             for (Map.Entry<Long, Set<Long>> pmEntry : executorsByPm.entrySet()) {
                 addToOwnerBucket(byKey, pmIdByKey, urgencyByKey, involvedByKey,
                         pmEntry.getKey(), urgency,
-                        buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays, overdueThreshold),
+                        buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays, overdueThreshold, accountNameByInfluencerId),
                         pmEntry.getValue());
             }
         }
@@ -1302,6 +1327,18 @@ public class ProgressReminderService {
         return result;
     }
 
+    /** buildRequirementOverdueDetail 专用的批量版（2026-08-16 新增），道理跟上面的
+     *  buildAccountNameIndex 完全一样，只是来源列表类型不同（需求而不是合作跟踪记录） */
+    private Map<Long, String> buildAccountNameIndexForRequirements(List<InfluencerRequirement> list) {
+        Set<Long> influencerIds = new HashSet<>();
+        for (InfluencerRequirement r : list) if (r.getInfluencerId() != null) influencerIds.add(r.getInfluencerId());
+        Map<Long, String> result = new HashMap<>();
+        if (!influencerIds.isEmpty()) {
+            for (Influencer inf : influencerRepo.findAllById(influencerIds)) result.put(inf.getId(), inf.getAccountName());
+        }
+        return result;
+    }
+
     private ProgressReminderDetail buildStallDetail(CollaborationTracking t, Map<Long, String> accountNameById,
                                                        int overdueDays, int thresholdWorkdays) {
         ProgressReminderDetail detail = new ProgressReminderDetail();
@@ -1332,7 +1369,7 @@ public class ProgressReminderService {
 
     private ProgressReminderDetail buildRequirementOverdueDetail(InfluencerRequirement r, Brand brand,
                                                                     Long placeholderTrackingId, int overdueDays,
-                                                                    int thresholdDays) {
+                                                                    int thresholdDays, Map<Long, String> accountNameByInfluencerId) {
         ProgressReminderDetail detail = new ProgressReminderDetail();
         detail.setIsDeleted(false);
         // trackingId 是历史 NOT NULL 列，这一类没有单一对应的合作跟踪记录，随便挑该需求下
@@ -1341,8 +1378,10 @@ public class ProgressReminderService {
         detail.setBrandName(brand != null ? brand.getName() : null);
         InfluencerTeam team = r.getTeamId() != null ? teamCache.findById(r.getTeamId()) : null;
         detail.setTeamName(team != null ? team.getName() : null);
-        Influencer inf = r.getInfluencerId() != null ? influencerRepo.findById(r.getInfluencerId()).orElse(null) : null;
-        detail.setAccountName(inf != null ? inf.getAccountName() : null);
+        // 2026-08-16 修复：之前这里用 influencerRepo.findById() 逐条查，是又一个随候选需求数
+        // 线性增长的 N+1（见 runRequirementInvoiceOverdue/runRequirementContractOverdue 顶部
+        // 的说明），改成调用方批量查好传进来
+        detail.setAccountName(r.getInfluencerId() != null ? accountNameByInfluencerId.get(r.getInfluencerId()) : null);
         // cycleDays 这里复用成"需求条目总数"（不是天数）；deadlineDate 只用于明细排序，不展示成列；
         // influencerCost/clientPrice 复用成"需求总成本"/"需求客户合作总价格"（不是单条视频的）
         detail.setCycleDays(r.getTotalItemCount() != null ? r.getTotalItemCount() : 0);
