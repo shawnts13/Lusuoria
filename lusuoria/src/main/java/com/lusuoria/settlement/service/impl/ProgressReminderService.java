@@ -11,6 +11,7 @@ import com.lusuoria.settlement.entity.TeamContract;
 import com.lusuoria.settlement.entity.InfluencerPayment;
 import com.lusuoria.settlement.entity.InfluencerRequirement;
 import com.lusuoria.settlement.entity.InfluencerTeam;
+import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.entity.ProgressReminder;
 import com.lusuoria.settlement.entity.ProgressReminderDetail;
 import com.lusuoria.settlement.entity.ReminderAcknowledgement;
@@ -20,6 +21,8 @@ import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
 import com.lusuoria.settlement.enums.InfluencerPaymentStatus;
 import com.lusuoria.settlement.enums.OverdueUrgency;
 import com.lusuoria.settlement.enums.PaymentCycleType;
+import com.lusuoria.settlement.enums.PendingApprovalCategory;
+import com.lusuoria.settlement.enums.PendingApprovalStatus;
 import com.lusuoria.settlement.enums.ReminderCategory;
 import com.lusuoria.settlement.enums.ReminderUrgency;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
@@ -27,6 +30,7 @@ import com.lusuoria.settlement.repository.TeamContractRepository;
 import com.lusuoria.settlement.repository.InfluencerPaymentRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
+import com.lusuoria.settlement.repository.PendingApprovalRepository;
 import com.lusuoria.settlement.repository.ProgressReminderDetailRepository;
 import com.lusuoria.settlement.repository.ProgressReminderRepository;
 import com.lusuoria.settlement.repository.ReminderAcknowledgementRepository;
@@ -64,7 +68,11 @@ import java.util.stream.Collectors;
  * 已被这次改动取代并删除）。
  *
  * 受众目前只有"管理层"这一个员工角色（Employee.role，注意不是 SysUser.role——判断谁能看到
- * 用的是登录账号关联的员工角色，跟登录账号本身是 ADMIN 还是 STAFF 无关）。
+ * 用的是登录账号关联的员工角色，跟登录账号本身是 ADMIN 还是 STAFF 无关）。（这段是老注释，
+ * 后续陆续加了 FINANCE_ROLE/LEGAL_ROLE/EMPLOYEE_OWNED_CATEGORIES 好几种受众口径，没有回来
+ * 更新这里；2026-08-16 新增的 DELETE_REQUEST_PENDING/PROGRESS_ROLLBACK_PENDING 是目前唯一
+ * 反过来的例外——"管理层"这个员工角色反而看不到，必须登录账号本身是 ADMIN，见
+ * ADMIN_ONLY_CATEGORIES 的注释。）
  */
 @Service
 public class ProgressReminderService {
@@ -103,10 +111,18 @@ public class ProgressReminderService {
      * 现在允许通过这个按钮立即重算。CONTRACT_EXPIRING_SOON 依然不支持"标记已处理"（见上面
      * PROJECT_FLOW_CATEGORIES 的注释），所以这里单独维护一个集合，不能直接在
      * PROJECT_FLOW_CATEGORIES 里加，否则会连带让它变得"可标记已处理"） */
+    /** 2026-08-16 新增：DELETE_REQUEST_PENDING/PROGRESS_ROLLBACK_PENDING/
+     * EXECUTOR_COST_MODIFY_PENDING 这3类不分档（存在未处理事项就一直提醒，不按天数升级），
+     * 跟用户确认过的设计，所以手动重算范围直接照抄 PROJECT_FLOW_CATEGORIES 的老几类，同样不
+     * 加进 PROJECT_FLOW_CATEGORIES（也就不支持"标记已处理"——这3类天然靠审核事项本身被
+     * 同意/拒绝之后消失，不需要"标记已处理"这层）。 */
     private static final Set<ReminderCategory> PROJECT_FLOW_RECOMPUTE_CATEGORIES;
     static {
         Set<ReminderCategory> s = EnumSet.copyOf(PROJECT_FLOW_CATEGORIES);
         s.add(ReminderCategory.CONTRACT_EXPIRING_SOON);
+        s.add(ReminderCategory.DELETE_REQUEST_PENDING);
+        s.add(ReminderCategory.PROGRESS_ROLLBACK_PENDING);
+        s.add(ReminderCategory.EXECUTOR_COST_MODIFY_PENDING);
         PROJECT_FLOW_RECOMPUTE_CATEGORIES = Collections.unmodifiableSet(s);
     }
     /** 按具体项目负责人/涉及执行人员定向可见的类别（2026-07 新增 CONTRACT_EXPIRING_SOON，
@@ -116,14 +132,28 @@ public class ProgressReminderService {
      * （见 saveFinancePmStallReminder）——resolveVisibleReminders() 靠这里按人扫一遍时，
      * audienceEmployeeId=null 的行天然不会被任何具体 employeeId 匹配上，不影响财务角色的
      * 那份可见性（走的是另一条 FINANCE_ROLE 分支）；isViewingAsInvolvedExecutor() 已经对
-     * audienceEmployeeId=null 的情况做了短路，不会误把财务当成"顺带涉及的执行人员" */
+     * audienceEmployeeId=null 的情况做了短路，不会误把财务当成"顺带涉及的执行人员"。
+     * 2026-08-16 新增 EXECUTOR_COST_MODIFY_PENDING：按目标记录的项目负责人（targetProjectManagerId）
+     * 定向生成，走跟其它几类完全一样的机制——管理层/ADMIN 全量可见，负责人本人按 audienceEmployeeId
+     * 命中，不涉及"执行人员顺带可见"（这条提醒本身跟执行人员无关，不设置 involvedEmployeeIds）。 */
     private static final Set<ReminderCategory> EMPLOYEE_OWNED_CATEGORIES = EnumSet.of(
             ReminderCategory.PM_EXECUTOR_PROGRESS_STALL, ReminderCategory.REQUIREMENT_INVOICE_OVERDUE,
             ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE, ReminderCategory.CONTRACT_EXPIRING_SOON,
-            ReminderCategory.FINANCE_PROGRESS_STALL);
+            ReminderCategory.FINANCE_PROGRESS_STALL, ReminderCategory.EXECUTOR_COST_MODIFY_PENDING);
     /** 合同相关提醒（法务全量可见，不按具体项目负责人过滤） */
     private static final Set<ReminderCategory> CONTRACT_CATEGORIES = EnumSet.of(
             ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE, ReminderCategory.CONTRACT_EXPIRING_SOON);
+    /**
+     * 2026-08-16 新增：DELETE_REQUEST_PENDING/PROGRESS_ROLLBACK_PENDING 只有登录账号本身是
+     * ADMIN（SysUser.role）的人能审核（PendingApprovalService.assertCanResolve()），不是
+     * Employee.role="管理层"能决定的——这两个是不同维度的权限，"管理层"员工角色不一定对应
+     * ADMIN 登录账号。跟用户确认过：这两类提醒的受众要严格收窄到"登录账号本身是 ADMIN"，
+     * 即使是管理层也不能靠 hasFullReminderVisibility() 的"管理层全量可见"兜底看到——
+     * 否则会出现"管理层看到提醒卡片、点进去却发现自己根本没权限处理"的体验问题。
+     * 见 hasFullVisibilityFor()/resolveVisibleReminders() 里对这个集合的特殊处理。
+     */
+    private static final Set<ReminderCategory> ADMIN_ONLY_CATEGORIES = EnumSet.of(
+            ReminderCategory.DELETE_REQUEST_PENDING, ReminderCategory.PROGRESS_ROLLBACK_PENDING);
 
     @Autowired private ProgressReminderRepository reminderRepo;
     @Autowired private ProgressReminderDetailRepository detailRepo;
@@ -135,6 +165,7 @@ public class ProgressReminderService {
     @Autowired private InfluencerPaymentRepository influencerPaymentRepo;
     @Autowired private InfluencerPaymentService influencerPaymentService;
     @Autowired private ReminderAcknowledgementRepository ackRepo;
+    @Autowired private PendingApprovalRepository pendingApprovalRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private InfluencerTeamCache teamCache;
     @Autowired private EmployeeCache employeeCache;
@@ -162,6 +193,9 @@ public class ProgressReminderService {
             runRequirementInvoiceOverdue(today, batchDate);
             runRequirementContractOverdue(today, batchDate);
             runContractExpiringSoon(today, batchDate);
+            runDeleteRequestPending(batchDate);
+            runProgressRollbackPending(batchDate);
+            runExecutorCostModifyPending(batchDate);
         } catch (RuntimeException e) {
             // GlobalExceptionHandler 只会把异常包成 400 返回给前端，不会打印堆栈，
             // 排查问题时看不到具体原因，这里手动记一下，方便去 Render 日志里查
@@ -277,12 +311,14 @@ public class ProgressReminderService {
 
     /**
      * "项目流转后更新提示内容"手动触发（2026-07 新增，2026-07 新增合同上传逾期，2026-08 新增
-     * 合同即将到期）：重算 PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL/
-     * REQUIREMENT_INVOICE_OVERDUE/REQUIREMENT_CONTRACT_OVERDUE/CONTRACT_EXPIRING_SOON 这5类，
-     * 不影响两类"临近结款"提醒当天已经算好的数据。CONTRACT_EXPIRING_SOON 本来严格只在每天3点
-     * 主批次里跑，2026-08 起也允许这里手动触发——之前改完团队合同相关的逻辑要等到第二天3点
-     * 才能验证效果，体验很差；纳入之后不影响它"不支持标记已处理"的既有约束（见
-     * PROJECT_FLOW_RECOMPUTE_CATEGORIES 的注释）。
+     * 合同即将到期，2026-08-16 新增删除审核/进度倒退审核/执行成本修改审核这3类待处理提醒）：
+     * 重算 PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL/REQUIREMENT_INVOICE_OVERDUE/
+     * REQUIREMENT_CONTRACT_OVERDUE/CONTRACT_EXPIRING_SOON/DELETE_REQUEST_PENDING/
+     * PROGRESS_ROLLBACK_PENDING/EXECUTOR_COST_MODIFY_PENDING 这8类，不影响两类"临近结款"提醒
+     * 当天已经算好的数据。CONTRACT_EXPIRING_SOON 本来严格只在每天3点主批次里跑，2026-08 起也
+     * 允许这里手动触发——之前改完团队合同相关的逻辑要等到第二天3点才能验证效果，体验很差；
+     * 纳入之后不影响它"不支持标记已处理"的既有约束（见 PROJECT_FLOW_RECOMPUTE_CATEGORIES
+     * 的注释，新增的3类审核待处理提醒同样不支持"标记已处理"）。
      */
     @Transactional
     public void runProjectFlowBatches() {
@@ -295,6 +331,9 @@ public class ProgressReminderService {
             runRequirementInvoiceOverdue(today, batchDate);
             runRequirementContractOverdue(today, batchDate);
             runContractExpiringSoon(today, batchDate);
+            runDeleteRequestPending(batchDate);
+            runProgressRollbackPending(batchDate);
+            runExecutorCostModifyPending(batchDate);
         } catch (RuntimeException e) {
             log.error("进度提醒（项目流转类）手动重算失败：{}", e.toString(), e);
             throw e;
@@ -1173,6 +1212,84 @@ public class ProgressReminderService {
         detailRepo.saveAll(details);
     }
 
+    /**
+     * Part H（2026-08-16 新增）：存在未处理的"删除审核"（PendingApprovalCategory.DELETE_REQUEST）。
+     * 不分档、不按具体人定向——一条汇总卡片，只有 ADMIN 账号能看到（见 ADMIN_ONLY_CATEGORIES）。
+     * 不生成 ProgressReminderDetail 明细行：具体每一条申请要处理，直接去"待处理"页面下方那张
+     * ADMIN 专属的审批表格操作（本来就有同意/拒绝按钮），这里的卡片只起"提醒你该去看看了"的
+     * 作用，不重复造一套只读的详情弹窗。
+     */
+    private void runDeleteRequestPending(Date batchDate) {
+        savePendingApprovalReminder(batchDate, ReminderCategory.DELETE_REQUEST_PENDING,
+                PendingApprovalCategory.DELETE_REQUEST, "删除申请");
+    }
+
+    /**
+     * Part I（2026-08-16 新增）：存在未处理的"视频项目进度倒退审核"（PendingApprovalCategory.
+     * PROGRESS_ROLLBACK）。跟 runDeleteRequestPending 完全同一套规则（ADMIN 专属、不分档、
+     * 无明细）。
+     */
+    private void runProgressRollbackPending(Date batchDate) {
+        savePendingApprovalReminder(batchDate, ReminderCategory.PROGRESS_ROLLBACK_PENDING,
+                PendingApprovalCategory.PROGRESS_ROLLBACK, "视频项目进度倒退申请");
+    }
+
+    /** runDeleteRequestPending/runProgressRollbackPending 共用：按类别数一下还有多少条
+     *  待审核事项，有就生成一条汇总卡片（ADMIN 专属，见类别上的 ADMIN_ONLY_CATEGORIES）。 */
+    private void savePendingApprovalReminder(Date batchDate, ReminderCategory reminderCategory,
+                                              PendingApprovalCategory approvalCategory, String noun) {
+        long pendingCount = pendingApprovalRepo.countByCategoryAndStatus(approvalCategory, PendingApprovalStatus.PENDING);
+        if (pendingCount == 0) return;
+        ProgressReminder reminder = new ProgressReminder();
+        reminder.setIsDeleted(false);
+        reminder.setBatchDate(batchDate);
+        reminder.setCategory(reminderCategory);
+        reminder.setUrgency(ReminderUrgency.OVERDUE);
+        // 只作展示用途，真正的可见性判断走 ADMIN_ONLY_CATEGORIES（见该常量注释），这里填"ADMIN"
+        // 只是满足 audience_employee_role 这个历史 NOT NULL 列，不代表按这个字符串做权限判断
+        reminder.setAudienceEmployeeRole("ADMIN");
+        reminder.setCount((int) pendingCount);
+        reminder.setTitle("有 " + pendingCount + " 条" + noun + "等待审核，请及时处理");
+        reminderRepo.save(reminder);
+    }
+
+    /**
+     * Part J（2026-08-16 新增）：存在未处理的"内部执行成本修改审核"（PendingApprovalCategory.
+     * EXECUTOR_COST_MODIFY）——审核人是该记录的项目负责人本人，不是 ADMIN（见
+     * PendingApprovalService.assertCanResolve()），所以按 targetProjectManagerId 分组，每个
+     * 负责人名下有几条未处理的就各自生成一条卡片，走 EMPLOYEE_OWNED_CATEGORIES 那套"管理层/
+     * ADMIN 全量可见 + 负责人本人按 audienceEmployeeId 命中"的既有受众机制，不需要像
+     * DELETE_REQUEST_PENDING 那样单独收窄。不分档、不生成明细（理由同 runDeleteRequestPending——
+     * 具体处理走 MyExecutorCostApprovalList.vue 现成的"待我审核"入口）。
+     */
+    private void runExecutorCostModifyPending(Date batchDate) {
+        List<PendingApproval> pending = pendingApprovalRepo.findByCategoryAndStatus(
+                PendingApprovalCategory.EXECUTOR_COST_MODIFY, PendingApprovalStatus.PENDING);
+        if (pending.isEmpty()) return;
+
+        Map<Long, Integer> countByPm = new LinkedHashMap<>();
+        for (PendingApproval p : pending) {
+            if (p.getTargetProjectManagerId() == null) continue; // 防御性跳过，理论上不会发生
+            countByPm.merge(p.getTargetProjectManagerId(), 1, Integer::sum);
+        }
+        for (Map.Entry<Long, Integer> entry : countByPm.entrySet()) {
+            Long pmId = entry.getKey();
+            int count = entry.getValue();
+            ProgressReminder reminder = new ProgressReminder();
+            reminder.setIsDeleted(false);
+            reminder.setBatchDate(batchDate);
+            reminder.setCategory(ReminderCategory.EXECUTOR_COST_MODIFY_PENDING);
+            reminder.setUrgency(ReminderUrgency.OVERDUE);
+            reminder.setAudienceEmployeeRole("项目负责人");
+            reminder.setAudienceEmployeeId(pmId);
+            reminder.setCount(count);
+            Employee emp = employeeCache.findById(pmId);
+            String empName = emp != null ? emp.getName() : ("员工#" + pmId);
+            reminder.setTitle("项目负责人-" + empName + "-有 " + count + " 条内部执行成本修改申请等待你审核");
+            reminderRepo.save(reminder);
+        }
+    }
+
     // ---- Part C/D/E/F/G 共用的小工具 ----
 
     private Map<Long, String> buildAccountNameIndex(List<CollaborationTracking> list) {
@@ -1311,7 +1428,13 @@ public class ProgressReminderService {
 
     private List<ProgressReminder> resolveVisibleReminders() {
         if (hasFullReminderVisibility()) {
-            return new ArrayList<>(reminderRepo.findAllByIsDeletedFalse());
+            List<ProgressReminder> all = new ArrayList<>(reminderRepo.findAllByIsDeletedFalse());
+            // ADMIN_ONLY_CATEGORIES：即使是"管理层"全量可见，登录账号本身不是 ADMIN 就看不到
+            // 这两类——见该常量注释，避免"看到卡片但点进去发现自己无权处理"
+            if (!RoleUtil.isAdmin()) {
+                all.removeIf(r -> ADMIN_ONLY_CATEGORIES.contains(r.getCategory()));
+            }
+            return all;
         }
         List<ProgressReminder> result = new ArrayList<>();
         String employeeRole = employeeRoleUtil.getCurrentEmployeeRole();
@@ -1353,6 +1476,10 @@ public class ProgressReminderService {
      * 处理"的行永远显示不出已处理状态——2026-07-30 曾经这样改过又改回来，教训见 listDetails 注释。
      */
     private boolean hasFullVisibilityFor(ReminderCategory category) {
+        // ADMIN_ONLY_CATEGORIES：无视"管理层全量可见"这条老规则，严格只看登录账号本身是不是
+        // ADMIN——这两类只有 ADMIN 能审核（见该常量注释），提前 return 短路掉下面的
+        // hasFullReminderVisibility() 判断
+        if (ADMIN_ONLY_CATEGORIES.contains(category)) return RoleUtil.isAdmin();
         if (hasFullReminderVisibility()) return true;
         return CONTRACT_CATEGORIES.contains(category) && LEGAL_ROLE.equals(employeeRoleUtil.getCurrentEmployeeRole());
     }

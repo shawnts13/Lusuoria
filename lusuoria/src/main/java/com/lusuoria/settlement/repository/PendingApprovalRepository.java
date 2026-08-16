@@ -67,4 +67,16 @@ public interface PendingApprovalRepository extends JpaRepository<PendingApproval
            "ORDER BY p.createdAt DESC")
     List<PendingApproval> findMyApprovalQueue(@Param("employeeId") Long employeeId,
                                                @Param("category") PendingApprovalCategory category);
+
+    /**
+     * ProgressReminderService 的"删除审核待处理"/"进度倒退审核待处理"跑批用（2026-08-16 新增）：
+     * 这两类不分档，只要存在未处理事项就生成一条提醒，所以只需要个数，不需要整批实体。
+     */
+    long countByCategoryAndStatus(PendingApprovalCategory category, PendingApprovalStatus status);
+
+    /**
+     * ProgressReminderService 的"内部执行成本修改审核待处理"跑批用（2026-08-16 新增）：需要按
+     * targetProjectManagerId 分组分别生成一条提醒，所以要整批实体，不能只要个数。
+     */
+    List<PendingApproval> findByCategoryAndStatus(PendingApprovalCategory category, PendingApprovalStatus status);
 }

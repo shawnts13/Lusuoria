@@ -21,6 +21,19 @@ package com.lusuoria.settlement.enums;
  *   INFLUENCER_PAYMENT_RECEIPT_OVERDUE - 红人结款上传发票逾期（仅"涉及公对公发票"的品牌方-团队
  *                                  组合，付款状态=已付款后长时间未上传发票，阈值口径跟
  *                                  REQUIREMENT_CONTRACT_OVERDUE 一致）
+ *   DELETE_REQUEST_PENDING       - 存在未处理的"删除审核"（PendingApprovalCategory.DELETE_REQUEST）
+ *                                  申请（2026-08-16 新增）。只有 SysUser.role=ADMIN 的登录账号
+ *                                  能审核，受众按 ADMIN_ONLY_CATEGORIES 单独收窄（不是按"管理层"
+ *                                  员工角色），不分档（存在未处理就提醒，不管放了多久）。
+ *   PROGRESS_ROLLBACK_PENDING    - 存在未处理的"视频项目进度倒退审核"（PendingApprovalCategory.
+ *                                  PROGRESS_ROLLBACK）申请（2026-08-16 新增）。跟 DELETE_REQUEST_PENDING
+ *                                  同一套受众规则（ADMIN 专属）、同样不分档。
+ *   EXECUTOR_COST_MODIFY_PENDING - 存在未处理的"内部执行成本修改审核"（PendingApprovalCategory.
+ *                                  EXECUTOR_COST_MODIFY）申请（2026-08-16 新增）。审核人是该记录的
+ *                                  项目负责人本人（不是 ADMIN），按目标项目负责人（audienceEmployeeId）
+ *                                  定向生成，走跟 PM_EXECUTOR_PROGRESS_STALL 一样的
+ *                                  EMPLOYEE_OWNED_CATEGORIES 受众机制（管理层/ADMIN 也能整体看到），
+ *                                  不分档。
  */
 public enum ReminderCategory {
     COLLAB_PAYMENT_DUE("红人合作跟踪临近结款"),
@@ -30,7 +43,10 @@ public enum ReminderCategory {
     REQUIREMENT_INVOICE_OVERDUE("Invoice逾期"),
     REQUIREMENT_CONTRACT_OVERDUE("合同上传逾期"),
     CONTRACT_EXPIRING_SOON("合同即将到期"),
-    INFLUENCER_PAYMENT_RECEIPT_OVERDUE("红人结款上传发票逾期");
+    INFLUENCER_PAYMENT_RECEIPT_OVERDUE("红人结款上传发票逾期"),
+    DELETE_REQUEST_PENDING("删除审核待处理"),
+    PROGRESS_ROLLBACK_PENDING("进度倒退审核待处理"),
+    EXECUTOR_COST_MODIFY_PENDING("执行成本修改审核待处理");
 
     private final String label;
 
