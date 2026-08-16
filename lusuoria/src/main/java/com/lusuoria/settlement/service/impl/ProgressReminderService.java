@@ -188,11 +188,18 @@ public class ProgressReminderService {
             runCollabPaymentDue(today, batchDate);
             runInfluencerPaymentDue(today, batchDate);
             runInfluencerPaymentReceiptOverdue(today, batchDate);
-            runPmExecutorProgressStall(today, batchDate);
-            runFinanceProgressStall(today, batchDate);
+            // runPmExecutorProgressStall/runFinanceProgressStall/runContractExpiringSoon 都要用到
+            // "全部未删除的红人合作跟踪记录"这份全表数据——2026-08-16 之前是各自独立查一次，
+            // 同一次跑批里对 collaboration_tracking 做了3次全表扫描；这张表只会越来越大，
+            // 3次全表扫描叠加 runRequirementInvoiceOverdue/runRequirementContractOverdue（另外
+            // 修复过的 N+1）在同一个 @Transactional 方法里顺序执行，会一直占着 Render 免费层
+            // 只有3个连接的连接池中的一个——现在改成只查一次，三个方法共用同一份内存列表
+            List<CollaborationTracking> allTracking = trackingRepo.findByIsDeletedFalse();
+            runPmExecutorProgressStall(today, batchDate, allTracking);
+            runFinanceProgressStall(today, batchDate, allTracking);
             runRequirementInvoiceOverdue(today, batchDate);
             runRequirementContractOverdue(today, batchDate);
-            runContractExpiringSoon(today, batchDate);
+            runContractExpiringSoon(today, batchDate, allTracking);
             runDeleteRequestPending(batchDate);
             runProgressRollbackPending(batchDate);
             runExecutorCostModifyPending(batchDate);
@@ -326,11 +333,13 @@ public class ProgressReminderService {
             clearCategories(PROJECT_FLOW_RECOMPUTE_CATEGORIES);
             LocalDate today = LocalDate.now(ZoneId.systemDefault());
             Date batchDate = toDate(today);
-            runPmExecutorProgressStall(today, batchDate);
-            runFinanceProgressStall(today, batchDate);
+            // 见 runBatch() 里同一处改动的说明：这3个方法共用同一份全表数据，只查一次
+            List<CollaborationTracking> allTracking = trackingRepo.findByIsDeletedFalse();
+            runPmExecutorProgressStall(today, batchDate, allTracking);
+            runFinanceProgressStall(today, batchDate, allTracking);
             runRequirementInvoiceOverdue(today, batchDate);
             runRequirementContractOverdue(today, batchDate);
-            runContractExpiringSoon(today, batchDate);
+            runContractExpiringSoon(today, batchDate, allTracking);
             runDeleteRequestPending(batchDate);
             runProgressRollbackPending(batchDate);
             runExecutorCostModifyPending(batchDate);
@@ -720,8 +729,7 @@ public class ProgressReminderService {
      * 没有 progressChangedAt（老数据，从没触发过一次这个字段的维护逻辑）的记录也跳过，
      * 避免上线当天把所有历史记录都误判成"长期未流转"。
      */
-    private void runPmExecutorProgressStall(LocalDate today, Date batchDate) {
-        List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
+    private void runPmExecutorProgressStall(LocalDate today, Date batchDate, List<CollaborationTracking> all) {
         Map<Long, String> accountNameById = buildAccountNameIndex(all);
 
         int mildMaxDays = thresholdCache.getInt(ReminderCategory.PM_EXECUTOR_PROGRESS_STALL, "TIER_MILD_MAX_DAYS", 3);
@@ -810,8 +818,7 @@ public class ProgressReminderService {
      * 执行人员，没有直接关联）。两批卡片指向同一批底层记录，"标记已处理"按 (category,
      * trackingId) 定位，两边共用同一份状态，不会各自为政。
      */
-    private void runFinanceProgressStall(LocalDate today, Date batchDate) {
-        List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
+    private void runFinanceProgressStall(LocalDate today, Date batchDate, List<CollaborationTracking> all) {
         Map<Long, String> accountNameById = buildAccountNameIndex(all);
 
         int stallThreshold = thresholdCache.getInt(ReminderCategory.FINANCE_PROGRESS_STALL, "STALL_THRESHOLD", 14);
@@ -1094,9 +1101,7 @@ public class ProgressReminderService {
      * 没有可靠的"业务记录是否已经变化"时间戳可用。每天3点主批次会自动跑一次，2026-08 起
      * 也能通过"项目流转后更新提示内容"手动立即触发（见 PROJECT_FLOW_RECOMPUTE_CATEGORIES）。
      */
-    private void runContractExpiringSoon(LocalDate today, Date batchDate) {
-        List<CollaborationTracking> all = trackingRepo.findByIsDeletedFalse();
-
+    private void runContractExpiringSoon(LocalDate today, Date batchDate, List<CollaborationTracking> all) {
         // 按 (品牌方,团队) 二元组去重成候选合同关系（不看进度/是否完结、不看具体是哪个红人）
         Map<String, List<CollaborationTracking>> byBrandTeam = new LinkedHashMap<>();
         for (CollaborationTracking t : all) {
