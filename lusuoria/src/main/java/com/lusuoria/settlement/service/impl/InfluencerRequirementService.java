@@ -1078,12 +1078,45 @@ public class InfluencerRequirementService {
      * 还有没有剩余名额），任何一条不满足都抛异常、整批回滚——同一事务内前面几条已经落库的
      * 关联，后面几条的名额校验能看到，天然实现"这一批加起来超量也会被拦下"。
      */
+    // 2026-08-17 性能修复：原来循环体对每个 trackingId 都做了三次可以合并/去重的数据库访问
+    // （旧代码保留在下面循环体内的注释里）：
+    //   1) trackingRepo.findByIdAndIsDeletedFalse(trackingId) —— 逐条查，改成循环外一次性
+    //      trackingRepo.findAllById(trackingIds) 批量取回，再在 Java 里按 id 分发；
+    //   2) validateTrackingLinkage() 内部会重新查一次 requirement（带悲观锁 FOR UPDATE）+ items——
+    //      但整批 trackingIds 关联的是同一个 internalRequirementNo，这两样数据在整批操作期间不变，
+    //      改成循环外查一次，循环里改调不重新查这两样的 validateTrackingLinkageCore()（新抽出来的
+    //      私有方法，见下面 validateTrackingLinkage() 边上的注释）。
+    // 注意：trackingRepo.save(t) 故意保留在循环内部，没有改成收集起来最后 saveAll()——
+    // validateTrackingLinkageCore() 内部"这个需求条目还有没有剩余名额"的判断，依赖每次都重新查
+    // "当前已经关联到这个需求编号的记录"，必须能看到本次批量操作里前面几条已经在本次循环内落库
+    // 的关联（这是这个方法最上面 Javadoc 里"同一事务内前面几条已经落库的关联，后面几条的名额
+    // 校验能看到"这句话的关键），如果改成循环外统一 saveAll()，会导致校验时看不到同批次前面
+    // 几条的占用，可能把"这一批加起来超量"的情况放过去，所以这一处不能批量化，是有意保留的。
     @Transactional
     public void linkLegacyTrackings(String internalRequirementNo, List<Long> trackingIds) {
         if (trackingIds == null || trackingIds.isEmpty()) {
             throw new RuntimeException("请至少选择一条红人合作跟踪记录");
         }
+        InfluencerRequirement requirement = requirementRepo
+                .findByInternalRequirementNoAndIsDeletedFalseForUpdate(internalRequirementNo)
+                .orElseThrow(() -> new RuntimeException("内部需求编号 [" + internalRequirementNo + "] 不存在"));
+        List<InfluencerRequirementItem> items = itemRepo.findByRequirementIdOrderByIdAsc(requirement.getId());
+        Map<Long, CollaborationTracking> trackingsById = trackingRepo.findAllById(trackingIds).stream()
+                .collect(Collectors.toMap(CollaborationTracking::getId, t -> t));
         for (Long trackingId : trackingIds) {
+            CollaborationTracking t = trackingsById.get(trackingId);
+            if (t == null || Boolean.TRUE.equals(t.getIsDeleted())) {
+                throw new RuntimeException("跟踪记录不存在：" + trackingId);
+            }
+            if (t.getInternalRequirementNo() != null) {
+                throw new RuntimeException("记录 [" + t.getInternalProjectNo() + "] 已经关联了内部需求编号 ["
+                        + t.getInternalRequirementNo() + "]，不能重复关联");
+            }
+            validateTrackingLinkageCore(requirement, items, internalRequirementNo, t.getInfluencerId(), t.getBrandId(), t.getTeamId(),
+                    t.getVideoType(), t.getPlatform(), t.getInfluencerCost(), t.getClientPrice(), null);
+            t.setInternalRequirementNo(internalRequirementNo);
+            trackingRepo.save(t);
+            /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
             CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(trackingId)
                     .orElseThrow(() -> new RuntimeException("跟踪记录不存在：" + trackingId));
             if (t.getInternalRequirementNo() != null) {
@@ -1094,6 +1127,7 @@ public class InfluencerRequirementService {
                     t.getVideoType(), t.getPlatform(), t.getInfluencerCost(), t.getClientPrice(), null);
             t.setInternalRequirementNo(internalRequirementNo);
             trackingRepo.save(t);
+            ===== 旧代码结束 ===== */
         }
         // 2026-08 修复：这里之前漏调 refreshCompletedAt()，导致存量记录关联需求后，即使关联的
         // 记录视频项目进度本身早就达到"已发布（未结算）"及以后（完成条件已经满足），"红人需求
@@ -1282,7 +1316,30 @@ public class InfluencerRequirementService {
         InfluencerRequirement requirement = requirementRepo
                 .findByInternalRequirementNoAndIsDeletedFalseForUpdate(internalRequirementNo)
                 .orElseThrow(() -> new RuntimeException("内部需求编号 [" + internalRequirementNo + "] 不存在"));
+        // 2026-08-17 性能修复：requirement/items 的查询逻辑拆到 validateTrackingLinkageCore()——
+        // 这个公开方法本身行为不变（还是每次调用都重新查 requirement+items），只是把"查完之后
+        // 校验什么"的部分抽出去，供 linkLegacyTrackings() 批量场景复用（该场景下 requirement/items
+        // 在整批操作期间不变，不需要每条都重新查+加锁，见该方法调用点的注释）。
+        List<InfluencerRequirementItem> items = itemRepo.findByRequirementIdOrderByIdAsc(requirement.getId());
+        validateTrackingLinkageCore(requirement, items, internalRequirementNo, influencerId, brandId, teamId,
+                videoType, platform, influencerCost, clientPrice, excludeTrackingId);
+    }
 
+    /**
+     * validateTrackingLinkage() 的核心校验逻辑（红人/品牌方/团队一致性、条目精确匹配、剩余名额），
+     * 接受调用方已经查好的 requirement/items，内部不重新查——2026-08-17 从 validateTrackingLinkage()
+     * 拆出来，供 linkLegacyTrackings() 批量关联场景复用。
+     *
+     * 注意：下面"已占用名额" (linked/usedCount) 这一段没有被拆到调用方共用，仍然每次调用都重新查
+     * trackingRepo——这一段必须看到"当前已经关联到这个需求编号的记录"的最新状态，包括
+     * linkLegacyTrackings() 批量场景里本次操作前面几条已经在同一循环内落库的关联，这是"同一事务
+     * 内前面几条已经落库的关联，后面几条的名额校验能看到"这个正确性要求的关键所在，不能跟
+     * requirement/items 一样当成"整批不变的数据"处理。
+     */
+    private void validateTrackingLinkageCore(InfluencerRequirement requirement, List<InfluencerRequirementItem> items,
+                                               String internalRequirementNo, Long influencerId, Long brandId, Long teamId,
+                                               VideoType videoType, String platform,
+                                               BigDecimal influencerCost, BigDecimal clientPrice, Long excludeTrackingId) {
         if (!java.util.Objects.equals(requirement.getInfluencerId(), influencerId)) {
             throw new RuntimeException("内部需求编号 [" + internalRequirementNo + "] 关联的红人跟这条记录的红人不一致");
         }
@@ -1294,7 +1351,6 @@ public class InfluencerRequirementService {
         }
 
         String canonicalPlatform = canonicalTrackingPlatform(platform);
-        List<InfluencerRequirementItem> items = itemRepo.findByRequirementIdOrderByIdAsc(requirement.getId());
         InfluencerRequirementItem matched = items.stream()
                 .filter(i -> i.getVideoType() == videoType && java.util.Objects.equals(i.getPlatform(), canonicalPlatform)
                         && amountsEqual(i.getInfluencerUnitCostPrice(), influencerCost)

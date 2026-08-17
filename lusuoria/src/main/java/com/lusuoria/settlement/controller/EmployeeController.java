@@ -38,7 +38,9 @@ public class EmployeeController {
     @Autowired private EmployeeCache employeeCache;
     @Autowired private EmployeeExcelHandler excelHandler;
     @Autowired private CommissionBonusTierRepository bonusTierRepo;
+    @Autowired private com.lusuoria.settlement.config.CommissionBonusTierCache bonusTierCache;
     @Autowired private ExecutorPayRateTierRepository executorPayRateTierRepo;
+    @Autowired private com.lusuoria.settlement.config.ExecutorPayRateTierCache executorPayRateTierCache;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
     /** 获取员工列表（完全走缓存） */
@@ -69,7 +71,9 @@ public class EmployeeController {
      */
     @GetMapping("/{id}/bonus-tiers")
     public ApiResponse<List<CommissionBonusTier>> getBonusTiers(@PathVariable Long id) {
-        return ApiResponse.success(bonusTierRepo.findByEmployeeIdAndIsDeletedFalseOrderByMinAmountAsc(id));
+        // 2026-08-17 性能修复：改走 CommissionBonusTierCache；旧代码：
+        // bonusTierRepo.findByEmployeeIdAndIsDeletedFalseOrderByMinAmountAsc(id)
+        return ApiResponse.success(bonusTierCache.find(id));
     }
 
     /**
@@ -78,9 +82,14 @@ public class EmployeeController {
      */
     @GetMapping("/bonus-tiers")
     public ApiResponse<Map<Long, List<CommissionBonusTier>>> getBonusTiersBulk(@RequestParam List<Long> employeeIds) {
+        // 2026-08-17 性能修复：改走缓存，按 id 逐个从内存取（不是查库）；旧代码：
+        // for (CommissionBonusTier t : bonusTierRepo.findByEmployeeIdInAndIsDeletedFalseOrderByMinAmountAsc(employeeIds)) {
+        //     result.computeIfAbsent(t.getEmployeeId(), k -> new java.util.ArrayList<>()).add(t);
+        // }
         Map<Long, List<CommissionBonusTier>> result = new HashMap<>();
-        for (CommissionBonusTier t : bonusTierRepo.findByEmployeeIdInAndIsDeletedFalseOrderByMinAmountAsc(employeeIds)) {
-            result.computeIfAbsent(t.getEmployeeId(), k -> new java.util.ArrayList<>()).add(t);
+        for (Long id : employeeIds) {
+            List<CommissionBonusTier> tiers = bonusTierCache.find(id);
+            if (!tiers.isEmpty()) result.put(id, tiers);
         }
         return ApiResponse.success(result);
     }
@@ -192,6 +201,9 @@ public class EmployeeController {
         }
 
         employeeCache.refresh();
+        // 2026-08-17 新增：bonus 阶梯写完也要刷新对应缓存，不然要等最多4小时定时刷新才会反映到
+        // CommissionBonusTierCache，影响数据看板"提成"下钻/工资单计算等所有读这套配置的地方
+        bonusTierCache.refresh();
         return ApiResponse.success(saved);
     }
 
@@ -203,11 +215,14 @@ public class EmployeeController {
                 : allEmployees;
 
         List<Long> ids = list.stream().map(Employee::getId).collect(Collectors.toList());
+        // 2026-08-17 性能修复：改走缓存；旧代码：
+        // for (CommissionBonusTier t : bonusTierRepo.findByEmployeeIdInAndIsDeletedFalseOrderByMinAmountAsc(ids)) {
+        //     bonusTiersByEmployeeId.computeIfAbsent(t.getEmployeeId(), k -> new ArrayList<>()).add(t);
+        // }
         Map<Long, List<CommissionBonusTier>> bonusTiersByEmployeeId = new HashMap<>();
-        if (!ids.isEmpty()) {
-            for (CommissionBonusTier t : bonusTierRepo.findByEmployeeIdInAndIsDeletedFalseOrderByMinAmountAsc(ids)) {
-                bonusTiersByEmployeeId.computeIfAbsent(t.getEmployeeId(), k -> new ArrayList<>()).add(t);
-            }
+        for (Long id : ids) {
+            List<CommissionBonusTier> tiers = bonusTierCache.find(id);
+            if (!tiers.isEmpty()) bonusTiersByEmployeeId.put(id, tiers);
         }
 
         // 执行人员薪资标准：只导出"管理层"这份配置，跟列表页"薪资信息"列展示的口径一致
@@ -215,8 +230,9 @@ public class EmployeeController {
         Map<Long, List<ExecutorPayRateTier>> executorRatesByExecutorId = new HashMap<>();
         Employee management = employeeCache.findManagementEmployee();
         if (management != null) {
-            for (ExecutorPayRateTier t : executorPayRateTierRepo
-                    .findByManagerIdAndIsDeletedFalseOrderByMinCountAsc(management.getId())) {
+            // 2026-08-17 性能修复：改走 ExecutorPayRateTierCache；旧代码：
+            // executorPayRateTierRepo.findByManagerIdAndIsDeletedFalseOrderByMinCountAsc(management.getId())
+            for (ExecutorPayRateTier t : executorPayRateTierCache.findByManagerId(management.getId())) {
                 executorRatesByExecutorId.computeIfAbsent(t.getExecutorId(), k -> new ArrayList<>()).add(t);
             }
         }

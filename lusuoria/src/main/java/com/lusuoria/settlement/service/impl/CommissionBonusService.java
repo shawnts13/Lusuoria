@@ -28,26 +28,37 @@ public class CommissionBonusService {
     private static final int SCALE = 2;
 
     @Autowired private CommissionBonusTierRepository bonusTierRepo;
+    @Autowired private com.lusuoria.settlement.config.CommissionBonusTierCache bonusTierCache;
 
     /** 单个负责人场景（不在循环里调用时用）：查一次阶梯、算一次 bonus */
     public BigDecimal computeBonus(Employee manager, BigDecimal commissionTotalUsd, BigDecimal monthRate) {
         if (manager == null || manager.getBonusTierCurrency() == null) return BigDecimal.ZERO;
-        List<CommissionBonusTier> tiers = bonusTierRepo
-                .findByEmployeeIdAndIsDeletedFalseOrderByMinAmountAsc(manager.getId());
+        // 2026-08-17 性能修复：改走 CommissionBonusTierCache；旧代码：
+        // bonusTierRepo.findByEmployeeIdAndIsDeletedFalseOrderByMinAmountAsc(manager.getId())
+        List<CommissionBonusTier> tiers = bonusTierCache.find(manager.getId());
         return computeBonusFromTiers(manager, tiers, commissionTotalUsd, monthRate);
     }
 
     /** 单个负责人场景：该负责人是否配置了 bonus 阶梯（bonusTierCurrency 非空且至少有一档） */
     public boolean hasBonusTierConfigured(Employee manager) {
         if (manager == null || manager.getBonusTierCurrency() == null) return false;
-        return !bonusTierRepo.findByEmployeeIdAndIsDeletedFalseOrderByMinAmountAsc(manager.getId()).isEmpty();
+        // 2026-08-17 性能修复：改走 CommissionBonusTierCache；旧代码：
+        // bonusTierRepo.findByEmployeeIdAndIsDeletedFalseOrderByMinAmountAsc(manager.getId())
+        return !bonusTierCache.find(manager.getId()).isEmpty();
     }
 
     /** 批量场景：一次性查出这一批负责人的全部阶梯配置，按 employeeId 分组，供 computeBonusFromTiers 复用 */
     public Map<Long, List<CommissionBonusTier>> findTiersByEmployeeIds(List<Long> employeeIds) {
         if (employeeIds == null || employeeIds.isEmpty()) return Collections.emptyMap();
-        return bonusTierRepo.findByEmployeeIdInAndIsDeletedFalseOrderByMinAmountAsc(employeeIds).stream()
-                .collect(Collectors.groupingBy(CommissionBonusTier::getEmployeeId));
+        // 2026-08-17 性能修复：改走缓存（按 id 逐个从内存 Map 取，不是查库，不算 N+1）；旧代码：
+        // bonusTierRepo.findByEmployeeIdInAndIsDeletedFalseOrderByMinAmountAsc(employeeIds).stream()
+        //         .collect(Collectors.groupingBy(CommissionBonusTier::getEmployeeId))
+        Map<Long, List<CommissionBonusTier>> result = new java.util.HashMap<>();
+        for (Long employeeId : employeeIds) {
+            List<CommissionBonusTier> tiers = bonusTierCache.find(employeeId);
+            if (!tiers.isEmpty()) result.put(employeeId, tiers);
+        }
+        return result;
     }
 
     /**

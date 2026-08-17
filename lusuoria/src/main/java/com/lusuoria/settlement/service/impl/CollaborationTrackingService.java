@@ -86,6 +86,7 @@ public class CollaborationTrackingService {
     @Autowired private InfluencerRequirementService requirementService;
     @Autowired private com.lusuoria.settlement.util.EmployeeRoleUtil employeeRoleUtil;
     @Autowired private ExecutorPayRateTierRepository executorPayRateTierRepo;
+    @Autowired private com.lusuoria.settlement.config.ExecutorPayRateTierCache executorPayRateTierCache;
     @Autowired private ExecutorWageConfirmationRepository wageConfirmationRepo;
     @Autowired private ExchangeRateCacheRepository exchangeRateCacheRepo;
 
@@ -318,12 +319,25 @@ public class CollaborationTrackingService {
         boolean isAdminOrManagement = RoleUtil.isAdmin() || "管理层".equals(employeeRoleUtil.getCurrentEmployeeRole());
         Long currentEmployeeId = employeeRoleUtil.getCurrentEmployeeId();
         List<CollaborationTracking> results = new ArrayList<>();
+        // 2026-08-17 性能修复：原来每个 req 都单独查一次红人（旧代码保留在下面注释里）。"批量新建"
+        // 常见用法是同一个红人一次提交好几个视频项目（"复制当前窗口"就是复制上一个 pane 的红人），
+        // 也允许每个 pane 选不同红人，所以不能保证整批都是同一个 influencerId，改成按 influencerId
+        // 去重缓存：第一次查到的存进 influencerCache，后面遇到相同 id 直接从 map 取，不同 id 该查
+        // 还是查，不影响"允许每个视频项目选不同红人"这个能力，只是省掉同一红人的重复查询。
+        // doSave() 内部不会修改传进去的 influencer 对象（只读），多个 req 共用同一个 Influencer
+        // 实例是安全的。
+        Map<Long, Influencer> influencerCache = new HashMap<>();
         for (CollaborationTrackingRequest req : reqs) {
             if (req.getId() != null) {
                 throw new RuntimeException("批量新建不支持编辑已有记录");
             }
+            Influencer influencer = influencerCache.computeIfAbsent(req.getInfluencerId(), id ->
+                    influencerRepo.findByIdAndIsDeletedFalse(id)
+                            .orElseThrow(() -> new RuntimeException("红人不存在：" + id)));
+            /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
             Influencer influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getInfluencerId())
                     .orElseThrow(() -> new RuntimeException("红人不存在：" + req.getInfluencerId()));
+            ===== 旧代码结束 ===== */
             results.add(doSave(req, false, influencer, null, new DbLookupContext(), isFullAccess,
                     isAdminOrManagement, currentEmployeeId));
         }
@@ -1199,9 +1213,10 @@ public class CollaborationTrackingService {
         //     "管理层"，见 ProfitCalculator.isManagementOrder()，这里不受影响）
         //   - 没配置过：默认给 null 纯手填，红字提示先去配置（同一个执行人员可能配置了
         //     "实拍新视频"但没配置"AI新素材"，所以必须精确到这条记录的具体视频类型判断）
-        List<ExecutorPayRateTier> tiers = executorPayRateTierRepo
-                .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(
-                        t.getProjectManagerId(), executor.getId(), videoType);
+        // 2026-08-17 性能修复：改走 ExecutorPayRateTierCache；旧代码：
+        // executorPayRateTierRepo.findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(
+        //         t.getProjectManagerId(), executor.getId(), videoType)
+        List<ExecutorPayRateTier> tiers = executorPayRateTierCache.find(t.getProjectManagerId(), executor.getId(), videoType);
 
         if (tiers.isEmpty()) {
             resp.setSuggestedAmount(null);
@@ -1339,9 +1354,11 @@ public class CollaborationTrackingService {
      */
     private boolean autoComputeExecutorCostOnAssignment(CollaborationTracking tracking, Employee executor, Long excludeId) {
         if (tracking.getPublishDate() == null) return true;
-        List<ExecutorPayRateTier> tiers = executorPayRateTierRepo
-                .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(
-                        tracking.getProjectManager().getId(), executor.getId(), tracking.getVideoType());
+        // 2026-08-17 性能修复：改走 ExecutorPayRateTierCache；旧代码：
+        // executorPayRateTierRepo.findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(
+        //         tracking.getProjectManager().getId(), executor.getId(), tracking.getVideoType())
+        List<ExecutorPayRateTier> tiers = executorPayRateTierCache.find(
+                tracking.getProjectManager().getId(), executor.getId(), tracking.getVideoType());
         if (tiers.isEmpty()) return true; // 调用方已经校验过，这里只是防御
         String month = new SimpleDateFormat("yyyyMM").format(tracking.getPublishDate());
         List<CollaborationTracking> costedAllTypes = trackingRepo.findCostedOrdersForExecutorAndManager(
@@ -1438,9 +1455,10 @@ public class CollaborationTrackingService {
         int specialCount = 0;
         java.math.BigDecimal specialTotal = java.math.BigDecimal.ZERO;
         for (Map.Entry<VideoType, List<CollaborationTracking>> entry : byType.entrySet()) {
-            List<ExecutorPayRateTier> tiers = executorPayRateTierRepo
-                    .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(
-                            managerId, executorId, entry.getKey());
+            // 2026-08-17 性能修复：改走 ExecutorPayRateTierCache；旧代码：
+            // executorPayRateTierRepo.findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(
+            //         managerId, executorId, entry.getKey())
+            List<ExecutorPayRateTier> tiers = executorPayRateTierCache.find(managerId, executorId, entry.getKey());
             if (tiers.isEmpty()) continue; // 这个类型没配置梯度，无法比对，跳过
 
             List<CollaborationTracking> sameType = entry.getValue();
@@ -1611,9 +1629,9 @@ public class CollaborationTrackingService {
      * Excel 批量导入用（导入不经过那个 REST 接口，需要在服务层直接复用同一条判断规则）。
      */
     public boolean hasExecutorPayRateConfigured(Long managerId, Long executorId, VideoType videoType) {
-        return !executorPayRateTierRepo
-                .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(managerId, executorId, videoType)
-                .isEmpty();
+        // 2026-08-17 性能修复：改走 ExecutorPayRateTierCache；旧代码：
+        // executorPayRateTierRepo.findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(managerId, executorId, videoType)
+        return !executorPayRateTierCache.find(managerId, executorId, videoType).isEmpty();
     }
 
     /**
@@ -1854,6 +1872,30 @@ public class CollaborationTrackingService {
                                         java.util.function.Predicate<CollaborationTracking> scopeFilter,
                                         ExecCostRecomputeResult result) {
         SimpleDateFormat monthFormat = new SimpleDateFormat("yyyyMM");
+        // 2026-08-17 性能修复第二版：这里原来（第一版，2026-08-17 当天早些时候）是"批量查一次
+        // executorPayRateTierRepo.findByManagerIdInAndIsDeletedFalse 再在 Java 里建索引"，比最早
+        // "每个分组单独查一次"好，但仍然是每次调用这个方法都要查一次库。现在 ExecutorPayRateTierCache
+        // 已经把全表数据常驻内存并在写入后主动 refresh()，这一段批量预查+建索引的代码不再需要，
+        // 直接在下面循环里调 executorPayRateTierCache.find(...) 就是内存读取，索性删掉这段、
+        // 两版旧代码都留档在下面注释里。
+        /* ===== 旧代码·第一版（批量预查询版，2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
+        Set<Long> allManagerIds = new HashSet<>();
+        for (List<CollaborationTracking> group : execCostGroups.values()) {
+            CollaborationTracking anyInGroup = group.get(0);
+            if (anyInGroup.getProjectManager() != null) allManagerIds.add(anyInGroup.getProjectManager().getId());
+        }
+        Map<String, List<ExecutorPayRateTier>> tiersByKey = new HashMap<>();
+        if (!allManagerIds.isEmpty()) {
+            for (ExecutorPayRateTier tier : executorPayRateTierRepo.findByManagerIdInAndIsDeletedFalse(allManagerIds)) {
+                String tierKey = tier.getManagerId() + "|" + tier.getExecutorId() + "|" + tier.getVideoType();
+                tiersByKey.computeIfAbsent(tierKey, k -> new ArrayList<>()).add(tier);
+            }
+            for (List<ExecutorPayRateTier> tierList : tiersByKey.values()) {
+                tierList.sort(java.util.Comparator.comparing(ExecutorPayRateTier::getMinCount));
+            }
+        }
+        ===== 旧代码·第一版结束 ===== */
+
         for (List<CollaborationTracking> group : execCostGroups.values()) {
             group.sort((a, b) -> {
                 int cmp = a.getPublishDate().compareTo(b.getPublishDate());
@@ -1865,9 +1907,18 @@ public class CollaborationTrackingService {
             result.inScopeRecords.addAll(group);
 
             String groupMonth = monthFormat.format(first.getPublishDate());
+            List<ExecutorPayRateTier> tiers = executorPayRateTierCache.find(
+                    first.getProjectManager().getId(), first.getExecutor().getId(), first.getVideoType());
+            /* ===== 旧代码·第二版（批量预查询后查内存索引，2026-08-17 停用，按 Shawn 要求保留
+             * 对比，不要直接删）=====
+            String tierKey = first.getProjectManager().getId() + "|" + first.getExecutor().getId() + "|" + first.getVideoType();
+            List<ExecutorPayRateTier> tiers = tiersByKey.getOrDefault(tierKey, Collections.emptyList());
+            ===== 旧代码·第二版结束 =====
+             * ===== 旧代码·第一版（每分组单独查库，2026-08-17 停用，按 Shawn 要求保留对比）=====
             List<ExecutorPayRateTier> tiers = executorPayRateTierRepo
                     .findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(
                             first.getProjectManager().getId(), first.getExecutor().getId(), first.getVideoType());
+            ===== 旧代码·第一版结束 ===== */
             if (tiers.isEmpty()) {
                 result.noRateSkippedCount += group.size();
                 result.noRateSkippedCombos.add(first.getExecutor().getName() + " / " + first.getVideoType().getLabel());

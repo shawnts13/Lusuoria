@@ -11,6 +11,9 @@ import java.util.List;
 @Repository
 public interface ExecutorPayRateTierRepository extends JpaRepository<ExecutorPayRateTier, Long> {
 
+    /** 全表未删除的档位（2026-08-17 新增，供 ExecutorPayRateTierCache 启动/刷新时一次性加载用） */
+    List<ExecutorPayRateTier> findByIsDeletedFalse();
+
     /** 某个负责人名下配置的全部档位（覆盖他手下所有执行人员/所有视频类型，按最低条数升序） */
     List<ExecutorPayRateTier> findByManagerIdAndIsDeletedFalseOrderByMinCountAsc(Long managerId);
 

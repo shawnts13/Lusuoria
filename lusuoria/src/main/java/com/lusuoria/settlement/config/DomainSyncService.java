@@ -6,6 +6,7 @@ import com.lusuoria.settlement.repository.InfluencerRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -38,15 +39,22 @@ public class DomainSyncService {
         }
 
         // 软删除没有被使用的领域
+        // 2026-08-17 性能修复：原来每个要软删的 domain 单独调一次 domainRepo.save(domain)（旧代码
+        // 保留在下面注释里），改成收集到 list 里最后统一 saveAll() 一次。领域是一张小的、人工
+        // 维护的分类表，单次 sync() 里真正命中软删条件的行数通常很少，实际影响不大，顺手改掉。
         List<Domain> allDomains = domainRepo.findByIsDeletedFalseOrderByNameAsc();
         boolean changed = false;
+        List<Domain> toSoftDelete = new ArrayList<Domain>();
         for (Domain domain : allDomains) {
             if (!usedDomains.contains(domain.getName())) {
                 domain.setIsDeleted(true);
-                domainRepo.save(domain);
+                toSoftDelete.add(domain);
                 changed = true;
+                /* ===== 旧代码：domainRepo.save(domain); （2026-08-17 停用，改成统一 saveAll，
+                 * 按 Shawn 要求保留对比，不要直接删）===== */
             }
         }
+        if (!toSoftDelete.isEmpty()) domainRepo.saveAll(toSoftDelete);
 
         // 确保所有使用中的领域都在表里
         for (String name : usedDomains) {

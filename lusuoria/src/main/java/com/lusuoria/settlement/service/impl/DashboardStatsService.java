@@ -988,7 +988,16 @@ public class DashboardStatsService {
     // ============ 员工个人趋势（2026-07 新增，仅年度报告用） ============
     // 按月循环（跟 getRangeSummary 同样的模式），一次HTTP调用内在后端拼好"负责人×月份"矩阵，
     // 避免前端对每个负责人每个月分别发请求（会到上百次，Render 免费层数据库连接池只有3个）。
-
+    //
+    // 2026-08-17 性能修复：原来这里对 months 按月循环，循环体里每个月单独查一次
+    // trackingRepo.findByPublishMonth(month) + exchangeRateService.getRateForMonth(month)，年度报告
+    // 一次就是 12 次查询（旧代码保留在下面注释里）。改成跟同文件 getRangeSummary/drilldownPivot/
+    // drilldownAmountByDimension 等兄弟方法一样：先用 findByPublishMonthBetween(startMonth, endMonth)
+    // 一次性把整段区间取回来，再用 buildMonthRateCache(orders) 按"数据里实际出现过的月份"去重查
+    // 汇率，一次请求只需 1 次记录查询 + 最多"区间内有数据的月份数"次汇率查询。原来按 months 外层
+    // 循环变量分桶的 month，改成从每条记录自己的发布日期算（monthKeyOf），下游"按 months 补零"的
+    // 逻辑（下面 for (String month : months) 那段）本来就用 getOrDefault 兜底没有数据的月份，
+    // 不受这个改动影响，行为应该完全一致。
     public DashboardManagerTrendResponse getManagerTrend(String startMonth, String endMonth,
                                                           String currency, String role) {
         boolean isExecutor = "executor".equals(role);
@@ -998,6 +1007,28 @@ public class DashboardStatsService {
         Map<Long, String> nameById = new LinkedHashMap<>();
         Map<Long, Map<String, TrendAccumulator>> data = new LinkedHashMap<>();
 
+        List<CollaborationTracking> allOrders = excludeDamaged(trackingRepo.findByPublishMonthBetween(startMonth, endMonth));
+        Map<String, BigDecimal> monthRateCache = buildMonthRateCache(allOrders);
+        for (CollaborationTracking o : allOrders) {
+            String month = monthKeyOf(o);
+            if (month == null) continue;
+            BigDecimal rate = monthRateCache.get(month);
+            Long personId = isExecutor ? o.getExecutorId() : o.getProjectManagerId();
+            if (personId == null) continue; // 未指定负责人/执行人员的记录不计入个人趋势
+            Computed c = compute(o);
+            nameById.putIfAbsent(personId, isExecutor ? executorNameOf(personId) : managerNameOf(personId));
+            TrendAccumulator acc = data.computeIfAbsent(personId, k -> new LinkedHashMap<>())
+                    .computeIfAbsent(month, k -> new TrendAccumulator());
+            acc.videoCount += 1;
+            acc.clientPrice = acc.clientPrice.add(convert(c.clientPrice, rate, toRmb));
+            acc.grossProfit = acc.grossProfit.add(convert(c.grossProfit, rate, toRmb));
+            acc.companyProfit = acc.companyProfit.add(convert(c.companyProfit, rate, toRmb));
+            acc.commissionAmount = acc.commissionAmount.add(convert(c.commissionAmount, rate, toRmb));
+            acc.internalExecutionCost = acc.internalExecutionCost
+                    .add(convertFromRmb(safe(o.getInternalExecutionCost()), rate, toRmb));
+        }
+        /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删——如果新写法有问题，
+         * 想临时切回来对比时能直接看到原样）=====
         for (String month : months) {
             List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(month));
             BigDecimal rate = exchangeRateService.getRateForMonth(month).getUsdToCny();
@@ -1017,6 +1048,7 @@ public class DashboardStatsService {
                         .add(convertFromRmb(safe(o.getInternalExecutionCost()), rate, toRmb));
             }
         }
+        ===== 旧代码结束 ===== */
 
         // 排序用：personId -> 排序权重（role=manager 用总公司利润，role=executor 用总视频数量），
         // 用 personId 而不是姓名做 key——两个人姓名可能重名，不能用姓名字符串当排序依据的 key

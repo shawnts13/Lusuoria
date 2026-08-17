@@ -1,6 +1,7 @@
 package com.lusuoria.settlement.controller;
 
 import com.lusuoria.settlement.config.EmployeeCache;
+import com.lusuoria.settlement.config.ExecutorPayRateTierCache;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.ExecutorPayRateTier;
@@ -38,6 +39,7 @@ public class ExecutorPayRateController {
     @Autowired private ExecutorPayRateTierRepository tierRepo;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
     @Autowired private EmployeeCache employeeCache;
+    @Autowired private ExecutorPayRateTierCache tierCache;
 
     /** 解析当前调用方实际生效的 managerId：STAFF 强制用自己的员工 id，ADMIN 可显式指定 */
     private Long resolveManagerId(Long requestedManagerId) {
@@ -61,7 +63,10 @@ public class ExecutorPayRateController {
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<List<ExecutorPayRateTier>> list(@RequestParam(required = false) Long managerId) {
         Long effectiveManagerId = resolveManagerId(managerId);
-        return ApiResponse.success(tierRepo.findByManagerIdAndIsDeletedFalseOrderByMinCountAsc(effectiveManagerId));
+        // 2026-08-17 性能修复：改走 ExecutorPayRateTierCache（save() 写入后会同步 refresh()，
+        // 不会出现"刚保存完，列表页看到的还是旧数据"的问题）；旧代码：
+        // tierRepo.findByManagerIdAndIsDeletedFalseOrderByMinCountAsc(effectiveManagerId)
+        return ApiResponse.success(tierCache.findByManagerId(effectiveManagerId));
     }
 
     /**
@@ -73,8 +78,9 @@ public class ExecutorPayRateController {
     @PreAuthorize("hasAnyRole('ADMIN','STAFF','AUDITOR')")
     public ApiResponse<Boolean> check(@RequestParam Long managerId, @RequestParam Long executorId,
                                        @RequestParam VideoType videoType) {
-        boolean exists = !tierRepo.findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(
-                managerId, executorId, videoType).isEmpty();
+        // 2026-08-17 性能修复：改走缓存；旧代码：
+        // tierRepo.findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(managerId, executorId, videoType)
+        boolean exists = !tierCache.find(managerId, executorId, videoType).isEmpty();
         return ApiResponse.success(exists);
     }
 
@@ -144,6 +150,9 @@ public class ExecutorPayRateController {
                 }
             }
         }
+        // 2026-08-17 新增：写完立刻刷新缓存，不然要等最多4小时的定时刷新才会反映到
+        // ExecutorPayRateTierCache，影响所有读这套配置的地方（红人合作跟踪保存/工资单计算等）
+        tierCache.refresh();
         return ApiResponse.success();
     }
 

@@ -283,8 +283,17 @@ public class InfluencerPaymentService {
 
     @Transactional
     public InfluencerPayment create(InfluencerPaymentRequest req) {
+        // 2026-08-17 性能修复：这两处原来直接查库（旧代码保留在下面注释里），但都是纯只读校验
+        // （brand/team 在这个方法里只用来读字段判断，从不 save），改成跟本文件其它地方
+        // （91/106/131/174/381/554/620 行）一样走 brandCache/teamCache——这两个缓存在
+        // BrandController/InfluencerTeamController 的新增/编辑/删除里都会调用 refresh()，正常
+        // 操作下不存在"缓存明显滞后于数据库"的窗口。
+        Brand brand = brandCache.findById(req.getBrandId());
+        if (brand == null) throw new RuntimeException("品牌方不存在");
+        /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
         Brand brand = brandRepo.findByIdAndIsDeletedFalse(req.getBrandId())
                 .orElseThrow(() -> new RuntimeException("品牌方不存在"));
+        ===== 旧代码结束 ===== */
 
         // teamIds 可能包含 null 元素（代表"不选团队"也在这次结款范围内）
         List<Long> realTeamIds = new ArrayList<>();
@@ -293,11 +302,16 @@ public class InfluencerPaymentService {
             if (teamId == null) includeNoTeam = true; else realTeamIds.add(teamId);
         }
         if (!realTeamIds.isEmpty()) {
+            for (Long teamId : realTeamIds) {
+                if (teamCache.findById(teamId) == null) throw new RuntimeException("红人团队不存在：" + teamId);
+            }
+            /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
             Set<Long> foundTeamIds = new HashSet<>();
             for (InfluencerTeam t : teamRepo.findAllById(realTeamIds)) foundTeamIds.add(t.getId());
             for (Long teamId : realTeamIds) {
                 if (!foundTeamIds.contains(teamId)) throw new RuntimeException("红人团队不存在：" + teamId);
             }
+            ===== 旧代码结束 ===== */
         }
 
         validateInvoiceTeamExclusivity(brand, realTeamIds, includeNoTeam);
@@ -505,11 +519,31 @@ public class InfluencerPaymentService {
      * 已经属于"其他"结款批次的同需求记录不算"遗漏"——那条记录纳入那个批次时，如果这条规则
      * 还没上线，可能本来就是历史遗留的拆分，这里只管"这一次提交本身是否完整"，不追溯修正历史。
      */
+    // 2026-08-17 性能修复：原来按 reqNo 逐个查库（旧代码保留在下面注释里），改成用仓库里现成的
+    // 批量方法 findByInternalRequirementNoInAndIsDeletedFalse(List<String>)（ProgressReminderService/
+    // InfluencerRequirementService 已经在用同一个方法）一次性取回本批次涉及的全部需求编号下的
+    // 候选兄弟记录，再按 reqNo 分组，循环内的判断逻辑（谁算"遗漏"、谁不算）完全不变。
     private void validateNoPartialRequirement(List<CollaborationTracking> items, Long excludePaymentId) {
         Set<String> reqNos = items.stream().map(CollaborationTracking::getInternalRequirementNo)
                 .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
         if (reqNos.isEmpty()) return;
         Set<Long> submittedIds = items.stream().map(CollaborationTracking::getId).collect(Collectors.toSet());
+        List<CollaborationTracking> allSiblings =
+                trackingRepo.findByInternalRequirementNoInAndIsDeletedFalse(new ArrayList<>(reqNos));
+        Map<String, List<CollaborationTracking>> siblingsByReqNo = allSiblings.stream()
+                .collect(Collectors.groupingBy(CollaborationTracking::getInternalRequirementNo));
+        for (String reqNo : reqNos) {
+            for (CollaborationTracking sibling : siblingsByReqNo.getOrDefault(reqNo, Collections.emptyList())) {
+                if (submittedIds.contains(sibling.getId())) continue;
+                if (sibling.getInfluencerPaymentProgress() == null) continue; // 还没到能结款的阶段，不算"遗漏"
+                boolean belongsToThisPayment = excludePaymentId != null && excludePaymentId.equals(sibling.getInfluencerPaymentId());
+                if (belongsToThisPayment) continue;
+                if (sibling.getInfluencerPaymentProgress().isIncludedInBatch()) continue; // 已经在其他批次里，历史数据不追溯
+                throw new RuntimeException("内部需求编号 [" + reqNo + "] 下还有其他可结款的记录（"
+                        + sibling.getInternalProjectNo() + "）没有一起勾选，同一个需求的记录不能拆分到不同的结款批次里");
+            }
+        }
+        /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
         for (String reqNo : reqNos) {
             for (CollaborationTracking sibling : trackingRepo.findByInternalRequirementNoAndIsDeletedFalse(reqNo)) {
                 if (submittedIds.contains(sibling.getId())) continue;
@@ -521,6 +555,7 @@ public class InfluencerPaymentService {
                         + sibling.getInternalProjectNo() + "）没有一起勾选，同一个需求的记录不能拆分到不同的结款批次里");
             }
         }
+        ===== 旧代码结束 ===== */
     }
 
     /**
@@ -570,14 +605,23 @@ public class InfluencerPaymentService {
      * 导致"上传发票"这个动作语义不清。这个改动不涉及存量数据（上线时红人结款模块还没有
      * 正式录入数据），也不影响 update()——团队范围创建后就锁定，不会再触发这条校验。
      */
+    // 2026-08-17 性能修复：下面原来查库（旧代码保留在注释里），改成跟同一个类里紧挨着的
+    // resolveInvolvesCorporateInvoice()（本方法的姐妹方法，同样在 create() 流程里被调用）一样走
+    // teamCache.findById，两处判断的都是同一批 realTeamIds 涉不涉及发票，没道理一处查库一处查缓存。
     private void validateInvoiceTeamExclusivity(Brand brand, List<Long> realTeamIds, boolean includeNoTeam) {
         int totalScopeCount = realTeamIds.size() + (includeNoTeam ? 1 : 0);
         if (totalScopeCount <= 1) return;
         boolean anyInvoiceInvolved = includeNoTeam && InfluencerTeam.involvesCorporateInvoice(brand, null);
         if (!anyInvoiceInvolved) {
+            for (Long teamId : realTeamIds) {
+                InfluencerTeam team = teamCache.findById(teamId);
+                if (InfluencerTeam.involvesCorporateInvoice(brand, team)) { anyInvoiceInvolved = true; break; }
+            }
+            /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
             for (InfluencerTeam team : teamRepo.findAllById(realTeamIds)) {
                 if (InfluencerTeam.involvesCorporateInvoice(brand, team)) { anyInvoiceInvolved = true; break; }
             }
+            ===== 旧代码结束 ===== */
         }
         if (anyInvoiceInvolved) {
             throw new RuntimeException("勾选的团队里有涉及公对公发票的团队，这类团队的结款记录不能跟其他团队合并结算，请单独结款");

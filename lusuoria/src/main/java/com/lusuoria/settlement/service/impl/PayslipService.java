@@ -76,6 +76,21 @@ public class PayslipService {
     @Autowired private ObjectMapper objectMapper;
     @Autowired private ExecutorWageConfirmationRepository wageConfirmationRepo;
     @Autowired private ExecutorPayRateTierRepository executorPayRateTierRepo;
+    @Autowired private com.lusuoria.settlement.config.ExecutorPayRateTierCache executorPayRateTierCache;
+
+    /**
+     * 全体在职员工，按姓名升序——2026-08-17 性能修复新增：等价替换本文件里原来散落各处的
+     * employeeRepo.findByIsDeletedFalseOrderByNameAsc() 直查（本文件从头到尾不会修改/保存
+     * Employee，纯只读，改走缓存）。EmployeeCache.getAll() 底层是 ConcurrentHashMap#values()，
+     * 不保证顺序，这里显式按姓名排一次，跟原来 repo 方法的 OrderByNameAsc 保持同一个契约——
+     * 本文件至少有一处（otherStaffCostBreakdownRows 的展示顺序）是真的依赖这个顺序的，不能
+     * 直接用未排序的 getAll() 替换。
+     */
+    private List<Employee> allEmployeesOrderByName() {
+        List<Employee> list = new ArrayList<>(employeeCache.getAll());
+        list.sort(Comparator.comparing(Employee::getName));
+        return list;
+    }
 
     // ================= 对外主入口 =================
 
@@ -85,8 +100,17 @@ public class PayslipService {
      */
     @Transactional
     public PayslipDetailResponse detail(Long employeeId, String yearMonth, String currency) {
+        // 2026-08-17 性能修复：本文件从头到尾都不会修改/保存 Employee（纯只读），下面这类
+        // employeeRepo 单条查询统一改成 employeeCache.findById（EmployeeCache 已经在本文件
+        // 166/1208 行被用到，这里是补齐剩下没走缓存的地方）。EmployeeCache 在
+        // EmployeeController 的新增/编辑/删除里都会同步调用 refresh()，正常操作下不存在
+        // "缓存明显滞后于数据库"的窗口；旧代码保留在下面注释里，方便对比。
+        Employee emp = employeeCache.findById(employeeId);
+        if (emp == null) throw new RuntimeException("员工不存在");
+        /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
         Employee emp = employeeRepo.findByIdAndIsDeletedFalse(employeeId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
+        ===== 旧代码结束 ===== */
         ExchangeRateInfo liveRateInfo = exchangeRateService.getRateForMonth(yearMonth);
         Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(employeeId, yearMonth).orElse(null);
         p = autoConfirmFixedSalaryIfMissing(emp, yearMonth, p, liveRateInfo.getUsdToCny());
@@ -111,7 +135,13 @@ public class PayslipService {
         ExchangeRateInfo liveRateInfo = exchangeRateService.getRateForMonth(yearMonth);
         BigDecimal rate = liveRateInfo.getUsdToCny();
 
-        List<Employee> employees = employeeRepo.findByIsDeletedFalseOrderByNameAsc().stream()
+        // 2026-08-17 性能修复：employeeCache.getAll() 取代直接查库（旧代码保留在下面注释里）。
+        // 注意 EmployeeCache.getAll() 底层是 ConcurrentHashMap#values()，不保证按姓名排序
+        // （不像 repo 的 OrderByNameAsc），但这里不受影响——下面紧跟着的 .sorted(...) 本来就会
+        // 按"角色展示顺序"+姓名重新排一遍，输入顺序是什么根本不影响最终结果。
+        List<Employee> employees = employeeCache.getAll().stream()
+                /* ===== 旧代码：employeeRepo.findByIsDeletedFalseOrderByNameAsc().stream()
+                 * （2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）===== */
                 .filter(e -> e.getResignDate() == null)
                 .filter(e -> !"管理层".equals(e.getRole()))
                 .filter(e -> !isBeforeHireMonth(e, yearMonth))
@@ -133,8 +163,14 @@ public class PayslipService {
         // 本月所有执行人员的"确认"按钮拦截原因批量算好（见上面方法注释），不在下面的行循环里
         // 逐个现查——跟 batchComputeCommissionRoles 共用同一份 orders/confirmationByManagerId，
         // 管理层员工id列表也只单独查这一次
+        // 2026-08-17 性能修复：走 employeeCache.getAll() 过滤代替直接查库（旧代码保留在下面注释里）。
+        Set<Long> managementIds = employeeCache.getAll().stream()
+                .filter(e -> "管理层".equals(e.getRole()))
+                .map(Employee::getId).collect(Collectors.toSet());
+        /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
         Set<Long> managementIds = employeeRepo.findByRoleAndIsDeletedFalse("管理层").stream()
                 .map(Employee::getId).collect(Collectors.toSet());
+        ===== 旧代码结束 ===== */
         Map<Long, ExecutorPmConfirmStatus> execStatusById = new HashMap<>();
         for (Employee e : commissionRoleEmployees) {
             if ("执行人员".equals(e.getRole())) {
@@ -174,8 +210,13 @@ public class PayslipService {
 
     @Transactional
     public void setExtraBonus(Long employeeId, String yearMonth, BigDecimal amount, String currency) {
+        // 2026-08-17 性能修复：见 detail() 方法开头的说明，同样是纯只读查询改走 employeeCache
+        Employee emp = employeeCache.findById(employeeId);
+        if (emp == null) throw new RuntimeException("员工不存在");
+        /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
         Employee emp = employeeRepo.findByIdAndIsDeletedFalse(employeeId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
+        ===== 旧代码结束 ===== */
         Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(employeeId, yearMonth).orElse(null);
         boolean isNew = p == null;
         if (isNew) {
@@ -206,8 +247,13 @@ public class PayslipService {
 
     @Transactional
     public void setLegalSalary(Long employeeId, String yearMonth, BigDecimal amountRmb) {
+        // 2026-08-17 性能修复：见 detail() 方法开头的说明，同样是纯只读查询改走 employeeCache
+        Employee emp = employeeCache.findById(employeeId);
+        if (emp == null) throw new RuntimeException("员工不存在");
+        /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
         Employee emp = employeeRepo.findByIdAndIsDeletedFalse(employeeId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
+        ===== 旧代码结束 ===== */
         if (!"法务".equals(emp.getRole())) throw new RuntimeException("只有法务角色才能设置本月工资");
         Payslip p = getOrCreateForWrite(employeeId, yearMonth);
         requireUnconfirmed(p);
@@ -234,10 +280,14 @@ public class PayslipService {
      * - "已确认"（绿色）：管理层自己那部分确认了，且所有其他项目负责人也都确认了。
      */
     private ExecutorPmConfirmStatus resolveExecutorPmConfirmStatus(Long executorId, String yearMonth) {
+        // 2026-08-17 性能修复：同 listForMonth() 里的 managementIds，走 employeeCache 代替查库
         return resolveExecutorPmConfirmStatus(executorId,
                 excludeDamaged(trackingRepo.findByPublishMonth(yearMonth)),
-                employeeRepo.findByRoleAndIsDeletedFalse("管理层").stream()
+                employeeCache.getAll().stream().filter(e -> "管理层".equals(e.getRole()))
                         .map(Employee::getId).collect(Collectors.toSet()),
+                /* ===== 旧代码：employeeRepo.findByRoleAndIsDeletedFalse("管理层").stream()
+                 *         .map(Employee::getId).collect(Collectors.toSet())
+                 * （2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）===== */
                 fetchWageConfirmations(yearMonth));
     }
 
@@ -323,8 +373,13 @@ public class PayslipService {
 
     @Transactional
     public void confirm(Long employeeId, String yearMonth) {
+        // 2026-08-17 性能修复：见 detail() 方法开头的说明，同样是纯只读查询改走 employeeCache
+        Employee emp = employeeCache.findById(employeeId);
+        if (emp == null) throw new RuntimeException("员工不存在");
+        /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
         Employee emp = employeeRepo.findByIdAndIsDeletedFalse(employeeId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
+        ===== 旧代码结束 ===== */
         BigDecimal rate = exchangeRateService.getRateForMonth(yearMonth).getUsdToCny();
         MonthDataCache cache = null;
         if ("管理层".equals(emp.getRole())) {
@@ -333,7 +388,7 @@ public class PayslipService {
             cache = new MonthDataCache(
                     excludeDamaged(trackingRepo.findByPublishMonth(yearMonth)),
                     fetchWageConfirmations(yearMonth),
-                    employeeRepo.findByIsDeletedFalseOrderByNameAsc());
+                    allEmployeesOrderByName()); // 2026-08-17 性能修复，见该方法注释；旧代码：employeeRepo.findByIsDeletedFalseOrderByNameAsc()
             String blocked = managementBlockReason(yearMonth, employeeId, rate, cache.allEmployees);
             if (blocked != null) throw new RuntimeException(blocked);
         }
@@ -385,10 +440,17 @@ public class PayslipService {
      */
     @Transactional
     public void confirmExecutorWages(Long managerId, Long executorId, String yearMonth) {
+        // 2026-08-17 性能修复：见 detail() 方法开头的说明，同样是纯只读查询改走 employeeCache
+        Employee manager = employeeCache.findById(managerId);
+        if (manager == null) throw new RuntimeException("员工不存在");
+        Employee executor = employeeCache.findById(executorId);
+        if (executor == null) throw new RuntimeException("执行人员不存在");
+        /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
         Employee manager = employeeRepo.findByIdAndIsDeletedFalse(managerId)
                 .orElseThrow(() -> new RuntimeException("员工不存在"));
         Employee executor = employeeRepo.findByIdAndIsDeletedFalse(executorId)
                 .orElseThrow(() -> new RuntimeException("执行人员不存在"));
+        ===== 旧代码结束 ===== */
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         List<CollaborationTracking> ordersForPair = groupByManagerThenExecutor(orders)
                 .getOrDefault(managerId, Collections.emptyMap())
@@ -423,7 +485,7 @@ public class PayslipService {
         // 最常见的"普通项目负责人确认执行人员工资"场景平白多花3次查询，所以按角色判断，不是
         // 无条件都建。
         MonthDataCache cache = "管理层".equals(manager.getRole())
-                ? new MonthDataCache(orders, fetchWageConfirmations(yearMonth), employeeRepo.findByIsDeletedFalseOrderByNameAsc())
+                ? new MonthDataCache(orders, fetchWageConfirmations(yearMonth), allEmployeesOrderByName()) // 2026-08-17 性能修复；旧代码：employeeRepo.findByIsDeletedFalseOrderByNameAsc()
                 : null;
         recomputeFinality(executor, yearMonth, rate, cache);
         recomputeFinality(manager, yearMonth, rate, cache);
@@ -441,14 +503,19 @@ public class PayslipService {
         confirmation.setConfirmed(false);
         wageConfirmationRepo.save(confirmation);
 
+        // 2026-08-17 性能修复：见 detail() 方法开头的说明，同样是纯只读查询改走 employeeCache
+        Employee manager = employeeCache.findById(managerId);
+        Employee executor = employeeCache.findById(executorId);
+        /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
         Employee manager = employeeRepo.findByIdAndIsDeletedFalse(managerId).orElse(null);
         Employee executor = employeeRepo.findByIdAndIsDeletedFalse(executorId).orElse(null);
+        ===== 旧代码结束 ===== */
         BigDecimal rate = exchangeRateService.getRateForMonth(yearMonth).getUsdToCny();
         // 同 confirmExecutorWages() 的性能修复（2026-08-10）：manager 是管理层时才建缓存，
         // 避免最常见的"普通项目负责人取消确认执行人员工资"场景平白多花查询
         MonthDataCache cache = (manager != null && "管理层".equals(manager.getRole()))
                 ? new MonthDataCache(excludeDamaged(trackingRepo.findByPublishMonth(yearMonth)),
-                        fetchWageConfirmations(yearMonth), employeeRepo.findByIsDeletedFalseOrderByNameAsc())
+                        fetchWageConfirmations(yearMonth), allEmployeesOrderByName()) // 2026-08-17 性能修复；旧代码：employeeRepo.findByIsDeletedFalseOrderByNameAsc()
                 : null;
         if (executor != null) recomputeFinality(executor, yearMonth, rate, cache);
         if (manager != null) recomputeFinality(manager, yearMonth, rate, cache);
@@ -519,10 +586,11 @@ public class PayslipService {
     }
 
     private PayslipDetailResponse computeManagement(Employee mgmt, String yearMonth, BigDecimal rate) {
+        // 2026-08-17 性能修复；旧代码：employeeRepo.findByIsDeletedFalseOrderByNameAsc()
         return computeManagement(mgmt, yearMonth, rate,
                 excludeDamaged(trackingRepo.findByPublishMonth(yearMonth)),
                 fetchWageConfirmations(yearMonth),
-                employeeRepo.findByIsDeletedFalseOrderByNameAsc());
+                allEmployeesOrderByName());
     }
 
     /**
@@ -1034,7 +1102,9 @@ public class PayslipService {
     private Map<Long, Map<String, List<ExecutorPayRateTier>>> fetchTiersByExecutorAndType(Long managerId) {
         Map<Long, Map<String, List<ExecutorPayRateTier>>> result = new HashMap<>();
         if (managerId == null) return result;
-        for (ExecutorPayRateTier t : executorPayRateTierRepo.findByManagerIdAndIsDeletedFalseOrderByMinCountAsc(managerId)) {
+        // 2026-08-17 性能修复：改走 ExecutorPayRateTierCache（内存读取，不再查库）；旧代码：
+        // executorPayRateTierRepo.findByManagerIdAndIsDeletedFalseOrderByMinCountAsc(managerId)
+        for (ExecutorPayRateTier t : executorPayRateTierCache.findByManagerId(managerId)) {
             result.computeIfAbsent(t.getExecutorId(), k -> new HashMap<>())
                     .computeIfAbsent(t.getVideoType().name(), k -> new ArrayList<>())
                     .add(t);
@@ -1048,9 +1118,19 @@ public class PayslipService {
     private Map<Long, Map<Long, Map<String, List<ExecutorPayRateTier>>>> fetchTiersByManagerThenExecutorAndType(
             Collection<Long> managerIds) {
         Map<Long, Map<Long, Map<String, List<ExecutorPayRateTier>>>> result = new HashMap<>();
-        // 跟 CollaborationTrackingController 里同一个仓储方法的既有用法保持一致：managerIds 为空
-        // 时不查库，既避免空 IN 子句的边界情况，也保持跟改造前"没有涉及的负责人就不查库"一致
         if (managerIds == null || managerIds.isEmpty()) return result;
+        // 2026-08-17 性能修复：改走 ExecutorPayRateTierCache（内存读取，不再查库），按 managerId
+        // 逐个从缓存取——缓存内部就是 Map，这里不算"循环查库"；旧代码（含原本的
+        // findByManagerIdInAndIsDeletedFalse 批量查询 + 手动排序）保留在下面注释里。
+        for (Long managerId : managerIds) {
+            for (ExecutorPayRateTier t : executorPayRateTierCache.findByManagerId(managerId)) {
+                result.computeIfAbsent(t.getManagerId(), k -> new HashMap<>())
+                        .computeIfAbsent(t.getExecutorId(), k -> new HashMap<>())
+                        .computeIfAbsent(t.getVideoType().name(), k -> new ArrayList<>())
+                        .add(t);
+            }
+        }
+        /* ===== 旧代码（2026-08-17 停用，按 Shawn 要求保留对比，不要直接删）=====
         for (ExecutorPayRateTier t : executorPayRateTierRepo.findByManagerIdInAndIsDeletedFalse(managerIds)) {
             result.computeIfAbsent(t.getManagerId(), k -> new HashMap<>())
                     .computeIfAbsent(t.getExecutorId(), k -> new HashMap<>())
@@ -1064,6 +1144,7 @@ public class PayslipService {
                 }
             }
         }
+        ===== 旧代码结束 ===== */
         return result;
     }
 
@@ -1509,8 +1590,9 @@ public class PayslipService {
      * 触发，请求量本身就是 O(1)，不受员工数量影响。
      */
     private String managementBlockReason(String yearMonth, Long managementEmployeeId, BigDecimal rate) {
+        // 2026-08-17 性能修复；旧代码：employeeRepo.findByIsDeletedFalseOrderByNameAsc()
         return managementBlockReason(yearMonth, managementEmployeeId, rate,
-                employeeRepo.findByIsDeletedFalseOrderByNameAsc());
+                allEmployeesOrderByName());
     }
 
     /**

@@ -316,6 +316,14 @@ public class InfluencerController {
         // - 本次提交的里，之前关联过但被移除过的（isDeleted=true），直接复活（isDeleted=false），
         //   不能真的插入新行，因为 (influencer_id, brand_id, team_id) 上有唯一约束，插入会跟旧行撞上
         // - 本次提交的里，本来就还关联着的，完全不动（不产生任何写库操作）
+        //
+        // 2026-08-17 性能修复：下面移除/新增/复活这三段各自原来在 for 循环里每处理一条关联就单独
+        // 调一次 influencerBrandTeamRepo.save(rel)（旧代码保留在各自循环体内的注释里），改成把
+        // 要保存的 rel 收集进同一个 toSave 列表，三段循环结束后（attachBrandTeamPairs 重新查询前）
+        // 统一调一次 influencerBrandTeamRepo.saveAll(toSave)。三段各自"什么情况该软删/新插/复活"
+        // 的判断逻辑不变，且三段之间不存在"这段要看到上一段落库结果"的依赖（判断条件全部依赖
+        // 循环开始前已经算好的 existingRels/existingByKey/newKeys/pairs，互相独立），批量保存不
+        // 影响判断结果。
         List<InfluencerBrandTeam> existingRels = influencerBrandTeamRepo.findByInfluencerId(saved.getId());
         // key: brandId + "|" + teamId（teamId 可能为空，用 -1 占位区分"没配团队"这种关联）
         Map<String, InfluencerBrandTeam> existingByKey = new HashMap<String, InfluencerBrandTeam>();
@@ -336,12 +344,15 @@ public class InfluencerController {
             newKeys.add(pairKey(p.getBrandId(), p.getTeamId()));
         }
 
+        List<InfluencerBrandTeam> toSave = new ArrayList<InfluencerBrandTeam>();
         // 移除：现有有效关联里，不在本次提交列表中的
         for (InfluencerBrandTeam rel : existingRels) {
             if (!Boolean.TRUE.equals(rel.getIsDeleted())
                     && !newKeys.contains(pairKey(rel.getBrandId(), rel.getTeamId()))) {
                 rel.setIsDeleted(true);
-                influencerBrandTeamRepo.save(rel);
+                toSave.add(rel);
+                /* ===== 旧代码：influencerBrandTeamRepo.save(rel); （2026-08-17 停用，改成统一
+                 * saveAll，按 Shawn 要求保留对比，不要直接删）===== */
             }
         }
         // 新增/复活：本次提交列表里，之前不存在或已被软删除的
@@ -355,13 +366,16 @@ public class InfluencerController {
                 rel.setBrandId(p.getBrandId());
                 rel.setTeamId(p.getTeamId());
                 rel.setIsDeleted(false);
-                influencerBrandTeamRepo.save(rel);
+                toSave.add(rel);
+                /* ===== 旧代码：influencerBrandTeamRepo.save(rel); ===== */
             } else if (Boolean.TRUE.equals(rel.getIsDeleted())) {
                 rel.setIsDeleted(false);
-                influencerBrandTeamRepo.save(rel);
+                toSave.add(rel);
+                /* ===== 旧代码：influencerBrandTeamRepo.save(rel); ===== */
             }
             // else：已经是有效关联，不用动
         }
+        if (!toSave.isEmpty()) influencerBrandTeamRepo.saveAll(toSave);
 
         // 所属领域没变就跳过整表扫描，见上面 domainsBeforeSave 处的说明
         if (!java.util.Objects.equals(domainsBeforeSave, domainsAfterSave)) {
