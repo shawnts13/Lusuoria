@@ -590,6 +590,10 @@ public class ProgressReminderService {
             detail.setOverdueDays((int) Math.max(0, -daysRemaining));
             detail.setRequirementId(p.getId());
             detail.setInternalRequirementNo(p.getPaymentNo());
+            // 2026-08-17 新增：前端"待处理-红人结款临近付款日"详情要展示这条结款记录具体涉及
+            // 哪几个红人视频项目/分属哪几个内部需求编号，供核对用
+            detail.setInvolvedProjectNos(joinDistinctSorted(linked.stream().map(CollaborationTracking::getInternalProjectNo)));
+            detail.setInvolvedRequirementNos(joinDistinctSorted(linked.stream().map(CollaborationTracking::getInternalRequirementNo)));
 
             byUrgency.computeIfAbsent(urgency, k -> new ArrayList<>()).add(detail);
         }
@@ -611,6 +615,16 @@ public class ProgressReminderService {
             for (ProgressReminderDetail d : details) d.setReminderId(reminder.getId());
             detailRepo.saveAll(details);
         }
+    }
+
+    /** 把一批可能重复/为空的字符串去重、排序后按 MultiValueUtil 约定的换行分隔拼接（照抄
+     *  InfluencerRequirementService.canonicalPlatform 的做法），全部为空时返回 null（渲染成
+     *  "—"，不是一个只有分隔符的空字符串）。2026-08-17 新增，供
+     *  runInfluencerPaymentDue() 拼"涉及的红人视频项目"/"涉及的内部需求编号"用。 */
+    private String joinDistinctSorted(java.util.stream.Stream<String> values) {
+        List<String> sorted = values.filter(v -> v != null && !v.trim().isEmpty())
+                .map(String::trim).distinct().sorted().collect(Collectors.toList());
+        return sorted.isEmpty() ? null : String.join("\n", sorted);
     }
 
     /** 结款记录涉及的团队名拼接展示（"、"分隔），null 代表"不涉及团队"跳过不显示；全部为空时返回 null */

@@ -186,4 +186,24 @@ public class ProgressReminderDetail extends BaseEntity {
      */
     @Transient
     private Boolean acknowledged;
+
+    /**
+     * 涉及的红人视频项目（内部项目编号，去重排序后按 MultiValueUtil 约定换行分隔，2026-08-17
+     * 新增，INFLUENCER_PAYMENT_DUE 专用）：一条结款记录可能勾选了多条红人合作跟踪记录，这里
+     * 把它们各自的内部项目编号都列出来，供"待处理"页面详情核对具体是哪几条视频。
+     * internalProjectNo 这个历史字段没有拿来复用——它没有 columnDefinition=TEXT，默认长度
+     * 存不下"一条结款关联多条视频"这种可能较长的换行拼接列表，容易截断，所以单独开一列。
+     * 其余类别不设置，为 null。
+     */
+    @Column(name = "involved_project_nos", columnDefinition = "TEXT")
+    private String involvedProjectNos;
+
+    /**
+     * 涉及的内部需求编号（去重排序后换行分隔，2026-08-17 新增，INFLUENCER_PAYMENT_DUE 专用）：
+     * 同一条结款记录勾选的合作跟踪记录可能分属不同的需求。internalRequirementNo 这个字段本身
+     * 已经被这一类复用成"结款单号"了（见该字段注释），不能再兼职存这个，所以单独开一列。
+     * 其余类别不设置，为 null。
+     */
+    @Column(name = "involved_requirement_nos", columnDefinition = "TEXT")
+    private String involvedRequirementNos;
 }
