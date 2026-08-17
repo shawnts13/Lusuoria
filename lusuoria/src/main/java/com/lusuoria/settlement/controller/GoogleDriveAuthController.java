@@ -36,18 +36,21 @@ public class GoogleDriveAuthController {
     @Value("${app.frontend-url}")
     private String frontendUrl;
 
+    /** 生成 Google OAuth 授权页面 URL，供"账号管理"页面"连接 Google Drive"按钮整页跳转用 */
     @GetMapping("/authorize-url")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<String> authorizeUrl() {
         return ApiResponse.success(authService.authorizeUrl());
     }
 
+    /** 当前是否已连接 Google Drive（有没有存好的、还没过期的授权信息） */
     @GetMapping("/status")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<GoogleDriveAuth> status() {
         return ApiResponse.success(authService.currentAuth());
     }
 
+    /** Google 授权成功后重定向回来的回调地址，免登录（见本类类注释）；处理完再跳回前端"账号管理"页 */
     @GetMapping("/callback")
     public void callback(@RequestParam String code, @RequestParam String state,
                           HttpServletResponse response) throws IOException {

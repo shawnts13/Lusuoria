@@ -31,6 +31,7 @@ public class InfluencerTeamController {
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
+    /** 能不能新增/编辑/删除红人团队——员工角色="管理层" */
     private boolean canManage() {
         return "管理层".equals(employeeRoleUtil.getCurrentEmployeeRole());
     }

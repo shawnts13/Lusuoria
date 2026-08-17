@@ -43,6 +43,7 @@ public class InfluencerPaymentController {
     @Autowired private InfluencerPaymentExcelHandler excelHandler;
     @Autowired private PaymentAccessUtil accessUtil;
 
+    /** 红人结款列表页主查询，筛选栏各字段 + 分页 + 排序；权限见 PaymentAccessUtil（管理层/财务/法务） */
     @GetMapping
     public ApiResponse<Page<InfluencerPayment>> list(
             @RequestParam(required = false) String settlementMonth,
@@ -92,6 +93,7 @@ public class InfluencerPaymentController {
         return ApiResponse.success(result);
     }
 
+    /** 单条红人结款记录详情 */
     @GetMapping("/{id}")
     public ApiResponse<InfluencerPayment> getById(@PathVariable Long id) {
         if (!accessUtil.canView()) return ApiResponse.error(403, "无权限查看红人结款");
@@ -166,6 +168,7 @@ public class InfluencerPaymentController {
         return ApiResponse.success(paymentService.update(req.getId(), req));
     }
 
+    /** 删除结款记录（仅管理层，见 PaymentAccessUtil.canManage）——真删除，不是发起审批 */
     @DeleteMapping("/{id}")
     public ApiResponse<Void> delete(@PathVariable Long id) {
         if (!accessUtil.canManage()) return ApiResponse.error(403, "无权限删除红人结款记录");
@@ -189,6 +192,7 @@ public class InfluencerPaymentController {
         return ApiResponse.success(paymentService.uploadReceiptLink(id, req.getReceiptLink()));
     }
 
+    /** 'yyyy-MM-dd' 字符串转 Date，空/解析失败都返回 null（不抛异常） */
     private Date parseDate(String str) {
         if (str == null || str.isEmpty()) return null;
         try { return new SimpleDateFormat("yyyy-MM-dd").parse(str); }

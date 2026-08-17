@@ -24,16 +24,19 @@ public class DbBackupController {
     @Autowired private DbBackupService backupService;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
+    /** 当前登录账号能不能看/操作数据库备份这一块——ADMIN 或员工角色="管理层" */
     private boolean canManage() {
         return RoleUtil.isAdmin() || "管理层".equals(employeeRoleUtil.getCurrentEmployeeRole());
     }
 
+    /** 最近一条未软删除的备份告警（没有告警就是 null，代表最近一次备份是成功的） */
     @GetMapping("/alert")
     public ApiResponse<DbBackupAlert> alert() {
         if (!canManage()) return ApiResponse.error(403, "无权限查看");
         return ApiResponse.success(alertRepo.findFirstByIsDeletedFalseOrderByIdDesc().orElse(null));
     }
 
+    /** 手动重试一次完整备份（同步执行 pg_dump + 压缩 + 上传 Google Drive，见 DbBackupService） */
     @PostMapping("/retry")
     public ApiResponse<String> retry() {
         if (!canManage()) return ApiResponse.error(403, "无权限执行此操作");

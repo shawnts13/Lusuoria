@@ -22,6 +22,7 @@ public class ImportBatchController {
     @Autowired private ImportBatchRepository importBatchRepo;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
+    /** 某个模块的导入历史分页列表，按创建时间倒序（最新的导入排最前面） */
     @GetMapping
     public ApiResponse<Page<ImportBatch>> list(
             @RequestParam(required = false, defaultValue = "COLLABORATION_TRACKING") String module,
@@ -31,6 +32,7 @@ public class ImportBatchController {
         return ApiResponse.success(importBatchRepo.findByModuleAndIsDeletedFalseOrderByCreatedAtDesc(module, pageable));
     }
 
+    /** 单条导入批次详情——前端拿这个轮询查异步导入的进度/结果（processing/成功N条/失败N条等） */
     @GetMapping("/{id}")
     public ApiResponse<ImportBatch> getById(@PathVariable Long id) {
         return ApiResponse.success(importBatchRepo.findByIdAndIsDeletedFalse(id)

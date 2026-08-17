@@ -23,11 +23,13 @@ public class ProgressReminderController {
 
     @Autowired private ProgressReminderService progressReminderService;
 
+    /** "待处理"页面顶部的进度提醒汇总卡片，按当前登录账号的职位角色自动过滤范围 */
     @GetMapping
     public ApiResponse<List<ProgressReminder>> list() {
         return ApiResponse.success(progressReminderService.listForCurrentUser());
     }
 
+    /** 某一类提醒的明细列表（点开汇总卡片"查看详情"） */
     @GetMapping("/{id}/details")
     public ApiResponse<List<ProgressReminderDetail>> details(@PathVariable Long id) {
         return ApiResponse.success(progressReminderService.listDetails(id));

@@ -30,6 +30,7 @@ public class UserController {
     @Autowired private PasswordEncoder passwordEncoder;
     @Autowired private EmployeeCache employeeCache;
 
+    /** "账号管理"页面列表，仅 ADMIN 可见——登录账号（sys_users）不是员工，一个账号可以关联一个员工 */
     @GetMapping
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<List<UserResponse>> list() {
@@ -38,6 +39,10 @@ public class UserController {
         return ApiResponse.success(users.stream().map(this::toResponse).collect(Collectors.toList()));
     }
 
+    /**
+     * 新建登录账号。username 唯一约束不认软删除，命中同名已软删除账号时直接复活那一行（见下方
+     * 注释），不是插入新行；可选关联一个员工（一个员工只能绑定一个账号，见下方校验）。
+     */
     @PostMapping
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<UserResponse> create(@Valid @RequestBody UserCreateRequest req) {
@@ -84,6 +89,7 @@ public class UserController {
         return ApiResponse.success(resp);
     }
 
+    /** 编辑登录账号（用户名/角色/启用状态/密码/关联员工，密码留空表示不改） */
     @PutMapping("/{id}")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<UserResponse> update(@PathVariable Long id,
@@ -125,6 +131,9 @@ public class UserController {
         return ApiResponse.success(resp);
     }
 
+    /** 启用/禁用账号（翻转 enabled）。注意：已签发的 JWT 不受影响，禁用不会立刻踢掉已登录的会话，
+     *  要等 token 自然过期（登录时校验 enabled 的是 Spring Security UserDetailsServiceImpl，只在
+     *  登录那一刻查一次，之后请求都是无状态校验 JWT，见 SecurityConfig.jwtAuthFilter）。 */
     @PatchMapping("/{id}/toggle")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<UserResponse> toggle(@PathVariable Long id) {
@@ -142,6 +151,7 @@ public class UserController {
         return ApiResponse.success(resp);
     }
 
+    /** 软删除账号，不能删自己正在用的这个账号 */
     @DeleteMapping("/{id}")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<Void> delete(@PathVariable Long id) {
@@ -159,6 +169,7 @@ public class UserController {
         return ApiResponse.success();
     }
 
+    /** 当前登录账号自己改密码（不需要 ADMIN 权限，谁都能改自己的） */
     @PostMapping("/change-password")
     public ApiResponse<Void> changePassword(@Valid @RequestBody ChangePasswordRequest req) {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
@@ -170,6 +181,7 @@ public class UserController {
         return ApiResponse.success();
     }
 
+    /** 当前登录账号自己的信息（右上角账号菜单用） */
     @GetMapping("/me")
     public ApiResponse<UserResponse> me() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
@@ -201,6 +213,7 @@ public class UserController {
         return r;
     }
 
+    /** SysUser.role（ADMIN/STAFF/AUDITOR/GUEST）转中文展示标签 */
     private String roleLabel(String role) {
         if ("ADMIN".equals(role))   return "管理员";
         if ("STAFF".equals(role))   return "普通员工";

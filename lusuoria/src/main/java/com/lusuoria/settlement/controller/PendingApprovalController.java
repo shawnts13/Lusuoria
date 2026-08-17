@@ -31,6 +31,7 @@ public class PendingApprovalController {
     @Autowired private PendingApprovalService pendingApprovalService;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
+    /** ADMIN 视角的完整待审批队列（删除申请/进度倒退申请/内部执行成本修改申请），可按类别筛选 */
     @GetMapping
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<Page<PendingApproval>> list(
@@ -50,12 +51,14 @@ public class PendingApprovalController {
         return ApiResponse.success(pendingApprovalService.listMyApprovalQueue(employeeRoleUtil.getCurrentEmployeeId()));
     }
 
+    /** 同意一条审批（ADMIN 或该记录的项目负责人本人，取决于审批类型，权限校验在 service 层） */
     @PostMapping("/{id}/approve")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<PendingApproval> approve(@PathVariable Long id) {
         return ApiResponse.success(pendingApprovalService.approve(id, employeeRoleUtil.getCurrentEmployeeId()));
     }
 
+    /** 拒绝一条审批，note 是拒绝理由（可选） */
     @PostMapping("/{id}/reject")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<PendingApproval> reject(@PathVariable Long id, @RequestBody(required = false) RejectApprovalRequest req) {

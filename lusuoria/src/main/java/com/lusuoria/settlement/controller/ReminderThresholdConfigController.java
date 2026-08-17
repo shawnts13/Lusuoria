@@ -26,16 +26,19 @@ public class ReminderThresholdConfigController {
     @Autowired private ReminderThresholdCache cache;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
+    /** 能不能看/改提醒阈值配置——员工角色="管理层" */
     private boolean canManage() {
         return "管理层".equals(employeeRoleUtil.getCurrentEmployeeRole());
     }
 
+    /** 全部提醒阈值参数，按类别+展示顺序排好（"进度提醒阈值维护"页面用），仅管理层可见 */
     @GetMapping
     public ApiResponse<List<ReminderThresholdConfig>> list() {
         if (!canManage()) return ApiResponse.error(403, "无权限查看进度提醒阈值配置");
         return ApiResponse.success(repo.findAllByOrderByCategoryAscSortOrderAsc());
     }
 
+    /** 改单个阈值参数的值（label/unit/sortOrder 这些展示字段不通过这里改，只能改数值），改完刷新 ReminderThresholdCache */
     @PutMapping("/{id}")
     public ApiResponse<ReminderThresholdConfig> update(@PathVariable Long id,
                                                         @Valid @RequestBody ReminderThresholdUpdateRequest req) {

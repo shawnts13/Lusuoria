@@ -28,10 +28,12 @@ public class PayslipController {
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
     @Autowired private EmployeeCache employeeCache;
 
+    /** 当前登录账号是不是能看/管全员工资单的那批人——ADMIN 或员工角色="管理层" */
     private boolean isManagement() {
         return RoleUtil.isAdmin() || "管理层".equals(employeeRoleUtil.getCurrentEmployeeRole());
     }
 
+    /** 不是 isManagement() 就直接抛异常拒绝，写操作前置校验用 */
     private void requireManagement() {
         if (!isManagement()) throw new RuntimeException("无权限管理工资单");
     }
@@ -98,6 +100,7 @@ public class PayslipController {
         return ApiResponse.success(payslipService.detail(employeeId, yearMonth, currency));
     }
 
+    /** 管理层手动给某个员工当月设置一笔额外奖金（美元或人民币，二选一），仅管理层可操作 */
     @PostMapping("/{employeeId}/extra-bonus")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Void> setExtraBonus(@PathVariable Long employeeId, @RequestBody ExtraBonusRequest req) {
@@ -106,6 +109,7 @@ public class PayslipController {
         return ApiResponse.success();
     }
 
+    /** 管理层录入某个员工（法务）当月的固定工资（人民币），法务工资没有系统规则，全靠手动录入 */
     @PostMapping("/{employeeId}/legal-salary")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Void> setLegalSalary(@PathVariable Long employeeId, @RequestBody LegalSalaryRequest req) {
@@ -114,6 +118,7 @@ public class PayslipController {
         return ApiResponse.success();
     }
 
+    /** 管理层确认某个员工当月工资单——确认后从"实时预估"冻结成快照，见 PayslipService.confirm() */
     @PostMapping("/{employeeId}/confirm")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Void> confirm(@PathVariable Long employeeId, @RequestBody MonthRequest req) {
@@ -122,6 +127,7 @@ public class PayslipController {
         return ApiResponse.success();
     }
 
+    /** 取消确认，工资单退回"实时预估"状态，重新跟着合作数据变化 */
     @PostMapping("/{employeeId}/unconfirm")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Void> unconfirm(@PathVariable Long employeeId, @RequestBody MonthRequest req) {
@@ -142,6 +148,7 @@ public class PayslipController {
         return ApiResponse.success();
     }
 
+    /** 取消确认名下某个执行人员的工资，退回实时预估 */
     @PostMapping("/executor-wages/unconfirm")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Void> unconfirmExecutorWages(@RequestBody ExecutorWagesRequest req) {

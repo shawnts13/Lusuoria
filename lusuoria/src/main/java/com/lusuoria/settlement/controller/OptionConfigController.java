@@ -15,6 +15,7 @@ import java.util.*;
 @RequestMapping("/api/config")
 public class OptionConfigController {
 
+    /** 一次性返回全部下拉选项（枚举 value+中文 label），前端 useOptions.js 拿到后本地缓存4小时 */
     @GetMapping("/options/all")
     public ApiResponse<Map<String, List<Map<String, String>>>> getAllOptions() {
         Map<String, List<Map<String, String>>> result = new LinkedHashMap<String, List<Map<String, String>>>();

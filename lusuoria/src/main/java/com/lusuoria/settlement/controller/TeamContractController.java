@@ -75,6 +75,7 @@ public class TeamContractController {
         return ApiResponse.success(result);
     }
 
+    /** 新增一条(品牌方,团队)的合同记录，校验有效期区间合法+不跟同一(品牌方,团队)下已有合同重叠 */
     @PostMapping
     public ApiResponse<TeamContract> create(@Valid @RequestBody TeamContractRequest req) {
         assertCanManageContracts();
@@ -92,6 +93,7 @@ public class TeamContractController {
         return ApiResponse.success(contractRepo.save(contract));
     }
 
+    /** 编辑一条合同记录，同样校验有效期区间合法+不跟同(品牌方,团队)下其它合同重叠（排除自己） */
     @PutMapping("/{id}")
     public ApiResponse<TeamContract> update(@PathVariable Long id, @Valid @RequestBody TeamContractRequest req) {
         assertCanManageContracts();
@@ -132,6 +134,7 @@ public class TeamContractController {
         throw new RuntimeException("无权限维护团队合同信息");
     }
 
+    /** 查品牌方（走缓存）+ 拦下"该品牌方走按需求签合同、不该走团队级合同"这种误用 */
     private Brand resolveBrand(Long brandId) {
         Brand brand = brandCache.findById(brandId);
         if (brand == null) throw new RuntimeException("品牌方不存在：" + brandId);
@@ -141,6 +144,7 @@ public class TeamContractController {
         return brand;
     }
 
+    /** 查团队（走缓存），teamId 为空代表"该品牌方下没配团队"这种合法情况，直接返回 null */
     private InfluencerTeam resolveTeam(Long teamId) {
         if (teamId == null) return null;
         InfluencerTeam team = teamCache.findById(teamId);
@@ -148,12 +152,14 @@ public class TeamContractController {
         return team;
     }
 
+    /** 生效日期不能晚于失效日期 */
     private void validateDateRange(TeamContractRequest req) {
         if (req.getStartDate().after(req.getEndDate())) {
             throw new RuntimeException("合同生效日期不能晚于失效日期");
         }
     }
 
+    /** 同一(品牌方,团队)下不能有两条有效期重叠的合同，excludeId 编辑时排除自己 */
     private void rejectOverlap(TeamContractRequest req, Long excludeId) {
         List<TeamContract> overlapping = contractRepo.findOverlapping(
                 req.getBrandId(), req.getTeamId(), req.getStartDate(), req.getEndDate(), excludeId);

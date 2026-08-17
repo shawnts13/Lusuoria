@@ -48,6 +48,11 @@ public class InfluencerRequirementController {
     @Autowired private PaymentAccessUtil paymentAccessUtil;
     @Autowired private PendingApprovalRepository pendingApprovalRepo;
 
+    /**
+     * 红人需求管理列表页主查询——4个互斥快速筛选开关（未完成/未传invoice/未传合同/未结款）各走
+     * 独立的全量查询+内存分页（见各自 service 方法注释）；都不选时走默认路径，sortBy=id 还会
+     * 额外把未完成的需求排到前面（listIncompleteFirst）。
+     */
     @GetMapping
     public ApiResponse<Page<InfluencerRequirement>> list(
             @RequestParam(required = false) Long brandId,
@@ -130,6 +135,7 @@ public class InfluencerRequirementController {
         return ApiResponse.success(result);
     }
 
+    /** 单条需求详情，附带完成进度分子（completedCount）/已建立跟踪记录数（establishedCount） */
     @GetMapping("/{id}")
     public ApiResponse<InfluencerRequirement> getById(@PathVariable Long id) {
         InfluencerRequirement r = requirementRepo.findByIdAndIsDeletedFalse(id)
@@ -143,6 +149,7 @@ public class InfluencerRequirementController {
         return ApiResponse.success(r);
     }
 
+    /** 新建/编辑红人需求（req.getId() 为空即新建）；具体的需求条目/编号分配逻辑都在 requirementService.save() 里 */
     @PostMapping
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<InfluencerRequirement> save(@Valid @RequestBody InfluencerRequirementRequest req) {
@@ -161,6 +168,7 @@ public class InfluencerRequirementController {
         return ApiResponse.success(requirementService.requestDelete(id, req.getReason()));
     }
 
+    /** 某条需求下的全部需求条目（视频类型+平台+数量+单价，及各自的已实施数） */
     @GetMapping("/{id}/items")
     public ApiResponse<List<InfluencerRequirementItemResponse>> items(@PathVariable Long id) {
         return ApiResponse.success(requirementService.listItems(id));
@@ -172,6 +180,7 @@ public class InfluencerRequirementController {
         return ApiResponse.success(requirementService.listIncompleteByInfluencer(influencerId));
     }
 
+    /** 某条需求已关联的全部合作跟踪记录，按需求条目分组展示进度（"查看进度"弹窗数据源） */
     @GetMapping("/{id}/progress-detail")
     public ApiResponse<List<RequirementTrackingSummaryResponse>> progressDetail(@PathVariable Long id) {
         return ApiResponse.success(requirementService.progressDetail(id));
@@ -238,6 +247,7 @@ public class InfluencerRequirementController {
         return ApiResponse.success(requirementService.uploadContractLink(id, req.getContractLink()));
     }
 
+    /** 需求导出 Excel，筛选条件跟 list() 保持一致（含4个快速筛选开关），导出的是当前筛选结果 */
     @GetMapping("/export/excel")
     public void exportExcel(
             @RequestParam(required = false) Long brandId,

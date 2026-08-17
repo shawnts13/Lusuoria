@@ -29,6 +29,12 @@ public class AuthController {
     @Autowired private EmployeeCache employeeCache;
     @Autowired private com.lusuoria.settlement.service.impl.ProgressReminderService progressReminderService;
 
+    /**
+     * 登录：校验用户名密码（Spring Security AuthenticationManager，内部走
+     * UserDetailsServiceImpl 查 sys_users），成功后签发 JWT，同时把前端要用的一批账号相关信息
+     * （显示名、是否管理层、结款模块权限等）一起算好塞进返回体，省得前端登录后还要再发好几个
+     * 请求才能拼出完整的账号状态。
+     */
     @PostMapping("/login")
     public ApiResponse<Map<String, Object>> login(@Valid @RequestBody LoginRequest req) {
         Authentication auth = authManager.authenticate(

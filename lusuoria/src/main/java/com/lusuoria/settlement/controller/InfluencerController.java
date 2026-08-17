@@ -128,17 +128,20 @@ public class InfluencerController {
                 .collect(Collectors.toList());
     }
 
+    /** 排序权重：有合作中项目的红人排最前（0），只有已完结项目的其次（1），都没有的排最后（2） */
     private int projectPriority(Long influencerId, Set<Long> activeIds, Set<Long> completedIds) {
         if (activeIds.contains(influencerId)) return 0;
         if (completedIds.contains(influencerId)) return 1;
         return 2;
     }
 
+    /** 红人精简列表（id/账号名/国家市场/品牌方-团队关联，走 InfluencerCache），供各模块的红人选择下拉框用 */
     @GetMapping("/simple")
     public ApiResponse<List<InfluencerSimpleResponse>> simpleList() {
         return ApiResponse.success(influencerCache.getAll());
     }
 
+    /** 单个红人完整档案详情（不走缓存，字段比 simpleList 全得多），非财务可见角色会脱敏部分字段 */
     @GetMapping("/{id}")
     public ApiResponse<Influencer> getById(@PathVariable Long id) {
         Influencer inf = influencerRepo.findByIdAndIsDeletedFalse(id)
@@ -178,11 +181,13 @@ public class InfluencerController {
         excelHandler.export(list, RoleUtil.canViewBaselineFinancials(), response);
     }
 
+    /** 下载红人 Excel 批量导入模板 */
     @GetMapping("/import/template")
     public void downloadTemplate(HttpServletResponse response) throws IOException {
         excelHandler.downloadTemplate(RoleUtil.canViewBaselineFinancials(), response);
     }
 
+    /** Excel 批量导入红人（同步执行，不像红人合作跟踪那样走异步——红人这边数据量小，不会超时） */
     @PostMapping("/import/excel")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Long> importExcel(@RequestParam("file") MultipartFile file) throws IOException {
@@ -230,6 +235,11 @@ public class InfluencerController {
         private Long completedCount;
     }
 
+    /**
+     * 新建/编辑红人（req.getId() 为空即新建）。同时按增量 diff 处理"品牌方-团队"关联（不是
+     * 全删再插，见下方注释），保存后刷新 InfluencerCache，"所属领域"有变化时才触发 DomainSyncService
+     * 全表扫描（见 domainsBeforeSave/domainsAfterSave 那段判断）。
+     */
     @PostMapping
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     @Transactional
@@ -391,6 +401,7 @@ public class InfluencerController {
         return brandId + "|" + (teamId != null ? teamId : -1L);
     }
 
+    /** 软删除红人；名下还有未软删的合作跟踪/需求记录时直接拒绝（见下方拦截校验），刷新 InfluencerCache */
     @DeleteMapping("/{id}")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Void> delete(@PathVariable Long id) {
@@ -436,6 +447,7 @@ public class InfluencerController {
         }
     }
 
+    /** 非财务可见角色看红人详情时，把三个成本字段清空再返回（克隆一份，不改原对象） */
     private Influencer maskSensitive(Influencer inf) {
         Influencer copy = new Influencer();
         BeanUtils.copyProperties(inf, copy);
@@ -445,6 +457,7 @@ public class InfluencerController {
         return copy;
     }
 
+    /** 把字符串列表拼成一个用 sep 分隔的字符串（跳过空/空白项），全部为空则返回 null */
     private String listToStr(List<String> list, String sep) {
         if (list == null || list.isEmpty()) return null;
         StringBuilder sb = new StringBuilder();

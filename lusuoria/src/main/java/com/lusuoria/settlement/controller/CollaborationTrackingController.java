@@ -273,6 +273,7 @@ public class CollaborationTrackingController {
         return "财务".equals(employeeRoleUtil.getCurrentEmployeeRole());
     }
 
+    /** 单条合作跟踪记录详情，同样按字段可见性分级脱敏（跟 list() 用的是同一套 applyFieldVisibility） */
     @GetMapping("/{id}")
     public ApiResponse<CollaborationTracking> getById(@PathVariable Long id) {
         CollaborationTracking t = trackingRepo.findByIdAndIsDeletedFalse(id)
@@ -336,6 +337,11 @@ public class CollaborationTrackingController {
         private java.math.BigDecimal totalClientPrice;
     }
 
+    /**
+     * 新建/编辑单条合作跟踪记录（req.getId() 为空即新建）。真正的业务逻辑全在
+     * CollaborationTrackingService.save()/doSave() 里（自动编号分配、内部执行成本自动计算、
+     * 提成比例校验等），这里只是脱个敏再返回。
+     */
     @PostMapping
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<CollaborationTracking> save(@Valid @RequestBody CollaborationTrackingRequest req) {
@@ -538,11 +544,14 @@ public class CollaborationTrackingController {
         excelHandler.export(list, RoleUtil.canViewBaselineFinancials(), canViewFull, response);
     }
 
+    /** 下载 Excel 批量导入模板（列结构按当前账号能看到的字段档位裁剪，见 excelHandler 内部） */
     @GetMapping("/template")
     public void downloadTemplate(HttpServletResponse response) throws IOException {
         excelHandler.downloadTemplate(RoleUtil.canViewBaselineFinancials(), response);
     }
 
+    /** Excel 批量导入入口：立即建一条 ImportBatch（状态 PROCESSING）并返回其 id，真正的解析/落库
+     *  在后台线程跑，前端拿这个 id 轮询 ImportBatchController 查进度（见下方注释）。 */
     @PostMapping("/import/excel")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Long> importExcel(@RequestParam("file") MultipartFile file) throws IOException {

@@ -39,10 +39,12 @@ public class BrandController {
     @Autowired private InfluencerTeamCache teamCache;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
+    /** 能不能新增/编辑/删除品牌方——员工角色="管理层" */
     private boolean canManage() {
         return "管理层".equals(employeeRoleUtil.getCurrentEmployeeRole());
     }
 
+    /** 品牌方列表（走 BrandCache，不查库），"品牌方/红人团队管理"页面用 */
     @GetMapping
     public ApiResponse<List<Brand>> list() {
         return ApiResponse.success(brandCache.getAll());
@@ -69,6 +71,7 @@ public class BrandController {
         return ApiResponse.success(result);
     }
 
+    /** 单个品牌方详情（走 BrandCache） */
     @GetMapping("/{id}")
     public ApiResponse<Brand> getById(@PathVariable Long id) {
         Brand brand = brandCache.findById(id);
@@ -76,11 +79,16 @@ public class BrandController {
         return ApiResponse.success(brand);
     }
 
+    /** 全量品牌方导出 Excel，不带筛选（品牌方列表本身不分页/不筛选，直接导全部） */
     @GetMapping("/export/excel")
     public void exportExcel(HttpServletResponse response) throws IOException {
         excelHandler.export(brandCache.getAll(), response);
     }
 
+    /**
+     * 新建/编辑品牌方（req.getId() 为空即新建）。name 唯一约束不认软删除，命中同名已软删除记录时
+     * 直接复活那一行（见下方注释），不是插入新行；保存后刷新 BrandCache。
+     */
     @PostMapping
     public ApiResponse<Brand> save(@Valid @RequestBody BrandRequest req) {
         if (!canManage()) return ApiResponse.error(403, req.getId() == null ? "无权限新增品牌方" : "无权限编辑品牌方");
@@ -130,6 +138,7 @@ public class BrandController {
         return ApiResponse.success(saved);
     }
 
+    /** 软删除品牌方（isDeleted=true），保存后刷新 BrandCache */
     @DeleteMapping("/{id}")
     public ApiResponse<Void> delete(@PathVariable Long id) {
         if (!canManage()) return ApiResponse.error(403, "无权限删除品牌方");

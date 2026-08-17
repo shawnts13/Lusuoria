@@ -207,6 +207,7 @@ public class EmployeeController {
         return ApiResponse.success(saved);
     }
 
+    /** 员工导出 Excel，role 可选按角色筛选；连带导出 bonus 阶梯、管理层配置的执行人员费率标准 */
     @GetMapping("/export/excel")
     public void exportExcel(@RequestParam(required = false) String role, HttpServletResponse response) throws IOException {
         List<Employee> allEmployees = employeeCache.getAll();
@@ -240,6 +241,7 @@ public class EmployeeController {
         excelHandler.export(list, bonusTiersByEmployeeId, executorRatesByExecutorId, response);
     }
 
+    /** 软删除员工，写完刷新 EmployeeCache；权限同 save()，见 assertCanManageEmployees() */
     @DeleteMapping("/{id}")
     @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Void> delete(@PathVariable Long id) {
