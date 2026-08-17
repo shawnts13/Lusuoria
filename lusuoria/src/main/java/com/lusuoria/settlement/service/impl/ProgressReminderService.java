@@ -171,6 +171,7 @@ public class ProgressReminderService {
     @Autowired private InfluencerTeamCache teamCache;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private SysUserRepository sysUserRepo;
+    @Autowired private com.lusuoria.settlement.config.SysUserCache sysUserCache;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
     @Autowired private com.lusuoria.settlement.config.ReminderThresholdCache thresholdCache;
 
@@ -1762,7 +1763,9 @@ public class ProgressReminderService {
 
     /** 当前登录账号是否是"管理层"受众 */
     public boolean isCurrentUserManagement() {
-        SysUser user = sysUserRepo.findByUsernameAndIsDeletedFalse(RoleUtil.getCurrentUsername()).orElse(null);
+        // 2026-08-17 性能修复：改走 SysUserCache；旧代码：
+        // sysUserRepo.findByUsernameAndIsDeletedFalse(RoleUtil.getCurrentUsername()).orElse(null)
+        SysUser user = sysUserCache.findByUsername(RoleUtil.getCurrentUsername());
         return user != null && isManagementEmployee(user.getEmployeeId());
     }
 
@@ -1777,7 +1780,9 @@ public class ProgressReminderService {
     @Transactional(readOnly = true)
     public boolean shouldShowPopup() {
         if (listForCurrentUser().isEmpty()) return false;
-        SysUser user = sysUserRepo.findByUsernameAndIsDeletedFalse(RoleUtil.getCurrentUsername()).orElse(null);
+        // 2026-08-17 性能修复：改走 SysUserCache；旧代码：
+        // sysUserRepo.findByUsernameAndIsDeletedFalse(RoleUtil.getCurrentUsername()).orElse(null)
+        SysUser user = sysUserCache.findByUsername(RoleUtil.getCurrentUsername());
         if (user == null) return false;
         Date latestCheckpoint = latestPassedCheckpoint();
         return user.getLastSeenReminderPopupAt() == null || user.getLastSeenReminderPopupAt().before(latestCheckpoint);
@@ -1786,10 +1791,15 @@ public class ProgressReminderService {
     /** 用户点了弹窗上的按钮（跳转待处理/我知道了）后调用，更新"最后看到弹窗"的时间戳 */
     @Transactional
     public void markPopupSeen() {
+        // 这里是写操作，必须查活库拿一个能 save() 的实体，不能用 SysUserCache 里那份共享对象
         SysUser user = sysUserRepo.findByUsernameAndIsDeletedFalse(RoleUtil.getCurrentUsername()).orElse(null);
         if (user == null) return;
         user.setLastSeenReminderPopupAt(new Date());
         sysUserRepo.save(user);
+        // 2026-08-17 新增：写完刷新缓存，不然要等最多4小时定时刷新才会反映到 SysUserCache，
+        // 期间 shouldShowPopup() 读到的还是旧的 lastSeenReminderPopupAt，可能被误判成"还没看过"
+        // 又弹一次
+        sysUserCache.refresh();
     }
 
     /** 今天12点/18点/22点里，最近一个已经过去的时刻；如果今天还没到12点，取昨天22点 */

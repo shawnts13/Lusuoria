@@ -1,9 +1,9 @@
 package com.lusuoria.settlement.util;
 
 import com.lusuoria.settlement.config.EmployeeCache;
+import com.lusuoria.settlement.config.SysUserCache;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.SysUser;
-import com.lusuoria.settlement.repository.SysUserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -29,7 +29,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class ProjectFieldVisibility {
 
-    @Autowired private SysUserRepository sysUserRepo;
+    @Autowired private SysUserCache sysUserCache;
     @Autowired private EmployeeCache employeeCache;
 
     public enum Tier { FULL, AUDITOR_VIEW, PROJECT_MANAGER, EXECUTOR, BASELINE, GUEST }
@@ -51,7 +51,9 @@ public class ProjectFieldVisibility {
         if ("GUEST".equals(role)) { ctx.tier = Tier.GUEST; return ctx; }
 
         // STAFF：看登录账号关联的员工角色
-        SysUser user = sysUserRepo.findByUsernameAndIsDeletedFalse(RoleUtil.getCurrentUsername()).orElse(null);
+        // 2026-08-17 性能修复：改走 SysUserCache；旧代码：
+        // sysUserRepo.findByUsernameAndIsDeletedFalse(RoleUtil.getCurrentUsername()).orElse(null)
+        SysUser user = sysUserCache.findByUsername(RoleUtil.getCurrentUsername());
         Long employeeId = user != null ? user.getEmployeeId() : null;
         ctx.employeeId = employeeId;
 

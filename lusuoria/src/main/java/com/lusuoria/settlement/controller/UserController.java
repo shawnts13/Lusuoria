@@ -25,6 +25,7 @@ import java.util.stream.Collectors;
 public class UserController {
 
     @Autowired private SysUserRepository userRepo;
+    @Autowired private com.lusuoria.settlement.config.SysUserCache sysUserCache;
     @Autowired private EmployeeRepository employeeRepo;
     @Autowired private PasswordEncoder passwordEncoder;
     @Autowired private EmployeeCache employeeCache;
@@ -32,7 +33,8 @@ public class UserController {
     @GetMapping
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<List<UserResponse>> list() {
-        List<SysUser> users = userRepo.findByIsDeletedFalseOrderByUsernameAsc();
+        // 2026-08-17 性能修复：改走 SysUserCache；旧代码：userRepo.findByIsDeletedFalseOrderByUsernameAsc()
+        List<SysUser> users = sysUserCache.getAll();
         return ApiResponse.success(users.stream().map(this::toResponse).collect(Collectors.toList()));
     }
 
@@ -77,7 +79,9 @@ public class UserController {
             user.setEmployee(null); // 复活旧账号时不带旧的员工绑定，除非本次请求重新指定
         }
 
-        return ApiResponse.success(toResponse(userRepo.save(user)));
+        UserResponse resp = toResponse(userRepo.save(user));
+        sysUserCache.refresh(); // 2026-08-17 新增：写完立刻刷新，不然要等最多4小时才反映到缓存
+        return ApiResponse.success(resp);
     }
 
     @PutMapping("/{id}")
@@ -116,7 +120,9 @@ public class UserController {
             user.setEmployee(null);
         }
 
-        return ApiResponse.success(toResponse(userRepo.save(user)));
+        UserResponse resp = toResponse(userRepo.save(user));
+        sysUserCache.refresh(); // 2026-08-17 新增：写完立刻刷新，不然要等最多4小时才反映到缓存
+        return ApiResponse.success(resp);
     }
 
     @PatchMapping("/{id}/toggle")
@@ -131,7 +137,9 @@ public class UserController {
         }
 
         user.setEnabled(!Boolean.TRUE.equals(user.getEnabled()));
-        return ApiResponse.success(toResponse(userRepo.save(user)));
+        UserResponse resp = toResponse(userRepo.save(user));
+        sysUserCache.refresh(); // 2026-08-17 新增：写完立刻刷新，不然要等最多4小时才反映到缓存
+        return ApiResponse.success(resp);
     }
 
     @DeleteMapping("/{id}")
@@ -147,6 +155,7 @@ public class UserController {
 
         user.setIsDeleted(true);
         userRepo.save(user);
+        sysUserCache.refresh(); // 2026-08-17 新增：写完立刻刷新，不然要等最多4小时才反映到缓存
         return ApiResponse.success();
     }
 
@@ -157,14 +166,17 @@ public class UserController {
                 .orElseThrow(() -> new RuntimeException("用户不存在"));
         user.setPassword(passwordEncoder.encode(req.getNewPassword()));
         userRepo.save(user);
+        sysUserCache.refresh(); // 2026-08-17 新增：写完立刻刷新，不然要等最多4小时才反映到缓存
         return ApiResponse.success();
     }
 
     @GetMapping("/me")
     public ApiResponse<UserResponse> me() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        SysUser user = userRepo.findByUsernameAndIsDeletedFalse(auth.getName())
-                .orElseThrow(() -> new RuntimeException("用户不存在"));
+        // 2026-08-17 性能修复：纯只读查询，改走 SysUserCache；旧代码：
+        // userRepo.findByUsernameAndIsDeletedFalse(auth.getName()).orElseThrow(...)
+        SysUser user = sysUserCache.findByUsername(auth.getName());
+        if (user == null) throw new RuntimeException("用户不存在");
         return ApiResponse.success(toResponse(user));
     }
 

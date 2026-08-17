@@ -1,9 +1,9 @@
 package com.lusuoria.settlement.util;
 
 import com.lusuoria.settlement.config.EmployeeCache;
+import com.lusuoria.settlement.config.SysUserCache;
 import com.lusuoria.settlement.entity.Employee;
 import com.lusuoria.settlement.entity.SysUser;
-import com.lusuoria.settlement.repository.SysUserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -19,12 +19,14 @@ import java.util.Set;
 @Component
 public class EmployeeRoleUtil {
 
-    @Autowired private SysUserRepository sysUserRepo;
+    @Autowired private SysUserCache sysUserCache;
     @Autowired private EmployeeCache employeeCache;
 
     /** 当前登录账号关联员工的 role，未关联员工时返回 null */
     public String getCurrentEmployeeRole() {
-        SysUser user = sysUserRepo.findByUsernameAndIsDeletedFalse(RoleUtil.getCurrentUsername()).orElse(null);
+        // 2026-08-17 性能修复：改走 SysUserCache（纯只读查询，不用像写操作那样查活库）；旧代码：
+        // sysUserRepo.findByUsernameAndIsDeletedFalse(RoleUtil.getCurrentUsername()).orElse(null)
+        SysUser user = sysUserCache.findByUsername(RoleUtil.getCurrentUsername());
         if (user == null || user.getEmployeeId() == null) return null;
         Employee emp = employeeCache.findById(user.getEmployeeId());
         return emp != null ? emp.getRole() : null;
@@ -37,7 +39,9 @@ public class EmployeeRoleUtil {
      * 混用——那个只对 STAFF 生效，语义不一样）。
      */
     public Long getCurrentEmployeeId() {
-        SysUser user = sysUserRepo.findByUsernameAndIsDeletedFalse(RoleUtil.getCurrentUsername()).orElse(null);
+        // 2026-08-17 性能修复：改走 SysUserCache；旧代码：
+        // sysUserRepo.findByUsernameAndIsDeletedFalse(RoleUtil.getCurrentUsername()).orElse(null)
+        SysUser user = sysUserCache.findByUsername(RoleUtil.getCurrentUsername());
         return user != null ? user.getEmployeeId() : null;
     }
 
