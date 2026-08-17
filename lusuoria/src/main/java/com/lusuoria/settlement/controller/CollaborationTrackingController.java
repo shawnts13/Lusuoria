@@ -18,7 +18,6 @@ import com.lusuoria.settlement.enums.PendingApprovalModule;
 import com.lusuoria.settlement.enums.VideoType;
 import com.lusuoria.settlement.excel.CollaborationTrackingExcelHandler;
 import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
-import com.lusuoria.settlement.repository.ExecutorPayRateTierRepository;
 import com.lusuoria.settlement.repository.ImportBatchRepository;
 import com.lusuoria.settlement.repository.PendingApprovalRepository;
 import com.lusuoria.settlement.service.impl.CollaborationTrackingService;
@@ -64,10 +63,22 @@ public class CollaborationTrackingController {
     @Autowired private ImportBatchRepository importBatchRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private PendingApprovalRepository pendingApprovalRepo;
-    @Autowired private ExecutorPayRateTierRepository executorPayRateTierRepo;
     @Autowired private ProjectFieldVisibility fieldVisibility;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
+    /**
+     * 红人合作跟踪列表页（CollaborationListPage.vue）的唯一数据接口——筛选栏、4 个互斥"快速筛选"
+     * 开关、列头排序、分页，都是这一个方法。参数分组对应前端：
+     *   - brandId ~ projectManagerId：筛选栏里的各个下拉/输入框，一一对应，全部可选、AND 组合
+     *   - onlyMyResponsibility：本来是"只看我负责的"筛选，现在主要是配合 sortBy=id 时的默认排序
+     *     用（见下面 resolvePriorityEmployeeId），前端筛选栏目前没有单独暴露这个开关
+     *   - onlyIncomplete / onlyUnpublished / onlyMissingRequirementNo：列表页顶部"查看未完成的需求" /
+     *     "查看视频未发布的记录" / "查看未绑定需求编号的记录"这 3 个互斥快速筛选按钮（第 4 个"查看
+     *     未上传invoice/合同的需求"按钮在红人需求管理模块，不是这个接口）
+     *   - sortBy/sortDir：点列头排序；sortBy=id（默认，未点任何列头）时不是简单按 id 排，而是走
+     *     buildIncompleteAndUnbatchedFirstPage 那一套"未完成/未结款优先"的桶排序，见下方说明
+     *   - page/size：分页器
+     */
     @GetMapping
     public ApiResponse<Page<CollaborationTracking>> list(
             @RequestParam(required = false) Long brandId,
@@ -100,6 +111,10 @@ public class CollaborationTrackingController {
         // 排序时要用 JPQL 的关联路径写法（influencer.accountName），不能直接用列名
         String sortProperty = "accountName".equals(sortBy) ? "influencer.accountName" : sortBy;
         Sort.Direction userSortDirection = sortDir.equalsIgnoreCase("asc") ? Sort.Direction.ASC : Sort.Direction.DESC;
+        // 下面这一段（到 pageable 为止）不对应某个具体按钮，是列表默认排序背后看不见的逻辑：
+        // 登录人是项目负责人/执行人员/管理层时，自己名下的记录自动排到最前面；登录人是财务时，
+        // 进入结算区间的记录排到最前面。用户点了列头排序（accountName/videoDate 等）时，这两级
+        // "优先展示"仍然生效，只是同一优先级内部再按用户选的列排序（见最后 .and(Sort.by(...))）。
         Long priorityEmployeeId = resolvePriorityEmployeeId();
         boolean prioritizeFinance = resolvePrioritizeFinance();
         // "优先展示"的两级 CASE 排序不能写死在 @Query 的 ORDER BY 里，会触发 Spring Data 2.7.x
@@ -146,39 +161,23 @@ public class CollaborationTrackingController {
                         priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, onlyUnpublished,
                         onlyMissingRequirementNo, pageable);
 
-        // 批量标记"当前是否有待审核的删除申请 / 进度倒退申请"，避免逐行查库
+        // 批量标记"当前是否有待审核的删除申请 / 进度倒退申请"，避免逐行查库。
+        // pendingDeleteIds  → 操作列"删除"链接变成灰色"审核中"文字（CollaborationListPage.vue
+        //                     action 列 hasPendingDeleteRequest 分支）
+        // pendingRollbackIds→ "状态流转"链接旁边的橙色"（倒退审核中）"提示（同一处 hasPendingRollbackRequest）
         Set<Long> pendingDeleteIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(
                 PendingApprovalModule.COLLABORATION_TRACKING, PendingApprovalCategory.DELETE_REQUEST));
         Set<Long> pendingRollbackIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(
                 PendingApprovalModule.COLLABORATION_TRACKING, PendingApprovalCategory.PROGRESS_ROLLBACK));
-        Set<Long> pendingExecutorCostModifyIds = new HashSet<>(pendingApprovalRepo.findPendingTargetIds(
-                PendingApprovalModule.COLLABORATION_TRACKING, PendingApprovalCategory.EXECUTOR_COST_MODIFY));
-
-        // 批量标记"该记录的项目负责人是否已经为这个执行人员+这个视频类型配置过费率梯度"，
-        // 避免逐行查库（2026-07 新增，供前端决定"设置执行成本"按钮显示/隐藏）
-        Set<Long> managerIds = new HashSet<>();
-        for (CollaborationTracking t : result) {
-            if (t.getProjectManagerId() != null) managerIds.add(t.getProjectManagerId());
-        }
-        Set<String> configuredRateKeys = new HashSet<>();
-        if (!managerIds.isEmpty()) {
-            for (com.lusuoria.settlement.entity.ExecutorPayRateTier tier
-                    : executorPayRateTierRepo.findByManagerIdInAndIsDeletedFalse(managerIds)) {
-                configuredRateKeys.add(tier.getManagerId() + "|" + tier.getExecutorId() + "|" + tier.getVideoType());
-            }
-        }
 
         result.forEach(t -> {
             t.setHasPendingDeleteRequest(pendingDeleteIds.contains(t.getId()));
             t.setHasPendingRollbackRequest(pendingRollbackIds.contains(t.getId()));
-            t.setHasPendingExecutorCostModifyRequest(pendingExecutorCostModifyIds.contains(t.getId()));
-            boolean rateConfigured = t.getProjectManagerId() != null && t.getExecutorId() != null && t.getVideoType() != null
-                    && configuredRateKeys.contains(t.getProjectManagerId() + "|" + t.getExecutorId() + "|" + t.getVideoType());
-            t.setHasExecutorPayRateConfigured(rateConfigured);
         });
 
         // 字段级可见性统一走 ProjectFieldVisibility：FULL（ADMIN/管理层/财务/AUDITOR）看全部，
-        // 其余角色（含 GUEST）按分级规则脱敏，applyFieldVisibility 内部已经处理了所有分级
+        // 其余角色（含 GUEST）按分级规则脱敏，applyFieldVisibility 内部已经处理了所有分级——这一段
+        // 决定的是列表页每一行"成本/提成"这类财务字段是显示真实值还是显示为空，不是某个按钮
         ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
         if (!ctx.isFull()) {
             return ApiResponse.success(result.map(t -> applyFieldVisibility(t, ctx)));

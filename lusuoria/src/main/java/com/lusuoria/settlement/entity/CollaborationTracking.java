@@ -354,20 +354,4 @@ public class CollaborationTracking extends BaseEntity {
      */
     @Transient
     private Boolean needExecutorCost;
-
-    /**
-     * 该记录的项目负责人是否已经在"执行人员管理"给这个执行人员+这个视频类型配置过费率梯度
-     * （2026-07 新增）。瞬态字段，不落库，由 CollaborationTrackingController 在返回列表时
-     * 批量查出来再赋值（避免逐行查库）。没有执行人员/项目负责人/视频类型时也是 false——
-     * 前端据此决定"设置执行成本"按钮是显示、禁用还是隐藏（没配置费率时隐藏，没执行人员时禁用）。
-     */
-    @Transient
-    private Boolean hasExecutorPayRateConfigured;
-
-    /**
-     * 当前是否有一条"待审核"的内部执行成本修改申请（2026-07 新增，有的话前端"设置执行成本"
-     * 入口要提示"修改审核中"）。瞬态字段，不落库，由 Controller 批量查出来再赋值。
-     */
-    @Transient
-    private Boolean hasPendingExecutorCostModifyRequest;
 }

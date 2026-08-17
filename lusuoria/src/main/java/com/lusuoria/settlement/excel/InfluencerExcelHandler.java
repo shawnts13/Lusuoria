@@ -880,7 +880,6 @@ public class InfluencerExcelHandler {
         if (original == null) return true;
         return !eq(original.getInfluencerType() != null ? original.getInfluencerType().name() : null,
                    updated.getInfluencerType()   != null ? updated.getInfluencerType().name()   : null)
-            || !eq(original.getTeamName(),       updated.getTeamName())
             || !eq(original.getCountryMarket(),  updated.getCountryMarket())
             || !eq(original.getPlatform(),       updated.getPlatform())
             || !eq(original.getDomains(),        updated.getDomains())

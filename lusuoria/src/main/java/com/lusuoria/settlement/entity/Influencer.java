@@ -31,10 +31,6 @@ public class Influencer extends BaseEntity {
     @Column(name = "influencer_type", nullable = false)
     private ProjectType influencerType;
 
-    /** 红人团队（单个，外部机构/MCN 名称） */
-    @Column(name = "team_name")
-    private String teamName;
-
     @Column(name = "account_name", nullable = false, unique = true)
     private String accountName;             // 红人社媒完整名字（全局唯一）
 
