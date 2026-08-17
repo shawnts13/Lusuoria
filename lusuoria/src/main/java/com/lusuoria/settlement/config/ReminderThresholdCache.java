@@ -79,6 +79,7 @@ public class ReminderThresholdCache {
 
     private volatile Map<String, Integer> values = new ConcurrentHashMap<>();
 
+    /** Bean 构造完成后先补齐缺失的默认参数（见下方 seedMissingDefaults），再首次加载 */
     @PostConstruct
     public void init() {
         seedMissingDefaults();
@@ -122,6 +123,7 @@ public class ReminderThresholdCache {
         repo.saveAll(toSave);
     }
 
+    /** 全表重查一遍，按 (category, paramKey) 建索引，整体替换 values */
     @Scheduled(fixedDelay = 4 * 60 * 60 * 1000)
     public synchronized void refresh() {
         Map<String, Integer> m = new ConcurrentHashMap<>();
@@ -137,6 +139,7 @@ public class ReminderThresholdCache {
         return v != null ? v : fallback;
     }
 
+    /** values 这份索引用的组合 key */
     private String key(ReminderCategory category, String paramKey) {
         return category.name() + "::" + paramKey;
     }

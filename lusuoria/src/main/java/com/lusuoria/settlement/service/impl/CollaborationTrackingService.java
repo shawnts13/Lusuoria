@@ -153,6 +153,7 @@ public class CollaborationTrackingService {
 
     /** 单条保存用：每一步都直接查数据库，简单可靠 */
     private class DbLookupContext implements LookupContext {
+        // 下面 4 个方法的语义见 LookupContext 接口上的注释；这里是"单条保存"版实现，直接查数据库
         public List<InfluencerBrandTeam> getTeamOptions(Long influencerId, Long brandId) {
             return influencerBrandTeamRepo.findByInfluencerIdAndBrandId(influencerId, brandId);
         }
@@ -199,6 +200,7 @@ public class CollaborationTrackingService {
         private final ProjectNoGenerator generator;
         public BulkLookupContext(ProjectNoGenerator generator) { this.generator = generator; }
 
+        // 下面 4 个方法的语义见 LookupContext 接口上的注释；这里是"批量导入"版实现，全部查内存索引
         @Override
         public List<InfluencerBrandTeam> getTeamOptions(Long influencerId, Long brandId) {
             return brandTeamMap.getOrDefault(influencerId, Collections.emptyMap())
@@ -232,6 +234,7 @@ public class CollaborationTrackingService {
             return candidate;
         }
 
+        /** 查重索引 dedupIndex 的 key：红人+发布链接+发布时间戳拼接，跟单条保存路径 trackingRepo.findDuplicates 判重口径一致 */
         public static String dedupKey(Long influencerId, String publishLink, Date publishDate) {
             return influencerId + "|" + publishLink + "|" + (publishDate != null ? publishDate.getTime() : "");
         }
@@ -276,6 +279,7 @@ public class CollaborationTrackingService {
         }
     }
 
+    /** save() 真正的读写逻辑：查红人/查已有记录，走 doSave() 落库；必须经 self 代理调用才能让每次重试都拿到全新事务 */
     @Transactional
     public CollaborationTracking saveTransactional(CollaborationTrackingRequest req, boolean allowStatusUpdateOnEdit) {
         Influencer influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getInfluencerId())
@@ -312,6 +316,7 @@ public class CollaborationTrackingService {
         }
     }
 
+    /** createBatch() 真正的读写逻辑：先校验整批的需求名额（validateBatchLinkage），再逐条 doSave()，同一红人的重复查询走本地 map 去重 */
     @Transactional
     public List<CollaborationTracking> createBatchTransactional(List<CollaborationTrackingRequest> reqs) {
         requirementService.validateBatchLinkage(reqs);
@@ -1482,6 +1487,7 @@ public class CollaborationTrackingService {
                 + fmtAmount(specialTotal) + "）为特殊薪酬（与当前梯度价不符）。";
     }
 
+    /** 金额格式化为两位小数字符串，拼接进"本月共X笔已确认工资..."这类提示文案里用 */
     private String fmtAmount(java.math.BigDecimal v) {
         return v == null ? "0.00" : v.setScale(2, java.math.RoundingMode.HALF_UP).toString();
     }
@@ -2057,6 +2063,7 @@ public class CollaborationTrackingService {
         return msg.toString();
     }
 
+    /** 空白字符串统一转成 null，避免落库时把空字符串跟"未填写"混淆 */
     private String emptyToNull(String s) {
         return (s == null || s.trim().isEmpty()) ? null : s.trim();
     }

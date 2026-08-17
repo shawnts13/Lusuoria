@@ -16,6 +16,7 @@ package com.lusuoria.settlement.util;
  */
 public class UrlNormalizer {
 
+    /** 按类注释里的步骤把链接归一化，方便查重比对；输入空/归一化完是空字符串都返回 null */
     public static String normalize(String url) {
         if (url == null) return null;
         String s = url.trim();

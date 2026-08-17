@@ -85,6 +85,7 @@ public class InfluencerRequirementService {
     @Autowired private PendingApprovalRepository pendingApprovalRepo;
     @Autowired private com.lusuoria.settlement.util.EmployeeRoleUtil employeeRoleUtil;
 
+    /** "红人需求管理"新增/编辑需求的入口：新建或按 id 取已有记录后写入表单字段并落库 */
     @Transactional
     public InfluencerRequirement save(InfluencerRequirementRequest req) {
         Influencer influencer = influencerRepo.findByIdAndIsDeletedFalse(req.getInfluencerId())
@@ -336,6 +337,7 @@ public class InfluencerRequirementService {
         return list.isEmpty() ? "" : String.join("\n", list.stream().sorted().collect(Collectors.toList()));
     }
 
+    /** 需求详情页/展开行的"需求条目明细"：把每个条目 + 已履约数量（fulfilledCountByItemId）拼成响应列表 */
     @Transactional(readOnly = true)
     public List<InfluencerRequirementItemResponse> listItems(Long requirementId) {
         InfluencerRequirement requirement = requirementRepo.findByIdAndIsDeletedFalse(requirementId)
@@ -1007,6 +1009,7 @@ public class InfluencerRequirementService {
         return null;
     }
 
+    /** "提取需求内容"入口：委托给 RequirementContentParser 做正则解析，本方法不做额外逻辑 */
     public RequirementContentParseResponse parseContent(String content) {
         return contentParser.parse(content);
     }
@@ -1067,6 +1070,7 @@ public class InfluencerRequirementService {
         return result;
     }
 
+    /** 金额相等比较（null 安全，用 compareTo 而非 equals，避免 scale 不同误判不相等），用于需求条目跟历史合作记录的金额匹配 */
     private boolean amountsEqual(BigDecimal a, BigDecimal b) {
         if (a == null || b == null) return a == b;
         return a.compareTo(b) == 0;

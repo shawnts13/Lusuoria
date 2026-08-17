@@ -266,6 +266,7 @@ public class ProgressReminderService {
         }
     }
 
+    /** 判断一条"红人合作跟踪"相关的已读标记是否已经失效（记录被删/进度不再满足条件/进度在标记之后又变了），失效的会在 cleanupAcknowledgements 里被清理掉，让提醒重新出现 */
     private boolean isTrackingAckStale(ReminderAcknowledgement ack, CollaborationTracking t) {
         if (t == null || Boolean.TRUE.equals(t.getIsDeleted())) return true;
         boolean stillCandidate = ack.getCategory() == ReminderCategory.PM_EXECUTOR_PROGRESS_STALL
@@ -282,6 +283,7 @@ public class ProgressReminderService {
                 || category == ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE;
     }
 
+    /** 判断一条"需求"相关（Invoice/合同逾期）的已读标记是否已经失效（需求被删/未完成/该补的链接已经补上/品牌方规则变了导致不再需要），逻辑跟 isTrackingAckStale 对称 */
     private boolean isRequirementAckStale(ReminderAcknowledgement ack, InfluencerRequirement r) {
         if (r == null || Boolean.TRUE.equals(r.getIsDeleted())) return true;
         if (r.getCompletedAt() == null) return true;
@@ -1486,11 +1488,13 @@ public class ProgressReminderService {
         return list;
     }
 
+    /** 排序用的紧急度取值：逾期类提醒（overdueUrgency）优先于普通停滞类（urgency），都没有则当作最低紧急度 */
     private int urgencyOrdinal(ProgressReminder r) {
         if (r.getOverdueUrgency() != null) return r.getOverdueUrgency().ordinal();
         return r.getUrgency() != null ? r.getUrgency().ordinal() : 0;
     }
 
+    /** 按当前登录账号的角色/权限，筛出这个人能看到的提醒列表（全量可见 vs 按角色/员工定向可见，见类注释权限矩阵） */
     private List<ProgressReminder> resolveVisibleReminders() {
         if (hasFullReminderVisibility()) {
             List<ProgressReminder> all = new ArrayList<>(reminderRepo.findAllByIsDeletedFalse());
@@ -1739,6 +1743,7 @@ public class ProgressReminderService {
         }
     }
 
+    /** 当前登录账号是否有权看到某一条已生成的提醒卡片：全量可见分类，或者是这条卡片指定的负责人/涉及执行人员之一，或者角色匹配受众角色 */
     private boolean canViewReminder(ProgressReminder r) {
         if (hasFullVisibilityFor(r.getCategory())) return true;
         if (r.getAudienceEmployeeId() != null) {
@@ -1830,6 +1835,7 @@ public class ProgressReminderService {
         return new java.sql.Date(d.getTime()).toLocalDate();
     }
 
+    /** toLocalDate 的反向转换：LocalDate -> Date（按 JVM 默认时区/北京时间的当天 00:00 取具体时刻） */
     private Date toDate(LocalDate d) {
         return Date.from(d.atStartOfDay(ZoneId.systemDefault()).toInstant());
     }

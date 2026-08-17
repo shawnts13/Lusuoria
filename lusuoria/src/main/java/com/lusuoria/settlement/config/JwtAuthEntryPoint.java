@@ -23,6 +23,7 @@ import java.io.IOException;
 @Component
 public class JwtAuthEntryPoint implements AuthenticationEntryPoint {
 
+    /** 直接手写 JSON 响应体，不走 GlobalExceptionHandler（这个阶段请求还没进到 Controller 层） */
     @Override
     public void commence(HttpServletRequest request, HttpServletResponse response,
                          AuthenticationException authException) throws IOException {

@@ -73,6 +73,7 @@ public class GoogleDriveAuthService {
     // 单实例部署，内存存一下就够；state -> 生成时间戳，callback 校验完立刻删除
     private final Map<String, Long> pendingStates = new java.util.concurrent.ConcurrentHashMap<>();
 
+    /** 构造带明确超时的 RestTemplate（用于调用 Google OAuth/Drive API），避免对方响应慢时线程无限期挂住 */
     private static RestTemplate buildRestTemplate() {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(10_000);
@@ -97,6 +98,7 @@ public class GoogleDriveAuthService {
                 .build().toUriString();
     }
 
+    /** 校验 OAuth callback 带回来的 state 参数：必须是本次 authorizeUrl() 生成过、且没过期，一次性使用（校验完立刻删除） */
     private void validateState(String state) {
         Long issuedAt = pendingStates.remove(state);
         if (issuedAt == null) throw new RuntimeException("授权链接已过期或已使用，请重新点击连接");
@@ -204,6 +206,7 @@ public class GoogleDriveAuthService {
         private String scope;
         private String token_type;
 
+        /** 手写 getter：字段名 refresh_token 是 Google 返回 JSON 的原始命名（下划线），@Data 生成的默认 getter 名字不好看，这里手动补一个语义清晰的 */
         public String getRefreshToken() { return refresh_token; }
     }
 }

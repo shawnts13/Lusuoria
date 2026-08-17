@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class ProjectNoGenerator {
 
+    /** 生成完整项目编号，sequence 是"这个前缀下已有几个"（调用方查好传进来），编号从 sequence+1 开始 */
     public String generate(String brandName, String teamName, String projectMonth, String accountName, long sequence) {
         return buildPrefix(brandName, teamName, projectMonth, accountName) + String.format("%03d", sequence + 1);
     }
@@ -38,6 +39,7 @@ public class ProjectNoGenerator {
         return sb.toString();
     }
 
+    /** 红人账号名转成编号里能用的形式：去空格/特殊字符、转小写、最长截到20位；空值兜底成 "unknown" */
     private String sanitizeAccount(String input) {
         if (input == null) return "unknown";
         // 去掉空格和特殊字符，只保留字母数字

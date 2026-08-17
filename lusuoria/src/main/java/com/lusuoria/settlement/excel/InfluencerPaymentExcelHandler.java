@@ -25,6 +25,7 @@ public class InfluencerPaymentExcelHandler {
 
     @Autowired private InfluencerTeamCache teamCache;
 
+    /** "红人结款"列表页的"导出Excel"：把传入的结款记录列表写成 xlsx 直接写回 response 下载 */
     public void export(List<InfluencerPayment> payments, HttpServletResponse response) throws IOException {
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setCharacterEncoding("UTF-8");
@@ -106,24 +107,28 @@ public class InfluencerPaymentExcelHandler {
         return sb.toString();
     }
 
+    /** 单元格写字符串值（null 兜底成空字符串）并套用样式 */
     private void setCellStr(Row row, int col, String value, CellStyle style) {
         Cell cell = row.createCell(col);
         cell.setCellValue(value != null ? value : "");
         cell.setCellStyle(style);
     }
 
+    /** 单元格写金额（BigDecimal 转 double 写入，null 则留空只套样式） */
     private void setCellMoney(Row row, int col, BigDecimal value, CellStyle style) {
         Cell cell = row.createCell(col);
         if (value != null) cell.setCellValue(value.doubleValue());
         cell.setCellStyle(style);
     }
 
+    /** 单元格写普通数字（如合作数量），null 则留空只套样式 */
     private void setCellNum(Row row, int col, Double value, CellStyle style) {
         Cell cell = row.createCell(col);
         if (value != null) cell.setCellValue(value);
         cell.setCellStyle(style);
     }
 
+    /** 表头样式：绿底白字加粗、居中、四周细边框 */
     private XSSFCellStyle createHeaderStyle(XSSFWorkbook wb) {
         XSSFCellStyle style = wb.createCellStyle();
         XSSFFont font = wb.createFont();
@@ -140,12 +145,14 @@ public class InfluencerPaymentExcelHandler {
         return style;
     }
 
+    /** 金额列样式：千分位+两位小数（#,##0.00） */
     private XSSFCellStyle createMoneyStyle(XSSFWorkbook wb) {
         XSSFCellStyle style = wb.createCellStyle();
         style.setDataFormat(wb.createDataFormat().getFormat("#,##0.00"));
         return style;
     }
 
+    /** 普通数据行样式：无特殊修饰，只是为了跟其他样式对象区分开 */
     private XSSFCellStyle createNormalStyle(XSSFWorkbook wb) {
         return wb.createCellStyle();
     }

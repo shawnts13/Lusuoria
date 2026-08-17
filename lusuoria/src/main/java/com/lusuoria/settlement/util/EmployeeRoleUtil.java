@@ -69,6 +69,7 @@ public class EmployeeRoleUtil {
     private static final Set<String> TEAM_CONTRACT_MANAGE_ROLES =
             new HashSet<>(Arrays.asList("项目负责人", "执行人员", "法务", "管理层", "IT后勤"));
 
+    /** 当前登录账号关联的员工角色是不是能维护团队合同的那5个角色之一，见上面字段注释 */
     public boolean canManageTeamContracts() {
         return TEAM_CONTRACT_MANAGE_ROLES.contains(getCurrentEmployeeRole());
     }

@@ -47,11 +47,13 @@ final class ExcelReferenceSheetHelper {
         if (col > 0) sheet.createFreezePane(0, 1);
     }
 
+    /** 取指定行，不存在就新建；因为不同字段列的值数量不同，行是按需惰性创建的，不能直接 createRow */
     private static Row getOrCreateRow(XSSFSheet sheet, int idx) {
         Row row = sheet.getRow(idx);
         return row != null ? row : sheet.createRow(idx);
     }
 
+    /** 参考sheet的表头样式：绿底白字加粗、居中、自动换行、四周细边框（跟数据模板sheet的蓝色表头区分开） */
     private static XSSFCellStyle headerStyle(XSSFWorkbook wb) {
         XSSFCellStyle style = wb.createCellStyle();
         XSSFFont font = wb.createFont();
@@ -69,6 +71,7 @@ final class ExcelReferenceSheetHelper {
         return style;
     }
 
+    /** 参考值单元格样式：自动换行、顶部对齐（值可能较长，避免被裁切或挤成一行） */
     private static XSSFCellStyle wrapStyle(XSSFWorkbook wb) {
         XSSFCellStyle style = wb.createCellStyle();
         style.setWrapText(true);

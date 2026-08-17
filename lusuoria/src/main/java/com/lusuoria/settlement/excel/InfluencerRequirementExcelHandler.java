@@ -39,6 +39,7 @@ public class InfluencerRequirementExcelHandler {
     @Autowired private BrandCache brandCache;
     @Autowired private InfluencerTeamCache teamCache;
 
+    /** "红人需求管理"列表页的"导出Excel"：批量预取条目/合同关联数据避免逐条查库，写成 xlsx 下载 */
     public void export(List<InfluencerRequirement> list, HttpServletResponse response) throws IOException {
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setCharacterEncoding("UTF-8");
@@ -157,6 +158,7 @@ public class InfluencerRequirementExcelHandler {
         wb.close();
     }
 
+    /** "需求条目明细"列文案：每个条目一行（换行分隔，配合 wrap 样式），列出视频类型/平台/数量/客户单价/红人单价 */
     private String itemsSummary(List<InfluencerRequirementItem> items) {
         if (items.isEmpty()) return "";
         StringBuilder sb = new StringBuilder();
@@ -171,6 +173,7 @@ public class InfluencerRequirementExcelHandler {
         return sb.toString();
     }
 
+    /** 金额格式化为两位小数字符串（拼接进 itemsSummary 的条目文案里用），null 兜底成 "0.00" */
     private String fmtMoney(BigDecimal v) {
         return v == null ? "0.00" : v.setScale(2, java.math.RoundingMode.HALF_UP).toString();
     }
@@ -230,24 +233,28 @@ public class InfluencerRequirementExcelHandler {
         }
     }
 
+    /** 单元格写字符串值（null 兜底成空字符串）并套用样式 */
     private void setCellStr(Row row, int col, String value, CellStyle style) {
         Cell cell = row.createCell(col);
         cell.setCellValue(value != null ? value : "");
         cell.setCellStyle(style);
     }
 
+    /** 单元格写金额（BigDecimal 转 double 写入，null 则留空只套样式） */
     private void setCellMoney(Row row, int col, BigDecimal value, CellStyle style) {
         Cell cell = row.createCell(col);
         if (value != null) cell.setCellValue(value.doubleValue());
         cell.setCellStyle(style);
     }
 
+    /** 单元格写普通数字（如需求条目总数），null 则留空只套样式 */
     private void setCellNum(Row row, int col, Double value, CellStyle style) {
         Cell cell = row.createCell(col);
         if (value != null) cell.setCellValue(value);
         cell.setCellStyle(style);
     }
 
+    /** 表头样式：蓝底白字加粗、居中、四周细边框 */
     private XSSFCellStyle createHeaderStyle(XSSFWorkbook wb) {
         XSSFCellStyle style = wb.createCellStyle();
         XSSFFont font = wb.createFont();
@@ -264,16 +271,19 @@ public class InfluencerRequirementExcelHandler {
         return style;
     }
 
+    /** 金额列样式：千分位+两位小数（#,##0.00） */
     private XSSFCellStyle createMoneyStyle(XSSFWorkbook wb) {
         XSSFCellStyle style = wb.createCellStyle();
         style.setDataFormat(wb.createDataFormat().getFormat("#,##0.00"));
         return style;
     }
 
+    /** 普通数据行样式：无特殊修饰，只是为了跟其他样式对象区分开 */
     private XSSFCellStyle createNormalStyle(XSSFWorkbook wb) {
         return wb.createCellStyle();
     }
 
+    /** 长文本列样式（Invoice链接/合同链接/需求条目明细/完整需求内容）：自动换行、顶部对齐 */
     private XSSFCellStyle createWrapStyle(XSSFWorkbook wb) {
         XSSFCellStyle style = wb.createCellStyle();
         style.setWrapText(true);

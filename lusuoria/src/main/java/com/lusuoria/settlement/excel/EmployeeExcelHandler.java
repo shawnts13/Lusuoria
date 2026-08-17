@@ -36,6 +36,7 @@ import java.util.stream.Collectors;
 @Component
 public class EmployeeExcelHandler {
 
+    /** "员工管理"列表页的"导出Excel"：员工基础信息 + 提成比例 + Bonus阶梯 + 执行人员薪资标准，写成 xlsx 下载 */
     public void export(List<Employee> employees,
                         Map<Long, List<CommissionBonusTier>> bonusTiersByEmployeeId,
                         Map<Long, List<ExecutorPayRateTier>> executorRatesByExecutorId,
@@ -138,6 +139,7 @@ public class EmployeeExcelHandler {
         return sb.toString();
     }
 
+    /** 单个视频类型内部各梯度的格式化，跟前端 utils/executorRateFormat.js 的同名函数逐字对齐 */
     private String formatVideoTypeTiers(List<ExecutorPayRateTier> tiers) {
         List<ExecutorPayRateTier> sorted = new ArrayList<ExecutorPayRateTier>(tiers);
         sorted.sort(Comparator.comparing(t -> t.getMinCount() != null ? t.getMinCount() : 0));
@@ -158,22 +160,26 @@ public class EmployeeExcelHandler {
         return sb.toString();
     }
 
+    /** 金额格式化为两位小数字符串（拼接进 formatBonusTiers/formatVideoTypeTiers 的文案里用），null 兜底成 "0.00" */
     private String fmtMoney(BigDecimal v) {
         return v == null ? "0.00" : v.setScale(2, RoundingMode.HALF_UP).toPlainString();
     }
 
+    /** 单元格写字符串值（null 兜底成空字符串）并套用样式 */
     private void setCellStr(Row row, int col, String value, CellStyle style) {
         Cell cell = row.createCell(col);
         cell.setCellValue(value != null ? value : "");
         cell.setCellStyle(style);
     }
 
+    /** 单元格写金额（BigDecimal 转 double 写入，null 则留空只套样式） */
     private void setCellMoney(Row row, int col, BigDecimal value, CellStyle style) {
         Cell cell = row.createCell(col);
         if (value != null) cell.setCellValue(value.doubleValue());
         cell.setCellStyle(style);
     }
 
+    /** 表头样式：蓝底白字加粗、居中、四周细边框 */
     private XSSFCellStyle createHeaderStyle(XSSFWorkbook wb) {
         XSSFCellStyle style = wb.createCellStyle();
         XSSFFont font = wb.createFont();
@@ -190,12 +196,14 @@ public class EmployeeExcelHandler {
         return style;
     }
 
+    /** 金额列样式：千分位+两位小数（#,##0.00） */
     private XSSFCellStyle createMoneyStyle(XSSFWorkbook wb) {
         XSSFCellStyle style = wb.createCellStyle();
         style.setDataFormat(wb.createDataFormat().getFormat("#,##0.00"));
         return style;
     }
 
+    /** 普通数据行样式：无特殊修饰，只是为了跟其他样式对象区分开 */
     private XSSFCellStyle createNormalStyle(XSSFWorkbook wb) {
         return wb.createCellStyle();
     }

@@ -69,6 +69,7 @@ public class DbBackupService {
     @Autowired private GoogleDriveAuthService googleDriveAuthService;
     @Autowired private DbBackupAlertRepository alertRepo;
 
+    /** 每天凌晨3:30（北京时间）定时触发一次数据库备份，实际逻辑复用 runBackup() */
     @Scheduled(cron = "0 30 3 * * *")
     public void scheduledBackup() {
         runBackup();
@@ -107,6 +108,7 @@ public class DbBackupService {
         }
     }
 
+    /** 从 JDBC 连接串解析出 host/port/dbName，用系统 pg_dump 命令导出全库 SQL 到 outputFile（超时10分钟、非0退出码都当失败抛异常） */
     private void runPgDump(Path outputFile) throws IOException, InterruptedException {
         Matcher m = JDBC_URL_PATTERN.matcher(jdbcUrl);
         if (!m.find()) throw new RuntimeException("无法解析数据库连接串，跳过备份：" + jdbcUrl);
@@ -136,6 +138,7 @@ public class DbBackupService {
         }
     }
 
+    /** 读取子进程（pg_dump）的输出流拼成字符串，供失败时拼进异常信息；超过2万字符就截断，避免异常信息巨长撑爆日志/数据库字段 */
     private String readAll(java.io.InputStream in) throws IOException {
         StringBuilder sb = new StringBuilder();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
@@ -162,6 +165,7 @@ public class DbBackupService {
         }
     }
 
+    /** 把加密好的备份 zip 上传到配置好的 Google Drive 文件夹（driveFolderId） */
     private void uploadToDrive(Drive drive, Path zipFile, String fileName) throws IOException {
         File fileMetadata = new File();
         fileMetadata.setName(fileName);
@@ -193,6 +197,7 @@ public class DbBackupService {
         }
     }
 
+    /** 递归删除临时目录（本次备份用到的本地 dump/zip 文件），备份流程结束（无论成功失败）都要清理，避免占用磁盘 */
     private void deleteRecursively(Path dir) {
         try (Stream<Path> walk = Files.walk(dir)) {
             walk.sorted(Comparator.reverseOrder()).forEach(p -> {
@@ -203,6 +208,7 @@ public class DbBackupService {
         }
     }
 
+    /** 记录/累加一次备份失败到 DbBackupAlert（单例告警行，没有就新建）——供"待处理"页面展示"最近一次备份失败"提醒 */
     @Transactional
     public void recordFailure(String message, boolean authExpired) {
         Date now = new Date();
@@ -220,6 +226,7 @@ public class DbBackupService {
         alertRepo.save(alert);
     }
 
+    /** 备份成功后软删掉当前的失败告警行（如果有），"待处理"页面的提醒随之消失 */
     @Transactional
     public void clearAlert() {
         alertRepo.findFirstByIsDeletedFalseOrderByIdDesc().ifPresent(alert -> {
@@ -239,10 +246,12 @@ public class DbBackupService {
             this.authExpired = authExpired;
         }
 
+        /** 构造一个"成功"结果 */
         public static BackupResult success(String fileName) {
             return new BackupResult(true, "备份成功：" + fileName, false);
         }
 
+        /** 构造一个"失败"结果，authExpired 标记是不是因为 Google Drive 授权失效导致的失败（供 Controller 区分展示） */
         public static BackupResult failure(String message, boolean authExpired) {
             return new BackupResult(false, message, authExpired);
         }

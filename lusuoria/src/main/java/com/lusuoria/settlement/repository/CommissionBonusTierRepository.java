@@ -17,5 +17,6 @@ public interface CommissionBonusTierRepository extends JpaRepository<CommissionB
     /** "员工管理"列表页批量展示用：一次性取出这一批员工的全部 bonus 阶梯，避免逐条查库 */
     List<CommissionBonusTier> findByEmployeeIdInAndIsDeletedFalseOrderByMinAmountAsc(List<Long> employeeIds);
 
+    /** 真删（非软删）：员工编辑保存时先整体清空旧阶梯再重新插入这一批新的，阶梯本身没有独立查看/追溯的价值，不需要软删语义 */
     void deleteByEmployeeId(Long employeeId);
 }

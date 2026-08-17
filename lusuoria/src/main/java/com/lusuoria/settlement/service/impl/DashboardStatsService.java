@@ -387,6 +387,7 @@ public class DashboardStatsService {
     private static final java.util.Set<String> OTHER_STAFF_ROLES =
             new java.util.HashSet<>(java.util.Arrays.asList("财务", "IT后勤"));
 
+    /** 取角色属于 OTHER_STAFF_ROLES（财务/IT后勤）的员工列表，"内部其他员工成本"固定成本部分的统计口径 */
     private List<Employee> otherStaffEmployees() {
         List<Employee> result = new ArrayList<>();
         for (Employee e : employeeCache.getAll()) {
@@ -1264,12 +1265,14 @@ public class DashboardStatsService {
         return b != null ? b.getName() : "未知品牌";
     }
 
+    /** 项目负责人下钻展示用名字：id 为空/查不到都给出对应的兜底提示语，不直接返回 null */
     private String managerNameOf(Long managerId) {
         if (managerId == null) return "未指定负责人";
         Employee e = employeeCache.findById(managerId);
         return e != null ? e.getName() : "未知负责人";
     }
 
+    /** 执行人员下钻展示用名字：id 为空/查不到都给出对应的兜底提示语，不直接返回 null */
     private String executorNameOf(Long executorId) {
         if (executorId == null) return "未指定执行人员";
         Employee e = employeeCache.findById(executorId);
@@ -1293,6 +1296,7 @@ public class DashboardStatsService {
         return exchangeRateService.getRateForMonth(endMonth).getUsdToCny();
     }
 
+    /** 按发布时间取月份 key（yyyyMM），用于按月分组统计；没有发布时间的记录归到哪一组由调用方决定 */
     private String monthKeyOf(CollaborationTracking o) {
         return o.getPublishDate() != null
                 ? new java.text.SimpleDateFormat("yyyyMM").format(o.getPublishDate())

@@ -968,6 +968,7 @@ public class CollaborationTrackingExcelHandler {
         return byDate.isEmpty() ? candidates : byDate;
     }
 
+    /** "合作平台"多行文本 -> 去重后的平台名集合（导入去重比对用，跟顺序无关，比较用 Set） */
     private Set<String> toPlatformSet(String platform) {
         Set<String> set = new HashSet<String>();
         if (platform != null) {
@@ -979,11 +980,13 @@ public class CollaborationTrackingExcelHandler {
         return set;
     }
 
+    /** 金额相等比较（null 安全，且用 compareTo 而非 equals，避免 1.50 跟 1.5 因 scale 不同误判不相等） */
     private boolean moneyEqual(java.math.BigDecimal a, java.math.BigDecimal b) {
         if (a == null || b == null) return a == b;
         return a.compareTo(b) == 0;
     }
 
+    /** 两个日期是否是同一天（只比年+一年中的第几天，忽略时分秒），用于导入时判重匹配发布日期 */
     private boolean isSameDay(Date a, Date b) {
         java.util.Calendar ca = java.util.Calendar.getInstance();
         ca.setTime(a);
@@ -999,6 +1002,7 @@ public class CollaborationTrackingExcelHandler {
         return CollaborationProgress.fromLabel(label.trim());
     }
 
+    /** 读"视频发布时间"列：优先按 Excel 原生日期/公式求值取，取不到再退化成按候选格式挨个尝试解析文本 */
     private Date parseDate(Row row, Map<String, Integer> colMap, SimpleDateFormat[] formats) {
         Integer idx = firstNonNullIdx(colMap, "视频发布时间", "发布时间", "发布日期");
         if (idx == null) return null;
@@ -1026,11 +1030,13 @@ public class CollaborationTrackingExcelHandler {
         return null;
     }
 
+    /** 按候选列名列表依次查表头 map，返回第一个存在的列下标（兼容历史列名别名），全部找不到返回 null */
     private Integer firstNonNullIdx(Map<String, Integer> colMap, String... headers) {
         for (String h : headers) if (colMap.get(h) != null) return colMap.get(h);
         return null;
     }
 
+    /** 读取单元格的字符串值；公式单元格先求值再按结果类型取值，数字统一走 formatNumericCell 避免丢小数 */
     private String getStrByIdx(Cell cell) {
         if (cell == null) return null;
         if (cell.getCellType() == CellType.FORMULA) {
@@ -1186,15 +1192,18 @@ public class CollaborationTrackingExcelHandler {
         return s.replace('\u3000', ' ');
     }
 
+    /** 依次取第一个非空白的值（兼容历史列名别名读出来的多个候选值取其一），全部为空返回 null */
     private String firstNonNull(String... vals) {
         for (String v : vals) if (v != null && !v.trim().isEmpty()) return v.trim();
         return null;
     }
 
+    /** 空白字符串统一转成 null，避免落库时把空字符串跟"未填写"混淆 */
     private String emptyToNull(String s) {
         return (s == null || s.trim().isEmpty()) ? null : s.trim();
     }
 
+    /** 把内存中的 workbook 写成 xlsx 附件下载，导出模板下载的公共收尾逻辑 */
     private void writeOut(XSSFWorkbook wb, HttpServletResponse response, String fileName) throws IOException {
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         String encoded = URLEncoder.encode(fileName, "UTF-8").replaceAll("\\+", "%20");
@@ -1203,6 +1212,7 @@ public class CollaborationTrackingExcelHandler {
         wb.close();
     }
 
+    /** 单元格写字符串值（null 兜底成空字符串）并套用样式 */
     private void setCellStr(Row row, int col, String value, CellStyle style) {
         Cell cell = row.createCell(col);
         cell.setCellValue(value != null ? value : "");
@@ -1221,6 +1231,7 @@ public class CollaborationTrackingExcelHandler {
         cell.setCellStyle(style);
     }
 
+    /** 按表头名找列，取该单元格的字符串值（实际转换逻辑复用 getStrByIdx） */
     private String getStr(Row row, Map<String, Integer> map, String header) {
         Integer idx = map.get(header);
         if (idx == null) return null;
@@ -1271,6 +1282,7 @@ public class CollaborationTrackingExcelHandler {
         }
     }
 
+    /** 导入时判断整行是不是空行（所有单元格都是 BLANK 或空字符串），空行直接跳过不当错误处理 */
     private boolean isRowEmpty(Row row) {
         for (int c = row.getFirstCellNum(); c < row.getLastCellNum(); c++) {
             Cell cell = row.getCell(c);
@@ -1283,6 +1295,7 @@ public class CollaborationTrackingExcelHandler {
         return true;
     }
 
+    /** 给导入模板某一列加下拉选择校验（固定候选值列表），列名找不到就跳过不加 */
     private void addDropdown(XSSFSheet sheet, DataValidationHelper dv,
                              Map<String, Integer> colIdxMap, String colName, String[] options) {
         Integer idx = colIdxMap.get(colName);
@@ -1321,6 +1334,7 @@ public class CollaborationTrackingExcelHandler {
         cell.setCellComment(comment);
     }
 
+    /** 表头样式：加粗白字，敏感字段列（成本/价格类）用橙色底区分普通字段列（蓝色底） */
     private XSSFCellStyle headerStyle(XSSFWorkbook wb, boolean sensitive) {
         XSSFCellStyle style = wb.createCellStyle();
         XSSFFont font = wb.createFont();
@@ -1340,6 +1354,7 @@ public class CollaborationTrackingExcelHandler {
         return style;
     }
 
+    /** 长文本列样式（需求内容/备注等）：自动换行、顶部对齐 */
     private XSSFCellStyle wrapStyle(XSSFWorkbook wb) {
         XSSFCellStyle style = wb.createCellStyle();
         style.setWrapText(true);

@@ -38,6 +38,7 @@ public class ProjectFieldVisibility {
         public Tier tier;
         public Long employeeId;   // 当前登录账号关联的员工id（行级比对用），可能为 null
 
+        /** 是不是能看到全部财务字段的档位（FULL 或 AUDITOR_VIEW），调用方常用这个做粗粒度判断 */
         public boolean isFull() { return tier == Tier.FULL || tier == Tier.AUDITOR_VIEW; }
     }
 

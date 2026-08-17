@@ -40,9 +40,11 @@ public class CommissionBonusTierCache {
     // key: employeeId，value: 按 minAmount 升序排好的阶梯列表
     private volatile Map<Long, List<CommissionBonusTier>> byEmployeeId = new ConcurrentHashMap<>();
 
+    /** Bean 构造完成后首次加载 */
     @PostConstruct
     public void init() { refresh(); }
 
+    /** 全量重查一遍未软删的阶梯配置，按 employeeId 分组、组内按 minAmount 排好序，整体替换 map */
     @Scheduled(fixedDelay = 4 * 60 * 60 * 1000)
     public synchronized void refresh() {
         Map<Long, List<CommissionBonusTier>> map = new ConcurrentHashMap<>();

@@ -24,9 +24,11 @@ public class DomainCache {
     private volatile Map<String, Domain> nameMap = new ConcurrentHashMap<String, Domain>();
     private volatile Map<Long, Domain>   idMap   = new ConcurrentHashMap<Long, Domain>();
 
+    /** Bean 构造完成后首次加载 */
     @PostConstruct
     public void init() { refresh(); }
 
+    /** 全量重查一遍未软删的领域，整体替换两份 map（不是清空再逐条塞，避免并发读到中间态） */
     @Scheduled(fixedDelay = 4 * 60 * 60 * 1000)
     public synchronized void refresh() {
         Map<String, Domain> nm = new ConcurrentHashMap<String, Domain>();
@@ -39,11 +41,13 @@ public class DomainCache {
         idMap   = im;
     }
 
+    /** 按名称查找，查不到返回 null */
     public Domain findByName(String name) {
         if (name == null || name.trim().isEmpty()) return null;
         return nameMap.get(name.trim());
     }
 
+    /** 全部未软删的领域，防御性拷贝一份新 list 返回 */
     public List<Domain> getAll() {
         return new java.util.ArrayList<Domain>(nameMap.values());
     }

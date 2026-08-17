@@ -54,11 +54,13 @@ public class SecurityConfig {
     @Autowired private JwtUtil jwtUtil;
     @Autowired private JwtAuthEntryPoint jwtAuthEntryPoint;
 
+    /** 密码加密算法，新建账号/改密码时加密、登录时校验都用这个（UserController/UserDetailsServiceImpl） */
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }
 
+    /** 暴露出来给 AuthController 登录接口用（authManager.authenticate(...)） */
     @Bean
     public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
         return config.getAuthenticationManager();
@@ -107,6 +109,7 @@ public class SecurityConfig {
         return http.build();
     }
 
+    /** 跨域配置——允许哪些前端域名（CORS_ORIGINS 环境变量）访问，见 filterChain() 里怎么接进去 */
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();

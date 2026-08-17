@@ -36,9 +36,11 @@ public class ExecutorPayRateTierCache {
     // key: managerId，value: 这个负责人名下配置的全部档位（跨执行人员/视频类型），按 minCount 升序
     private volatile Map<Long, List<ExecutorPayRateTier>> byManagerId = new ConcurrentHashMap<>();
 
+    /** Bean 构造完成后首次加载 */
     @PostConstruct
     public void init() { refresh(); }
 
+    /** 全量重查一遍未软删的档位，同时按 (负责人,执行人员,视频类型) 和按负责人两种维度建好索引并排序 */
     @Scheduled(fixedDelay = 4 * 60 * 60 * 1000)
     public synchronized void refresh() {
         Map<String, List<ExecutorPayRateTier>> keyMap = new ConcurrentHashMap<>();
@@ -54,6 +56,7 @@ public class ExecutorPayRateTierCache {
         byManagerId = managerMap;
     }
 
+    /** byKey 这份索引用的组合 key */
     private String key(Long managerId, Long executorId, VideoType videoType) {
         return managerId + "|" + executorId + "|" + (videoType != null ? videoType.name() : "null");
     }

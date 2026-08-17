@@ -30,6 +30,7 @@ public class InfluencerCache {
 
     private volatile List<InfluencerSimpleResponse> simpleList = new ArrayList<InfluencerSimpleResponse>();
 
+    /** Bean 构造完成后首次加载 */
     @PostConstruct
     public void init() {
         refresh();
@@ -67,6 +68,7 @@ public class InfluencerCache {
         simpleList = list;
     }
 
+    /** 全部红人的精简列表（不是防御性拷贝——这个类只整体替换引用，不做原地修改，直接返回安全） */
     public List<InfluencerSimpleResponse> getAll() {
         return simpleList;
     }

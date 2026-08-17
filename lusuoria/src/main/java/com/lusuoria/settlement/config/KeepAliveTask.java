@@ -20,6 +20,7 @@ public class KeepAliveTask {
 
     @Autowired private DataSource dataSource;
 
+    /** 借一个连接验证一下有效性就还回去，不查表，纯粹是为了有"数据库活动"防止 Render 休眠 */
     @Scheduled(fixedDelay = 10 * 60 * 1000)  // 每10分钟
     public void ping() {
         try (Connection conn = dataSource.getConnection()) {

@@ -181,6 +181,7 @@ public class PendingApprovalService {
         return "内部执行成本由 " + from + " 改为 " + to;
     }
 
+    /** 金额格式化为两位小数字符串，拼接进审批说明文案（describeXxxChange）里用 */
     private String fmtAmount(BigDecimal v) {
         return v == null ? "0.00" : v.setScale(2, RoundingMode.HALF_UP).toString();
     }
@@ -212,6 +213,7 @@ public class PendingApprovalService {
         return pendingApprovalRepo.findPendingTargetIds(module, PendingApprovalCategory.EXECUTOR_COST_MODIFY);
     }
 
+    /** "待处理"模块列表页：按分类（删除申请/进度倒退/执行成本修改）分页查待审核记录 */
     @Transactional(readOnly = true)
     public Page<PendingApproval> listPending(PendingApprovalCategory category, Pageable pageable) {
         return pendingApprovalRepo.findPending(category, pageable);

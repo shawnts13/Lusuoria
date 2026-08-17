@@ -39,9 +39,11 @@ public class ExchangeRateLookupCache {
     // key: 业务月份（如 "202606"），value: 该月的汇率记录
     private volatile Map<String, ExchangeRateCache> byYearMonth = new ConcurrentHashMap<>();
 
+    /** Bean 构造完成后首次加载 */
     @PostConstruct
     public void init() { refresh(); }
 
+    /** 全表重查一遍（这张表没有软删除，见类注释），整体替换 map */
     @Scheduled(fixedDelay = 4 * 60 * 60 * 1000)
     public synchronized void refresh() {
         Map<String, ExchangeRateCache> map = new ConcurrentHashMap<>();

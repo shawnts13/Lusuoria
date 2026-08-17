@@ -51,6 +51,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     @Query("SELECT c.internalProjectNo FROM CollaborationTracking c")
     List<String> findAllInternalProjectNos();
 
+    /** 故意不过滤 isDeleted：内部项目编号在数据库层面是全表唯一约束、不认软删除，判重必须连软删记录一起查 */
     boolean existsByInternalProjectNo(String internalProjectNo);
 
     /** 采买旧视频原链接查重：归一化后的链接是否已被其他记录使用（编辑时排除自身） */

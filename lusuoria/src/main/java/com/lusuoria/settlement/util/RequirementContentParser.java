@@ -60,6 +60,11 @@ public class RequirementContentParser {
         public ParseException(String msg) { super(msg); }
     }
 
+    /**
+     * "提取需求内容"的入口：从客户发来的原始文本里正则识别出红人账号/视频类型/平台/数量/单价，
+     * 拼成一个待确认的草稿返回（不落库）。识别不到红人账号、或凑不出一条完整的"单价+数量"
+     * 条目、或识别出的总价跟单价×数量对不上时，直接抛 ParseException 让用户改成手动填。
+     */
     public RequirementContentParseResponse parse(String content) {
         if (content == null || content.trim().isEmpty()) {
             throw new ParseException("完整需求内容为空，无法提取");
@@ -139,6 +144,7 @@ public class RequirementContentParser {
         return resp;
     }
 
+    /** 依次尝试三种写法（"红人："标签/Instagram链接/"达人"松散提及）识别红人账号，都识别不到返回 null */
     private String extractAccountName(String content) {
         Matcher m = LABEL_ACCOUNT.matcher(content);
         if (m.find()) return m.group(1);
@@ -149,6 +155,7 @@ public class RequirementContentParser {
         return null;
     }
 
+    /** 找"视频类型："标签后面的文字，再交给 classifyVideoType 模糊归类；没这个标签直接返回 null */
     private VideoType extractVideoType(String content) {
         Matcher m = LABEL_VIDEO_TYPE.matcher(content);
         if (!m.find()) return null;
@@ -169,6 +176,7 @@ public class RequirementContentParser {
         return null;
     }
 
+    /** 依次尝试两种写法（"下单数量"/"合作数量"）识别视频数量，都识别不到返回 null */
     private Integer extractQuantity(String content) {
         Matcher m = QTY_ORDER_COUNT.matcher(content);
         if (m.find()) return Integer.parseInt(m.group(1));

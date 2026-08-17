@@ -24,5 +24,6 @@ public interface ExecutorPayRateTierRepository extends JpaRepository<ExecutorPay
     List<ExecutorPayRateTier> findByManagerIdAndExecutorIdAndVideoTypeAndIsDeletedFalseOrderByMinCountAsc(
             Long managerId, Long executorId, VideoType videoType);
 
+    /** 真删（非软删）：保存某个负责人对某个执行人员的费率配置时先整体清空旧档位再重新插入，档位本身没有独立追溯价值 */
     void deleteByManagerIdAndExecutorId(Long managerId, Long executorId);
 }

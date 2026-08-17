@@ -75,6 +75,7 @@ public class RoleUtil {
         return "ADMIN".equals(getCurrentRole());
     }
 
+    /** 从 JWT 解出来的、当前登录账号的 SysUser.role（ADMIN/STAFF/AUDITOR/GUEST），未登录返回空字符串 */
     public static String getCurrentRole() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null) return "";

@@ -313,6 +313,7 @@ public class InfluencerExcelHandler {
         return importData(file.getInputStream(), canViewSensitive, (processed, total) -> {});
     }
 
+    /** 同步导入入口（InputStream 版本），进度回调传空实现，兼容不需要进度追踪的旧调用方 */
     public List<String> importData(InputStream fileStream, boolean canViewSensitive) throws IOException {
         return importData(fileStream, canViewSensitive, (processed, total) -> {});
     }
@@ -803,6 +804,7 @@ public class InfluencerExcelHandler {
         return map;
     }
 
+    /** 从一段手写的简易 JSON 对象文本里，按 key 抠出对应的字符串 value（不用 JSON 库，够用就行） */
     private String extractJsonValue(String item, String key) {
         String search = "\"" + key + "\":\"";
         int start = item.indexOf(search);
@@ -826,6 +828,7 @@ public class InfluencerExcelHandler {
         return sb.toString();
     }
 
+    /** buildContacts 的单项拼接：值非空才追加一个 {"type":..,"value":..}, 片段 */
     private void appendContact(StringBuilder sb, String type, String value) {
         if (value != null && !value.trim().isEmpty()) {
             sb.append("{\"type\":\"").append(type)
@@ -854,12 +857,14 @@ public class InfluencerExcelHandler {
         return detected.isEmpty() ? null : String.join("\n", detected);
     }
 
+    /** Excel"红人类型"列文字 -> ProjectType 枚举，识别不了的一律归到境外红人（兜底默认值） */
     private ProjectType parseType(String label) {
         if ("中国红人".equals(label))        return ProjectType.CHINA_INFLUENCER;
         if ("境外红人（在华）".equals(label)) return ProjectType.FOREIGN_IN_CHINA;
         return ProjectType.OVERSEAS_INFLUENCER;
     }
 
+    /** Excel"建联情况"列文字 -> InfluencerContactStatus 枚举，识别不了（含空白）返回 null */
     private InfluencerContactStatus parseContactStatus(String label) {
         if (label == null || label.trim().isEmpty()) return null;
         switch (label.trim()) {
@@ -896,12 +901,14 @@ public class InfluencerExcelHandler {
             || !eq(original.getCopyrightCost(),  updated.getCopyrightCost());
     }
 
+    /** null 安全的字符串相等比较，isDirty 的比对小工具 */
     private boolean eq(String a, String b) {
         if (a == null && b == null) return true;
         if (a == null || b == null) return false;
         return a.equals(b);
     }
 
+    /** null 安全的 Long 相等比较，isDirty 的比对小工具 */
     private boolean eqLong(Long a, Long b) {
         if (a == null && b == null) return true;
         if (a == null || b == null) return false;
@@ -939,6 +946,7 @@ public class InfluencerExcelHandler {
         if (hasValue(value)) setter.accept(value.trim());
     }
 
+    /** 拆分多个链接（逗号/换行分隔），只保留看起来像 URL（含 "http"）的片段，重新用换行拼接 */
     private String parseLinks(String raw) {
         if (raw == null || raw.trim().isEmpty()) return null;
         StringBuilder sb = new StringBuilder();
@@ -952,6 +960,7 @@ public class InfluencerExcelHandler {
         return sb.length() > 0 ? sb.toString() : null;
     }
 
+    /** 拆分多值字段（逗号/换行分隔的所属领域/平台等），去空白项，重新用换行拼接 */
     private String parseMulti(String raw) {
         if (raw == null || raw.trim().isEmpty()) return null;
         StringBuilder sb = new StringBuilder();
@@ -965,18 +974,21 @@ public class InfluencerExcelHandler {
         return sb.length() > 0 ? sb.toString() : null;
     }
 
+    /** 判断某个"应该是数字"的单元格值其实是不是一段备注文字（非数字），用于导出时标红提示 */
     private boolean isRemark(String value) {
         if (value == null || value.trim().isEmpty()) return false;
         try { Double.parseDouble(value.trim()); return false; }
         catch (NumberFormatException e) { return true; }
     }
 
+    /** 单元格写字符串值（null 兜底成空字符串）并套用样式 */
     private void setCellStr(Row row, int col, String value, CellStyle style) {
         Cell cell = row.createCell(col);
         cell.setCellValue(value != null ? value : "");
         cell.setCellStyle(style);
     }
 
+    /** 单元格写字符串值，看起来像备注（isRemark）就套红色样式提示，否则套普通样式 */
     private void setCellStrColored(Row row, int col, String value,
                                    CellStyle normalStyle, CellStyle redStyle) {
         Cell cell = row.createCell(col);
@@ -984,6 +996,7 @@ public class InfluencerExcelHandler {
         cell.setCellStyle(isRemark(value) ? redStyle : normalStyle);
     }
 
+    /** 按表头名找列，取该单元格的字符串值；单元格是公式则先求值再取结果，取不到统一返回 null */
     private String getStr(Row row, Map<String, Integer> map, String header) {
         Integer idx = map.get(header);
         if (idx == null) return null;
@@ -1008,6 +1021,7 @@ public class InfluencerExcelHandler {
         }
     }
 
+    /** 导入时判断整行是不是空行（所有单元格都是 BLANK 或空字符串），空行直接跳过不当错误处理 */
     private boolean isRowEmpty(Row row) {
         for (int c = row.getFirstCellNum(); c < row.getLastCellNum(); c++) {
             Cell cell = row.getCell(c);
@@ -1020,6 +1034,7 @@ public class InfluencerExcelHandler {
         return true;
     }
 
+    /** 给导入模板某一列加下拉选择校验（固定候选值列表），列名找不到就跳过不加 */
     private void addDropdown(XSSFSheet sheet, DataValidationHelper dv,
                              Map<String, Integer> colIdxMap, String colName, String[] options) {
         Integer idx = colIdxMap.get(colName);
@@ -1031,6 +1046,8 @@ public class InfluencerExcelHandler {
         sheet.addValidationData(val);
     }
 
+    /** 给导入模板某一列加下拉选择校验（候选值来自"可选值参考"sheet 的公式引用，而非固定数组），
+     * 用于品牌方/团队/跟进人这类会变的引用数据；列名找不到就跳过不加 */
     private void addFormulaDropdown(XSSFSheet sheet, DataValidationHelper dv,
                                     Map<String, Integer> colIdxMap, String colName, String formula) {
         Integer idx = colIdxMap.get(colName);
@@ -1042,6 +1059,7 @@ public class InfluencerExcelHandler {
         sheet.addValidationData(val);
     }
 
+    /** 表头样式：加粗白字，敏感字段列（成本类）用橙色底区分普通字段列（蓝色底） */
     private XSSFCellStyle headerStyle(XSSFWorkbook wb, boolean sensitive) {
         XSSFCellStyle style = wb.createCellStyle();
         XSSFFont font = wb.createFont();
@@ -1061,6 +1079,7 @@ public class InfluencerExcelHandler {
         return style;
     }
 
+    /** 长文本列样式（联系方式/链接/备注等）：自动换行、顶部对齐 */
     private XSSFCellStyle wrapStyle(XSSFWorkbook wb) {
         XSSFCellStyle style = wb.createCellStyle();
         style.setWrapText(true);
@@ -1068,6 +1087,7 @@ public class InfluencerExcelHandler {
         return style;
     }
 
+    /** isRemark 命中时套用的红字样式（提示"这格看起来填的是备注而不是数字"），同样保留换行+顶部对齐 */
     private XSSFCellStyle redStyle(XSSFWorkbook wb) {
         XSSFCellStyle style = wb.createCellStyle();
         style.setWrapText(true);

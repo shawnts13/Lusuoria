@@ -197,6 +197,7 @@ public class PayslipService {
         return result;
     }
 
+    /** "管理层"独立的工资单条目（管理层薪资单独一行展示，不跟"项目负责人/执行人员"的批量列表混在一起） */
     @Transactional
     public PayslipRowResponse managementRow(String yearMonth, String currency) {
         Employee mgmt = employeeCache.findManagementEmployee();
@@ -245,6 +246,7 @@ public class PayslipService {
         payslipRepo.save(p);
     }
 
+    /** "法务"角色专属：手动录入当月工资（人民币），只有本人是法务角色才允许设置，确认后需先取消确认才能改 */
     @Transactional
     public void setLegalSalary(Long employeeId, String yearMonth, BigDecimal amountRmb) {
         // 2026-08-17 性能修复：见 detail() 方法开头的说明，同样是纯只读查询改走 employeeCache
@@ -371,6 +373,7 @@ public class PayslipService {
         }
     }
 
+    /** 本人确认当月自己那份工资单：管理层/执行人员额外要先过一遍"能不能确认"的前置校验，确认后是否达到最终版另交给 recomputeFinality 判定 */
     @Transactional
     public void confirm(Long employeeId, String yearMonth) {
         // 2026-08-17 性能修复：见 detail() 方法开头的说明，同样是纯只读查询改走 employeeCache
@@ -418,6 +421,7 @@ public class PayslipService {
         }
     }
 
+    /** 取消确认当月自己那份工资单，连带清掉"是否最终版"标记（下次重新确认会重新判定） */
     @Transactional
     public void unconfirm(Long employeeId, String yearMonth) {
         Payslip p = payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(employeeId, yearMonth)
@@ -521,6 +525,7 @@ public class PayslipService {
         if (manager != null) recomputeFinality(manager, yearMonth, rate, cache);
     }
 
+    /** 执行人员工资明细行序列化成 JSON 字符串，存进 ExecutorWageConfirmation.detailJson 快照 */
     private String writeExecutorWageSnapshot(List<PayslipDimensionRow> rows) {
         try {
             return objectMapper.writeValueAsString(rows);
@@ -541,6 +546,7 @@ public class PayslipService {
         throw new RuntimeException("该角色暂不支持工资单：" + role);
     }
 
+    /** 计算"项目负责人"角色的实时工资明细：按自己名下的合作记录汇总提成，附带 Bonus 阶梯信息 */
     private PayslipDetailResponse computeProjectManager(Employee emp, String yearMonth, BigDecimal rate) {
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         Map<Long, Map<Long, List<CollaborationTracking>>> byPmThenExec = groupByManagerThenExecutor(orders);
@@ -560,6 +566,7 @@ public class PayslipService {
                 byPmThenExec, confirmationByManagerId);
     }
 
+    /** 计算"执行人员"角色的实时工资明细：跨多个项目负责人汇总这个人本月执行的所有项目 */
     private PayslipDetailResponse computeExecutor(Employee emp, String yearMonth) {
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         Map<Long, Map<Long, List<CollaborationTracking>>> byPmThenExec = groupByManagerThenExecutor(orders);
@@ -567,6 +574,7 @@ public class PayslipService {
         return buildExecutorCrossManagerDetail(emp.getId(), byPmThenExec, confirmationByManagerId);
     }
 
+    /** 固定月薪角色（FIXED_SALARY_ROLES）的工资明细：直接取 Employee.fixedMonthlySalary，没有明细行 */
     private PayslipDetailResponse computeFixedSalary(Employee emp) {
         return PayslipDetailResponse.builder()
                 .type("FIXED_SALARY")
@@ -585,6 +593,7 @@ public class PayslipService {
                 .build();
     }
 
+    /** 计算"管理层"角色的实时工资明细（无缓存版）：内部现查本月合作记录/执行人员确认状态/全体员工列表，委托给带 MonthDataCache 的重载 */
     private PayslipDetailResponse computeManagement(Employee mgmt, String yearMonth, BigDecimal rate) {
         // 2026-08-17 性能修复；旧代码：employeeRepo.findByIsDeletedFalseOrderByNameAsc()
         return computeManagement(mgmt, yearMonth, rate,
@@ -1079,6 +1088,7 @@ public class PayslipService {
                 .build();
     }
 
+    /** 把一批合作记录按（品牌方/视频类型等维度）分组聚合成工资单明细行，供项目负责人/执行人员工资明细复用 */
     private List<PayslipDimensionRow> buildDimensionRowsForOrders(List<CollaborationTracking> orders) {
         Map<String, PayslipDimensionRow> grouped = new LinkedHashMap<>();
         if (orders != null) {
@@ -1262,6 +1272,7 @@ public class PayslipService {
                 .build());
     }
 
+    /** 金额格式化为固定小数位（SCALE）的字符串，Bonus阶梯说明文案拼接用 */
     private String fmtTierAmount(BigDecimal v) {
         return v == null ? "0.00" : v.setScale(SCALE, RoundingMode.HALF_UP).toString();
     }
@@ -1284,12 +1295,14 @@ public class PayslipService {
                 .build();
     }
 
+    /** 员工展示用名字：id 为空返回 null，查不到给出"未知员工"兜底提示语 */
     private String employeeNameOf(Long employeeId) {
         if (employeeId == null) return null;
         Employee e = employeeCache.findById(employeeId);
         return e != null ? e.getName() : "未知员工";
     }
 
+    /** writeExecutorWageSnapshot 的反向操作：从 detailJson 反序列化回明细行列表 */
     private List<PayslipDimensionRow> readExecutorWageSnapshotRows(ExecutorWageConfirmation confirmation) {
         try {
             return objectMapper.readValue(confirmation.getDetailJson(),
@@ -1299,6 +1312,7 @@ public class PayslipService {
         }
     }
 
+    /** 从快照明细行里取总额：优先用已存好的汇总行金额，没有汇总行才现场累加各明细行（排除小计/汇总行本身，避免重复计） */
     private BigDecimal sumSnapshotTotal(List<PayslipDimensionRow> rows) {
         for (PayslipDimensionRow r : rows) {
             if (Boolean.TRUE.equals(r.getIsSummaryRow())) return r.getAmount();
@@ -1322,6 +1336,7 @@ public class PayslipService {
         }
     }
 
+    /** 视频类型枚举名 -> 排序序号，按 VideoType 声明顺序排序明细行；未知/非法枚举名排到最后 */
     private int videoTypeOrdinal(String name) {
         if (name == null) return Integer.MAX_VALUE;
         try {
@@ -1333,6 +1348,7 @@ public class PayslipService {
         }
     }
 
+    /** 整批明细行的合计汇总行（isSummaryRow=true），区别于 sumRowsAsSubtotal 的分组小计 */
     private PayslipDimensionRow buildSummaryRow(List<PayslipDimensionRow> rows) {
         long count = 0;
         BigDecimal amount = BigDecimal.ZERO;
@@ -1482,6 +1498,7 @@ public class PayslipService {
         return result;
     }
 
+    /** 金额币种转换的统一入口：按原始金额是人民币还是美金分别走对应的换算方向（dashboardStatsService.convert/convertFromRmb），null 原样透传 */
     private BigDecimal convertAmount(BigDecimal amount, boolean isRmbNative, BigDecimal rate, boolean toRmb) {
         if (amount == null) return null;
         return isRmbNative
@@ -1489,6 +1506,7 @@ public class PayslipService {
                 : dashboardStatsService.convert(amount, rate, toRmb);
     }
 
+    /** null 安全的 BigDecimal 相加，任一边为 null 按 0 处理 */
     private BigDecimal safeAdd(BigDecimal a, BigDecimal b) {
         BigDecimal x = a != null ? a : BigDecimal.ZERO;
         BigDecimal y = b != null ? b : BigDecimal.ZERO;
@@ -1637,6 +1655,7 @@ public class PayslipService {
         }
     }
 
+    /** 取某员工当月的 Payslip 行以便写入，没有就先新建一条空白（未确认）记录再返回 */
     private Payslip getOrCreateForWrite(Long employeeId, String yearMonth) {
         return payslipRepo.findByEmployeeIdAndYearMonthAndIsDeletedFalse(employeeId, yearMonth)
                 .orElseGet(() -> payslipRepo.save(Payslip.builder()
@@ -1816,6 +1835,7 @@ public class PayslipService {
         return true;
     }
 
+    /** 工资单明细计算结果序列化成 JSON 字符串，存进 Payslip.detailJson（确认时冻结的快照） */
     private String writeSnapshot(PayslipDetailResponse detail) {
         try {
             return objectMapper.writeValueAsString(detail);
@@ -1824,6 +1844,7 @@ public class PayslipService {
         }
     }
 
+    /** writeSnapshot 的反向操作：从 Payslip.detailJson 反序列化回明细响应对象 */
     private PayslipDetailResponse readSnapshot(Payslip p) {
         try {
             return objectMapper.readValue(p.getDetailJson(), PayslipDetailResponse.class);

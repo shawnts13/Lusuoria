@@ -16,6 +16,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class PaymentNoGenerator {
 
+    /** 生成完整结款单号，sequence 是"这个前缀下已有几个"（调用方查好传进来），编号从 sequence+1 开始 */
     public String generate(String brandName, String settlementMonth, long sequence) {
         return buildPrefix(brandName, settlementMonth) + String.format("%03d", sequence + 1);
     }

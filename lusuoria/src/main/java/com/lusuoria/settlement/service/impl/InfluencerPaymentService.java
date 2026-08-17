@@ -125,6 +125,7 @@ public class InfluencerPaymentService {
         }
     }
 
+    /** 结款详情页/展开行的"已纳入条目明细"：这条结款单已纳入的合作跟踪记录，附带各条目纳入批次时的付款进度快照 */
     @Transactional(readOnly = true)
     public List<PaymentCandidateItem> listItems(Long paymentId) {
         InfluencerPayment payment = paymentRepo.findByIdAndIsDeletedFalse(paymentId)
@@ -147,6 +148,7 @@ public class InfluencerPaymentService {
         return result;
     }
 
+    /** 把一批合作跟踪记录组装成结款候选/明细条目列表（批量预取红人账号名/需求付款信息避免逐条查库） */
     private List<PaymentCandidateItem> buildItems(List<CollaborationTracking> list, Brand brand, Date reconcileDate) {
         if (list.isEmpty()) return new ArrayList<>();
 
@@ -383,6 +385,7 @@ public class InfluencerPaymentService {
         paymentTeamRepo.saveAll(rows);
     }
 
+    /** "红人结款"编辑：重新校验并纳入/移出涉及的合作跟踪记录，重算应付金额/人民币金额，已付款状态下不允许再调整涉及项目 */
     @Transactional
     public InfluencerPayment update(Long id, InfluencerPaymentRequest req) {
         InfluencerPayment payment = paymentRepo.findByIdAndIsDeletedFalse(id)
@@ -439,6 +442,7 @@ public class InfluencerPaymentService {
         return saved;
     }
 
+    /** 修改结款单的付款状态（待付款/已付款），联动实际付款日、以及涉及需求的"结款状态"展示 */
     @Transactional
     public InfluencerPayment updateStatus(Long id, InfluencerPaymentStatusRequest req) {
         InfluencerPayment payment = paymentRepo.findByIdAndIsDeletedFalse(id)
@@ -457,6 +461,7 @@ public class InfluencerPaymentService {
         return saved;
     }
 
+    /** 结款单软删除：把涉及记录移出批次（恢复成待纳入状态）、连带的团队范围行也软删，并刷新受影响需求的结款状态 */
     @Transactional
     public void delete(Long id) {
         InfluencerPayment payment = paymentRepo.findByIdAndIsDeletedFalse(id)
@@ -709,6 +714,7 @@ public class InfluencerPaymentService {
         trackingRepo.saveAll(items);
     }
 
+    /** linkItems 的反向操作：移出批次的记录恢复成纳入前的付款进度（preBatchPaymentProgress），并解除结款单关联 */
     private void unlinkItems(List<CollaborationTracking> items) {
         if (items.isEmpty()) return;
         for (CollaborationTracking t : items) {
@@ -719,6 +725,7 @@ public class InfluencerPaymentService {
         trackingRepo.saveAll(items);
     }
 
+    /** 累加一批合作跟踪记录的红人成本，得出结款单的应付金额（两位小数四舍五入） */
     private BigDecimal sumCost(List<CollaborationTracking> items) {
         BigDecimal sum = BigDecimal.ZERO;
         for (CollaborationTracking t : items) {
@@ -738,6 +745,7 @@ public class InfluencerPaymentService {
         return nos.isEmpty() ? null : String.join("\n", nos);
     }
 
+    /** 按应付金额×汇率重算人民币金额，汇率或应付金额缺一个就置空（不猜测/不用旧值凑） */
     private void recomputeRmb(InfluencerPayment payment) {
         if (payment.getExchangeRate() != null && payment.getPayableAmount() != null) {
             payment.setRmbAmount(payment.getPayableAmount().multiply(payment.getExchangeRate()).setScale(2, RoundingMode.HALF_UP));
@@ -755,6 +763,7 @@ public class InfluencerPaymentService {
         return new java.sql.Date(date.getTime()).toLocalDate();
     }
 
+    /** toLocalDate 的反向转换：LocalDate -> java.sql.Date */
     private Date toDate(LocalDate localDate) {
         return java.sql.Date.valueOf(localDate);
     }

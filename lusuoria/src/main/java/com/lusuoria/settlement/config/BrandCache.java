@@ -22,9 +22,11 @@ public class BrandCache {
 
     private volatile Map<Long, Brand> idMap = new ConcurrentHashMap<Long, Brand>();
 
+    /** Bean 构造完成后首次加载（这时 @Autowired 字段已经注入好了，见类注释） */
     @PostConstruct
     public void init() { refresh(); }
 
+    /** 全量重新查一遍未软删的品牌方，整体替换 idMap（不是清空再逐条塞），避免并发读到中间态 */
     @Scheduled(fixedDelay = 4 * 60 * 60 * 1000)
     public synchronized void refresh() {
         Map<Long, Brand> map = new ConcurrentHashMap<Long, Brand>();
@@ -32,6 +34,7 @@ public class BrandCache {
         idMap = map;
     }
 
+    /** 按 id 查找，查不到（不存在/已软删）返回 null */
     public Brand findById(Long id) {
         if (id == null) return null;
         return idMap.get(id);
@@ -47,6 +50,7 @@ public class BrandCache {
         return null;
     }
 
+    /** 全部未软删的品牌方，防御性拷贝一份新 list 返回 */
     public List<Brand> getAll() {
         return new java.util.ArrayList<Brand>(idMap.values());
     }

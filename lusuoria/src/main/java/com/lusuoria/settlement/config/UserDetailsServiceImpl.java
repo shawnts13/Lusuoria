@@ -18,6 +18,7 @@ public class UserDetailsServiceImpl implements UserDetailsService {
     @Autowired
     private SysUserRepository userRepository;
 
+    /** Spring Security 登录校验的入口，只在登录那一刻查一次库（不缓存，需要当下最新的密码/enabled） */
     @Override
     public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
         // 异常消息里不回显 username：即便 Spring Security 默认的 hideUserNotFoundExceptions

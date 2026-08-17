@@ -37,9 +37,11 @@ public class SysUserCache {
     // key: 用户名，value: SysUser——只装未软删除的账号，语义对齐 findByUsernameAndIsDeletedFalse
     private volatile Map<String, SysUser> byUsername = new ConcurrentHashMap<>();
 
+    /** Bean 构造完成后首次加载 */
     @PostConstruct
     public void init() { refresh(); }
 
+    /** 全量重查一遍未软删的账号，整体替换 map */
     @Scheduled(fixedDelay = 4 * 60 * 60 * 1000)
     public synchronized void refresh() {
         Map<String, SysUser> map = new ConcurrentHashMap<>();

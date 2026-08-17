@@ -23,6 +23,7 @@ public class DomainSyncService {
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private DomainCache domainCache;
 
+    /** 对比"红人实际在用的领域"和"domains 表现有记录"，软删没人用的、补建缺失的，见类注释 */
     public void sync() {
         // 收集所有红人实际使用的领域名称
         // 2026-08-13 性能修复：改用只查 domains 一列的轻量投影（findActiveDomainsRaw），

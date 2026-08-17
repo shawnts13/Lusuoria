@@ -65,6 +65,7 @@ public class ProfitCalculator {
     /** 员工角色里"管理层"这个角色的固定叫法，跟 OptionConfigController 里维护的一致 */
     public static final String MANAGEMENT_ROLE = "管理层";
 
+    /** 按类注释里的公式，把毛利/可分配利润/提成/公司利润（美金+人民币）都算好直接存回 t 上 */
     public void calculate(CollaborationTracking t) {
         BigDecimal clientPrice   = safe(t.getClientPrice());
         BigDecimal commissionRate = safe(t.getCommissionRate());
@@ -123,6 +124,7 @@ public class ProfitCalculator {
         return rmbAmount.divide(exchangeRate, SCALE, RoundingMode.HALF_UP);
     }
 
+    /** null 安全：空值当0处理，避免下面一路 NPE */
     private BigDecimal safe(BigDecimal v) {
         return v == null ? BigDecimal.ZERO : v;
     }

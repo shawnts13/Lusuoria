@@ -24,9 +24,11 @@ public class InfluencerTeamCache {
     private volatile Map<String, InfluencerTeam> nameMap = new ConcurrentHashMap<>();
     private volatile Map<Long, InfluencerTeam>   idMap   = new ConcurrentHashMap<>();
 
+    /** Bean 构造完成后首次加载 */
     @PostConstruct
     public void init() { refresh(); }
 
+    /** 全量重查一遍未软删的团队，整体替换两份 map */
     @Scheduled(fixedDelay = 4 * 60 * 60 * 1000)
     public synchronized void refresh() {
         Map<String, InfluencerTeam> nm = new ConcurrentHashMap<>();
@@ -39,20 +41,24 @@ public class InfluencerTeamCache {
         idMap   = im;
     }
 
+    /** 全部未软删的团队，防御性拷贝一份新 list 返回 */
     public List<InfluencerTeam> getAll() {
         return new java.util.ArrayList<>(nameMap.values());
     }
 
+    /** 按名称查找，查不到返回 null */
     public InfluencerTeam findByName(String name) {
         if (name == null || name.trim().isEmpty()) return null;
         return nameMap.get(name.trim());
     }
 
+    /** 按 id 查找，查不到返回 null */
     public InfluencerTeam findById(Long id) {
         if (id == null) return null;
         return idMap.get(id);
     }
 
+    /** 某个品牌方下的全部团队，按名称升序 */
     public List<InfluencerTeam> findByBrandId(Long brandId) {
         if (brandId == null) return java.util.Collections.emptyList();
         List<InfluencerTeam> result = new java.util.ArrayList<>();
