@@ -62,6 +62,7 @@ public class PendingApprovalService {
     @Autowired private InfluencerRequirementService requirementService;
     @Autowired private ProfitCalculator profitCalculator;
     @Autowired private ExchangeRateCacheRepository exchangeRateCacheRepo;
+    @Autowired private com.lusuoria.settlement.config.ExchangeRateLookupCache rateLookupCache;
 
     /**
      * 发起删除申请。如果这条记录已经有一条"待审核"的删除申请，直接复用（不重复创建）。
@@ -387,9 +388,10 @@ public class PendingApprovalService {
         boolean exchangeRateInvalid = t.getExchangeRate() == null
                 || t.getExchangeRate().compareTo(BigDecimal.ZERO) <= 0;
         if (!exchangeRateInvalid || t.getPublishDate() == null) return false;
-        ExchangeRateCache cache = exchangeRateCacheRepo
-                .findByYearMonth(new SimpleDateFormat("yyyyMM").format(t.getPublishDate()))
-                .orElse(null);
+        // 2026-08-17 性能修复：改走 ExchangeRateLookupCache；旧代码：
+        // exchangeRateCacheRepo.findByYearMonth(...).orElse(null)
+        ExchangeRateCache cache = rateLookupCache
+                .findByYearMonth(new SimpleDateFormat("yyyyMM").format(t.getPublishDate()));
         if (cache != null && cache.getUsdToCny() != null
                 && cache.getUsdToCny().compareTo(BigDecimal.ZERO) > 0) {
             t.setExchangeRate(cache.getUsdToCny());

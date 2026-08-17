@@ -43,12 +43,17 @@ public class ExchangeRateService {
     private static final Logger log = LoggerFactory.getLogger(ExchangeRateService.class);
 
     @Autowired private ExchangeRateCacheRepository rateRepo;
+    @Autowired private com.lusuoria.settlement.config.ExchangeRateLookupCache rateLookupCache;
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private ProfitCalculator profitCalculator;
 
-    /** 查询某月汇率（看板、合作跟踪生成订单等场景调用） */
+    /**
+     * 查询某月汇率（看板、工资单、红人合作跟踪等几乎所有涉及美元-人民币换算的场景都会调用，
+     * 一次请求可能要连着查好几个月）。2026-08-17 性能修复：改走 ExchangeRateLookupCache（内存
+     * 读取，不再查库），旧代码：rateRepo.findByYearMonth(yearMonth).orElse(null)。
+     */
     public ExchangeRateInfo getRateForMonth(String yearMonth) {
-        ExchangeRateCache cached = rateRepo.findByYearMonth(yearMonth).orElse(null);
+        ExchangeRateCache cached = rateLookupCache.findByYearMonth(yearMonth);
         if (cached == null) {
             return ExchangeRateInfo.builder()
                     .yearMonth(yearMonth)
@@ -65,9 +70,9 @@ public class ExchangeRateService {
                 .build();
     }
 
-    /** 获取所有已维护月份的汇率列表（汇率维护模块列表页用），按月份倒序 */
+    /** 获取所有已维护月份的汇率列表（汇率维护模块列表页用），按月份倒序，改走缓存 */
     public List<ExchangeRateCache> listAll() {
-        return rateRepo.findAllByOrderByYearMonthDesc();
+        return rateLookupCache.getAll();
     }
 
     /**
@@ -96,6 +101,9 @@ public class ExchangeRateService {
             cache.setLastUpdatedAt(now);
         }
         ExchangeRateCache saved = rateRepo.save(cache);
+        // 2026-08-17 新增：写完立刻刷新缓存，不然要等最多4小时定时刷新才会反映到
+        // ExchangeRateLookupCache，期间 getRateForMonth() 读到的还是旧汇率
+        rateLookupCache.refresh();
 
         // 强制覆盖该月（按发布时间匹配）所有已存在红人合作跟踪记录的汇率，并连带重新计算
         // 这些记录的项目毛利/可分配利润/负责人提成/公司利润——这几个是存库的派生字段，

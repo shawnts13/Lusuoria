@@ -65,6 +65,7 @@ public class InfluencerPaymentService {
     @Autowired private InfluencerRepository influencerRepo;
     @Autowired private InfluencerRequirementService requirementService;
     @Autowired private ExchangeRateCacheRepository exchangeRateCacheRepo;
+    @Autowired private com.lusuoria.settlement.config.ExchangeRateLookupCache rateLookupCache;
     @Autowired private BrandCache brandCache;
     @Autowired private InfluencerTeamCache teamCache;
     @Autowired private PaymentNoGenerator paymentNoGenerator;
@@ -344,9 +345,11 @@ public class InfluencerPaymentService {
         payment.setInvolvesCorporateInvoice(resolveInvolvesCorporateInvoice(brand, req.getTeamIds()));
 
         // 汇率创建时不接受前端手填，按结算月份自动从汇率维护取（取不到就留空）
-        exchangeRateCacheRepo.findByYearMonth(req.getSettlementMonth())
-                .map(ExchangeRateCache::getUsdToCny)
-                .ifPresent(payment::setExchangeRate);
+        // 2026-08-17 性能修复：改走 ExchangeRateLookupCache；旧代码：
+        // exchangeRateCacheRepo.findByYearMonth(req.getSettlementMonth())
+        //         .map(ExchangeRateCache::getUsdToCny).ifPresent(payment::setExchangeRate)
+        ExchangeRateCache rateCache = rateLookupCache.findByYearMonth(req.getSettlementMonth());
+        if (rateCache != null) payment.setExchangeRate(rateCache.getUsdToCny());
         recomputeRmb(payment);
 
         String prefix = paymentNoGenerator.buildPrefix(brand.getName(), req.getSettlementMonth());

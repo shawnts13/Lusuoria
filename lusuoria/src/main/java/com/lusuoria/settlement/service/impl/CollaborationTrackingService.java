@@ -89,6 +89,7 @@ public class CollaborationTrackingService {
     @Autowired private com.lusuoria.settlement.config.ExecutorPayRateTierCache executorPayRateTierCache;
     @Autowired private ExecutorWageConfirmationRepository wageConfirmationRepo;
     @Autowired private ExchangeRateCacheRepository exchangeRateCacheRepo;
+    @Autowired private com.lusuoria.settlement.config.ExchangeRateLookupCache rateLookupCache;
 
     /**
      * 自己的懒加载代理引用（2026-08 新增，见 save()/createBatch() 上"内部项目编号并发冲突重试"
@@ -1801,9 +1802,10 @@ public class CollaborationTrackingService {
         boolean exchangeRateInvalid = t.getExchangeRate() == null
                 || t.getExchangeRate().compareTo(java.math.BigDecimal.ZERO) <= 0;
         if (!exchangeRateInvalid || t.getPublishDate() == null) return false;
-        ExchangeRateCache cache = exchangeRateCacheRepo
-                .findByYearMonth(new SimpleDateFormat("yyyyMM").format(t.getPublishDate()))
-                .orElse(null);
+        // 2026-08-17 性能修复：改走 ExchangeRateLookupCache；旧代码：
+        // exchangeRateCacheRepo.findByYearMonth(...).orElse(null)
+        ExchangeRateCache cache = rateLookupCache
+                .findByYearMonth(new SimpleDateFormat("yyyyMM").format(t.getPublishDate()));
         if (cache != null && cache.getUsdToCny() != null
                 && cache.getUsdToCny().compareTo(java.math.BigDecimal.ZERO) > 0) {
             t.setExchangeRate(cache.getUsdToCny());
