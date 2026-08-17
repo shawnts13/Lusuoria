@@ -100,14 +100,16 @@ public class CollaborationTrackingService {
      *  记录才会撞上，重试一两次基本必中，留够余量设成 3 次 */
     private static final int PROJECT_NO_CONFLICT_MAX_RETRY = 3;
 
-    /** "状态流转"到这8个前期制作流程状态（待客户出brief~已发布未结算，即"已加入客户未结算
-     * 列表"/"客户已结算"/"折损"以外的全部状态）时，同步提供"客户方的项目订单"输入框、可选填写
-     * （2026-08 新增，Shawn 要求：拿到订单号就顺手登记，不用等到"已加入客户未结算列表"那一步
-     * 才能填）。跟下面 JOINED_CLIENT_UNSETTLED_LIST/SETTLED 那条"按品牌方配置强制要求填写"的
-     * 规则是两回事——这里永远不强制、永远不会因为空值报错。 */
+    /** "状态流转"到这9个前期制作流程状态（待客户出brief~已发布未结算，即"已加入客户未结算
+     * 列表"/"客户已结算"/"折损"以外的全部状态；2026-08-17 新增"待红人下单"后从8个变成9个）时，
+     * 同步提供"客户方的项目订单"输入框、可选填写（2026-08 新增，Shawn 要求：拿到订单号就顺手
+     * 登记，不用等到"已加入客户未结算列表"那一步才能填）。跟下面 JOINED_CLIENT_UNSETTLED_LIST/
+     * SETTLED 那条"按品牌方配置强制要求填写"的规则是两回事——这里永远不强制、永远不会因为
+     * 空值报错。 */
     private static final Set<CollaborationProgress> EARLY_STAGE_CLIENT_ORDER_ID_PROGRESSES = java.util.EnumSet.of(
             CollaborationProgress.PENDING_CLIENT_BRIEF, CollaborationProgress.CONTRACT_SENT,
-            CollaborationProgress.INFLUENCER_ORDERED, CollaborationProgress.SHOOTING_GUIDE_SENT,
+            CollaborationProgress.PENDING_INFLUENCER_ORDER, CollaborationProgress.INFLUENCER_ORDERED,
+            CollaborationProgress.SHOOTING_GUIDE_SENT,
             CollaborationProgress.PENDING_DRAFT, CollaborationProgress.PENDING_REVISION,
             CollaborationProgress.PENDING_PUBLISH, CollaborationProgress.PUBLISHED_UNSETTLED);
 

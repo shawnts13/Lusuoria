@@ -4,14 +4,22 @@ package com.lusuoria.settlement.enums;
  * 红人合作跟踪 - 视频项目进度（原名"进度"，字段本身/枚举 key 不变，只是显示名称改了）
  *
  * 枚举顺序即前端下拉框/Excel模板下拉框的展示顺序，对应真实业务流程先后：
- * 待客户出brief -> 合同已发给红人 -> 红人已下单 -> 拍摄指导已发给红人
+ * 待客户出brief -> 合同已发给红人 -> 待红人下单 -> 红人已下单 -> 拍摄指导已发给红人
  * -> 待草稿 -> 待红人修改 -> 待发布
  * -> 已发布（未结算） -> 已加入客户未结算列表 -> 客户已结算
  * -> 折损（流程外的异常终止状态，放在最后）
+ *
+ * 2026-08-17 新增"待红人下单"（PENDING_INFLUENCER_ORDER），插在"合同已发给红人"和"红人已下单"
+ * 之间——合同发给红人之后、红人真正下单之前，之前这段空档没有单独的状态覆盖。新增这个值只是
+ * 在中间插入一个 enum 常量，ordinal() 之后的所有值会整体后移，但这个类/代码库里目前没有任何
+ * 地方依赖写死的 ordinal 数字做比较（进度倒退检测走的是 allowsPaymentProgress() 这个语义
+ * 方法，不是序号），所以是安全的。滞留提醒阈值单独一档（4个工作日，可在"进度提醒阈值维护"
+ * 调），见 ProgressReminderService.stallThreshold()。
  */
 public enum CollaborationProgress {
     PENDING_CLIENT_BRIEF("待客户出brief"),
     CONTRACT_SENT("合同已发给红人"),
+    PENDING_INFLUENCER_ORDER("待红人下单"),
     INFLUENCER_ORDERED("红人已下单"),
     SHOOTING_GUIDE_SENT("拍摄指导已发给红人"),
     PENDING_DRAFT("待草稿"),

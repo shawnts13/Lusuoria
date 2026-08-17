@@ -35,12 +35,13 @@ public class ReminderThresholdCache {
     /** {category, paramKey, paramLabel, defaultValue, unit, sortOrder} —— 跟改造前
      *  ProgressReminderService 里写死的值一一对应，是这个功能上线时的"迁移前后行为不变"基准 */
     private static final Object[][] DEFAULTS = {
-            {PM_EXECUTOR_PROGRESS_STALL, "STALL_THRESHOLD_ORDERED", "「红人已下单」滞留阈值", 5, "工作日", 1},
+            {PM_EXECUTOR_PROGRESS_STALL, "STALL_THRESHOLD_PENDING_ORDER", "「待红人下单」滞留阈值", 4, "工作日", 1},
+            {PM_EXECUTOR_PROGRESS_STALL, "STALL_THRESHOLD_ORDERED", "「红人已下单」滞留阈值", 5, "工作日", 2},
             {PM_EXECUTOR_PROGRESS_STALL, "STALL_THRESHOLD_MID",
-                    "其余进度状态滞留阈值（待客户简报/合同待发送/拍摄指南待发送/待初稿/待修改/待发布）", 3, "工作日", 2},
-            {PM_EXECUTOR_PROGRESS_STALL, "TIER_MILD_MAX_DAYS", "轻度提醒边界（超出阈值多少天内算轻度/黄色）", 3, "天", 3},
+                    "其余进度状态滞留阈值（待客户简报/合同待发送/拍摄指南待发送/待初稿/待修改/待发布）", 3, "工作日", 3},
+            {PM_EXECUTOR_PROGRESS_STALL, "TIER_MILD_MAX_DAYS", "轻度提醒边界（超出阈值多少天内算轻度/黄色）", 3, "天", 4},
             {PM_EXECUTOR_PROGRESS_STALL, "TIER_MODERATE_MAX_DAYS",
-                    "中度提醒边界（超出阈值多少天内算中度/橙色，超过则为重度/红色）", 7, "天", 4},
+                    "中度提醒边界（超出阈值多少天内算中度/橙色，超过则为重度/红色）", 7, "天", 5},
 
             {FINANCE_PROGRESS_STALL, "STALL_THRESHOLD",
                     "「已发布(未结算)/已加入客户未结算列表」流转到「客户已结算」的滞留阈值", 14, "工作日", 1},

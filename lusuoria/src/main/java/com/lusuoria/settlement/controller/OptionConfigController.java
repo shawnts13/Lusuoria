@@ -41,12 +41,13 @@ public class OptionConfigController {
                 InfluencerOptions.COUNTRIES,
                 InfluencerOptions.COUNTRIES));
 
-        // 红人合作跟踪 - 视频项目进度（原名"进度"）
+        // 红人合作跟踪 - 视频项目进度（原名"进度"）。2026-08-17 新增"待红人下单"，插在
+        // "合同已发给红人"和"红人已下单"之间，见 CollaborationProgress 枚举类注释
         result.put("collab_progress", toOptions(
-                new String[]{"PENDING_CLIENT_BRIEF", "CONTRACT_SENT", "INFLUENCER_ORDERED", "SHOOTING_GUIDE_SENT",
+                new String[]{"PENDING_CLIENT_BRIEF", "CONTRACT_SENT", "PENDING_INFLUENCER_ORDER", "INFLUENCER_ORDERED", "SHOOTING_GUIDE_SENT",
                              "PENDING_DRAFT", "PENDING_REVISION", "PENDING_PUBLISH",
                              "PUBLISHED_UNSETTLED", "JOINED_CLIENT_UNSETTLED_LIST", "SETTLED", "DELAYED"},
-                new String[]{"待客户出brief", "合同已发给红人", "红人已下单", "拍摄指导已发给红人",
+                new String[]{"待客户出brief", "合同已发给红人", "待红人下单", "红人已下单", "拍摄指导已发给红人",
                              "待草稿", "待红人修改", "待发布",
                              "已发布（未结算）", "已加入客户未结算列表", "客户已结算", "折损"}));
 
