@@ -138,11 +138,15 @@ public class InfluencerController {
         if (ids.isEmpty()) return ids;
         Set<Long> activeIds = new HashSet<Long>();
         Set<Long> completedIds = new HashSet<Long>();
+        // 调用 CollaborationTrackingRepository 的一条合并 SQL，一次性查出这批 id 里各自有没有
+        // "合作中项目"/"已完结项目"（不是逐个红人各查一次），按结果把 id 分进两个 Set
         trackingRepo.countActiveAndCompletedByInfluencerIds(ids).forEach(row -> {
             Long influencerId = (Long) row[0];
             if (((Number) row[1]).longValue() > 0) activeIds.add(influencerId);
             if (((Number) row[2]).longValue() > 0) completedIds.add(influencerId);
         });
+        // 按 projectPriority()（本类下方私有方法）算出的权重排序：0=有合作中项目，1=只有已完结，
+        // 2=都没有；Comparator.comparingInt 只比较这个权重，权重相同的元素保持原有相对顺序
         return ids.stream()
                 .sorted(Comparator.comparingInt(id -> projectPriority(id, activeIds, completedIds)))
                 .collect(Collectors.toList());

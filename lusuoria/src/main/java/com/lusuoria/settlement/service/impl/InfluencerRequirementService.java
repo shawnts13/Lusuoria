@@ -474,13 +474,19 @@ public class InfluencerRequirementService {
             Long brandId, Long teamId, String accountName, String requirementMonth,
             String internalRequirementNo, String completedMonth,
             org.springframework.data.domain.Pageable pageable) {
+        // 第一步：轻量投影——只取 id/internalRequirementNo/totalItemCount 三列，不是完整实体
         List<Object[]> liteRows = requirementRepo.findLiteProjectionByFilters(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo,
                 completedMonth, pageable.getSort());
         List<String> nos = liteRows.stream().map(row -> (String) row[1]).collect(Collectors.toList());
+        // 批量算出这批需求各自的"完成进度分子"（completedCount，导出/展示用，不参与本方法的筛选
+        // 判断）/"已实施数"（establishedCount，第三步筛选真正用的是这个）——本类下方两个方法，
+        // 内部各自走 trackingRepo 一条 GROUP BY 汇总查询
         Map<String, Integer> completedByNo = completedCountByNos(nos);
         Map<String, Integer> establishedByNo = establishedCountByNos(nos);
 
+        // 第二步：在内存里筛出"未实施完"的 id（establishedCount 没到 totalItemCount），
+        // 这一步只处理 id，不涉及完整实体
         List<Long> unestablishedIds = new ArrayList<>();
         for (Object[] row : liteRows) {
             Long id = ((Number) row[0]).longValue();
@@ -492,11 +498,13 @@ public class InfluencerRequirementService {
             if (!isComplete) unestablishedIds.add(id);
         }
 
+        // 第三步：在筛出来的 id 列表上手动分页，切出"当前页"对应的下标区间
         int total = unestablishedIds.size();
         int start = Math.min((int) pageable.getOffset(), total);
         int end = Math.min(start + pageable.getPageSize(), total);
         List<Long> pageIds = unestablishedIds.subList(start, end);
 
+        // 第四步：只对"当前页"这一小撮 id 才去查完整实体，前面几步全程只在 id/轻量投影上操作
         Map<Long, InfluencerRequirement> byId = requirementRepo.findAllById(pageIds).stream()
                 .collect(Collectors.toMap(InfluencerRequirement::getId, r -> r));
         List<InfluencerRequirement> pageContent = new ArrayList<>();
@@ -528,6 +536,8 @@ public class InfluencerRequirementService {
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo,
                 completedMonth, pageable.getSort());
         List<String> nos = liteRows.stream().map(row -> (String) row[1]).collect(Collectors.toList());
+        // 批量算出这批需求各自的"完成进度分子"（本类下方 completedCountByNos()，内部走
+        // trackingRepo 一条 GROUP BY 汇总查询），用来判断下面第二步该分进哪个桶
         Map<String, Integer> completedByNo = completedCountByNos(nos);
 
         // 第二步：按"是否完成"分两桶，未完成的桶在前、已完成的桶在后——每个桶内部的相对顺序
