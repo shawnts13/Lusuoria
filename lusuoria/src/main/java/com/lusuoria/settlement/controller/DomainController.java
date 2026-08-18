@@ -51,6 +51,8 @@ public class DomainController {
     public ApiResponse<Domain> add(@RequestBody String name) {
         name = name.trim().replaceAll("^\"|\"$", "");  // 去掉可能的引号
         if (name.isEmpty()) throw new RuntimeException("领域名称不能为空");
+        // 不限 isDeleted 查一次（见上方方法注释——这里是复活逻辑的关键），命中已软删除的同名
+        // 记录时复活它，命中未删除的直接拒绝，都查不到才真正新建一条
         Domain domain = domainRepo.findByName(name).orElse(null);
         if (domain != null && Boolean.TRUE.equals(domain.getIsDeleted())) {
             domain.setIsDeleted(false);
@@ -62,6 +64,7 @@ public class DomainController {
             domain.setIsDeleted(false);
         }
         Domain saved = domainRepo.save(domain);
+        // 写完立刻刷新 DomainCache，不然要等最多4小时定时刷新才会反映到各表单的领域下拉框
         domainCache.refresh();
         return ApiResponse.success(saved);
     }

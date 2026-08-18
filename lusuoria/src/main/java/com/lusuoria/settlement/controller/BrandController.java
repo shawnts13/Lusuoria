@@ -58,11 +58,15 @@ public class BrandController {
     public ApiResponse<List<BrandTeamOption>> teamOptions(@PathVariable Long id) {
         List<BrandTeamOption> result = new ArrayList<>();
         boolean hasNoTeamOption = false;
+        // 查这个品牌方下"红人-品牌方-团队"关联表里出现过的去重团队 id（InfluencerBrandTeamRepository），
+        // teamId 为空代表"该品牌方下有红人没配团队"这种关联，记一下留到最后单独加一个选项，
+        // 不在循环体内直接处理
         for (Long teamId : influencerBrandTeamRepo.findDistinctTeamIdsByBrandId(id)) {
             if (teamId == null) {
                 hasNoTeamOption = true;
                 continue;
             }
+            // 走 InfluencerTeamCache 查团队名字，不逐条查库
             InfluencerTeam team = teamCache.findById(teamId);
             if (team != null) result.add(new BrandTeamOption(team.getId(), team.getName()));
         }

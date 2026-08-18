@@ -45,6 +45,8 @@ public class AuthController {
         SysUser user = userRepo.findByUsernameAndIsDeletedFalse(req.getUsername())
                 .orElseThrow(() -> new RuntimeException("用户名或密码错误"));
 
+        // 签发 JWT（JwtUtil，把用户名+角色编码进 token claims，见 SecurityConfig 的过滤器
+        // 直接从 claims 读角色、不查库那部分说明）
         String token = jwtUtil.generateToken(user.getUsername(), user.getRole());
 
         // 用 employeeId 查缓存，不触发懒加载

@@ -56,6 +56,8 @@ public class GoogleDriveAuthController {
                           HttpServletResponse response) throws IOException {
         String target = frontendUrl + "/users";
         try {
+            // 拿 Google 回传的一次性 code 换正式的 access/refresh token，校验 state 防伪造，
+            // 换到手后写库（见 GoogleDriveAuthService）
             authService.exchangeCodeForTokens(code, state);
             target += "?googleDriveConnected=1";
         } catch (Exception e) {

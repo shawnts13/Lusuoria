@@ -78,6 +78,9 @@ public class TeamContractController {
     /** 新增一条(品牌方,团队)的合同记录，校验有效期区间合法+不跟同一(品牌方,团队)下已有合同重叠 */
     @PostMapping
     public ApiResponse<TeamContract> create(@Valid @RequestBody TeamContractRequest req) {
+        // 权限校验 -> 查品牌方/团队（走缓存，顺带拦截误用）-> 日期区间合法性 -> 跟已有合同
+        // 重叠校验，四个校验全部通过才往下走，任何一步失败都直接抛异常中止（本类下方
+        // 各私有方法，方法名即校验内容，见各自定义处的注释）
         assertCanManageContracts();
         Brand brand = resolveBrand(req.getBrandId());
         InfluencerTeam team = resolveTeam(req.getTeamId());
@@ -99,6 +102,8 @@ public class TeamContractController {
         assertCanManageContracts();
         TeamContract contract = contractRepo.findById(id)
                 .orElseThrow(() -> new RuntimeException("合同记录不存在：" + id));
+        // 跟 create() 同一套校验序列（查品牌方/团队 -> 日期区间 -> 重叠校验），rejectOverlap
+        // 多传一个 excludeId=id，排除自己不跟自己算重叠
         Brand brand = resolveBrand(req.getBrandId());
         InfluencerTeam team = resolveTeam(req.getTeamId());
         validateDateRange(req);

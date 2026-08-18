@@ -43,10 +43,13 @@ public class ReminderThresholdConfigController {
     public ApiResponse<ReminderThresholdConfig> update(@PathVariable Long id,
                                                         @Valid @RequestBody ReminderThresholdUpdateRequest req) {
         if (!canManage()) return ApiResponse.error(403, "无权限修改进度提醒阈值配置");
+        // 按 id 查出这条配置（ReminderThresholdConfigRepository，Spring Data 派生方法）
         ReminderThresholdConfig c = repo.findById(id)
                 .orElseThrow(() -> new RuntimeException("配置项不存在"));
         c.setParamValue(req.getParamValue());
         c = repo.save(c);
+        // 写完立刻刷新 ReminderThresholdCache，不然要等最多4小时定时刷新才会反映到
+        // ProgressReminderService 读到的阈值参数
         cache.refresh();
         return ApiResponse.success(c);
     }
