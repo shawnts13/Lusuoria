@@ -452,6 +452,57 @@ public class InfluencerRequirementService {
     }
 
     /**
+     * "需求列表页 - 查看未实施完的需求"按钮专用（2026-08 新增）：条件跟 findByFilters 一致，
+     * 只额外要求"已建立跟踪记录数"（establishedCount，"新建合作跟踪"按钮判断用的那个计数，
+     * 不看 progress、含折损）还没到 totalItemCount——等价于这条需求的"新建合作跟踪"按钮当前
+     * 还没被禁用（跟前端 isRequirementComplete() 同一个判定式）。"已实施为0"的情况已经
+     * 完全被这条覆盖（total>0 时 established=0 必然 < total），不需要再单独判一次。
+     * 跟 onlyIncomplete 一样候选量可能很大（全部"还没建满"的需求），所以照抄 pageIncomplete
+     * 的写法：先轻量投影全量查出来筛 id 再分页，完整实体只对"当前页"这一小撮 id 才去查，
+     * 不对全量结果集逐条加载完整实体（含 items/notes 等大字段）。
+     */
+    @Transactional(readOnly = true)
+    public org.springframework.data.domain.Page<InfluencerRequirement> pageUnestablished(
+            Long brandId, Long teamId, String accountName, String requirementMonth,
+            String internalRequirementNo, String completedMonth,
+            org.springframework.data.domain.Pageable pageable) {
+        List<Object[]> liteRows = requirementRepo.findLiteProjectionByFilters(
+                brandId, teamId, accountName, requirementMonth, internalRequirementNo,
+                completedMonth, pageable.getSort());
+        List<String> nos = liteRows.stream().map(row -> (String) row[1]).collect(Collectors.toList());
+        Map<String, Integer> completedByNo = completedCountByNos(nos);
+        Map<String, Integer> establishedByNo = establishedCountByNos(nos);
+
+        List<Long> unestablishedIds = new ArrayList<>();
+        for (Object[] row : liteRows) {
+            Long id = ((Number) row[0]).longValue();
+            String no = (String) row[1];
+            Integer totalItemCount = (Integer) row[2];
+            int established = establishedByNo.getOrDefault(no, 0);
+            int total = totalItemCount != null ? totalItemCount : 0;
+            boolean isComplete = total > 0 && established >= total;
+            if (!isComplete) unestablishedIds.add(id);
+        }
+
+        int total = unestablishedIds.size();
+        int start = Math.min((int) pageable.getOffset(), total);
+        int end = Math.min(start + pageable.getPageSize(), total);
+        List<Long> pageIds = unestablishedIds.subList(start, end);
+
+        Map<Long, InfluencerRequirement> byId = requirementRepo.findAllById(pageIds).stream()
+                .collect(Collectors.toMap(InfluencerRequirement::getId, r -> r));
+        List<InfluencerRequirement> pageContent = new ArrayList<>();
+        for (Long id : pageIds) {
+            InfluencerRequirement r = byId.get(id);
+            if (r == null) continue;
+            r.setCompletedCount(completedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
+            r.setEstablishedCount(establishedByNo.getOrDefault(r.getInternalRequirementNo(), 0));
+            pageContent.add(r);
+        }
+        return new org.springframework.data.domain.PageImpl<>(pageContent, pageable, total);
+    }
+
+    /**
      * 需求列表页默认排序（2026-07 新增）：不筛选（"全部需求"视角，不是"查看未完成的需求"那个
      * 开关），但未完成的排在已完成的前面——只在前端处于"默认排序"（按 id）时触发，用户主动点了
      * 别的列头排序时不做这层重排（尊重用户的显式排序选择）。"未完成"口径跟 pageIncomplete 完全

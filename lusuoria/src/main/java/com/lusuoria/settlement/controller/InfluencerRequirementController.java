@@ -49,9 +49,9 @@ public class InfluencerRequirementController {
     @Autowired private PendingApprovalRepository pendingApprovalRepo;
 
     /**
-     * 红人需求管理列表页主查询——4个互斥快速筛选开关（未完成/未传invoice/未传合同/未结款）各走
-     * 独立的全量查询+内存分页（见各自 service 方法注释）；都不选时走默认路径，sortBy=id 还会
-     * 额外把未完成的需求排到前面（listIncompleteFirst）。
+     * 红人需求管理列表页主查询——5个互斥快速筛选开关（未完成/未实施完/未传invoice/未传合同/
+     * 未结款）各走独立的全量查询+内存分页（见各自 service 方法注释）；都不选时走默认路径，
+     * sortBy=id 还会额外把未完成的需求排到前面（listIncompleteFirst）。
      */
     @GetMapping
     public ApiResponse<Page<InfluencerRequirement>> list(
@@ -64,6 +64,9 @@ public class InfluencerRequirementController {
             // completedMonthRange() 的换算逻辑
             @RequestParam(required = false) String completedMonth,
             @RequestParam(defaultValue = "false") boolean onlyIncomplete,
+            // "查看未实施完的需求"开关（2026-08 新增）：口径见 pageUnestablished() 注释——
+            // 跟"新建合作跟踪"按钮是否禁用同一个判定式（establishedCount<totalItemCount）
+            @RequestParam(defaultValue = "false") boolean onlyUnestablished,
             @RequestParam(defaultValue = "false") boolean onlyMissingInvoice,
             @RequestParam(defaultValue = "false") boolean onlyMissingContract,
             @RequestParam(defaultValue = "false") boolean onlyUnsettled,
@@ -80,11 +83,16 @@ public class InfluencerRequirementController {
         String completedMonthParam = (completedMonth == null || completedMonth.trim().isEmpty())
                 ? null : completedMonth.trim();
 
-        // "查看未完成的需求"/"查看未上传invoice的需求"/"查看未上传合同的需求"/"查看未结款的需求"：
-        // 四个开关互斥（前端只会传其中一个true），都走单独的全量查询+内存筛选+手动分页，见各自方法的注释
+        // "查看未完成的需求"/"查看未实施完的需求"/"查看未上传invoice的需求"/"查看未上传合同的需求"/
+        // "查看未结款的需求"：五个开关互斥（前端只会传其中一个true），都走单独的全量查询+内存筛选+
+        // 手动分页，见各自方法的注释
         Page<InfluencerRequirement> result;
         if (onlyIncomplete) {
             result = requirementService.pageIncomplete(
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo,
+                    completedMonthParam, pageable);
+        } else if (onlyUnestablished) {
+            result = requirementService.pageUnestablished(
                     brandId, teamId, accountName, requirementMonth, internalRequirementNo,
                     completedMonthParam, pageable);
         } else if (onlyMissingInvoice) {
@@ -247,7 +255,7 @@ public class InfluencerRequirementController {
         return ApiResponse.success(requirementService.uploadContractLink(id, req.getContractLink()));
     }
 
-    /** 需求导出 Excel，筛选条件跟 list() 保持一致（含4个快速筛选开关），导出的是当前筛选结果 */
+    /** 需求导出 Excel，筛选条件跟 list() 保持一致（含5个快速筛选开关），导出的是当前筛选结果 */
     @GetMapping("/export/excel")
     public void exportExcel(
             @RequestParam(required = false) Long brandId,
@@ -257,6 +265,7 @@ public class InfluencerRequirementController {
             @RequestParam(required = false) String internalRequirementNo,
             @RequestParam(required = false) String completedMonth,
             @RequestParam(defaultValue = "false") boolean onlyIncomplete,
+            @RequestParam(defaultValue = "false") boolean onlyUnestablished,
             @RequestParam(defaultValue = "false") boolean onlyMissingInvoice,
             @RequestParam(defaultValue = "false") boolean onlyMissingContract,
             @RequestParam(defaultValue = "false") boolean onlyUnsettled,
@@ -265,14 +274,18 @@ public class InfluencerRequirementController {
         String completedMonthParam = (completedMonth == null || completedMonth.trim().isEmpty())
                 ? null : completedMonth.trim();
         // 2026-08 修复（Shawn 反馈，跟红人合作跟踪的导出是同一类问题）：之前这里完全不认
-        // onlyIncomplete/onlyMissingInvoice/onlyMissingContract/onlyUnsettled 这4个"查看XX的
+        // onlyIncomplete/onlyMissingInvoice/onlyMissingContract/onlyUnsettled 这几个"查看XX的
         // 需求"快捷筛选按钮，永远走 findByFilters 这条"全部需求"默认路径，导致点了快捷筛选按钮
         // 之后再导出，导出的是忽略这个筛选条件的数据，跟列表页当前看到的对不上。改成跟 list()
-        // 完全一样的分支逻辑——四个开关互斥，各自路由到对应的 service 方法，只是这里 pageable
-        // 传"取全部"而不是列表页的分页参数。
+        // 完全一样的分支逻辑——开关互斥，各自路由到对应的 service 方法，只是这里 pageable
+        // 传"取全部"而不是列表页的分页参数。onlyUnestablished（2026-08 新增，见
+        // pageUnestablished() 注释）沿用同一套写法。
         Page<InfluencerRequirement> page;
         if (onlyIncomplete) {
             page = requirementService.pageIncomplete(
+                    brandId, teamId, accountName, requirementMonth, internalRequirementNo, completedMonthParam, all);
+        } else if (onlyUnestablished) {
+            page = requirementService.pageUnestablished(
                     brandId, teamId, accountName, requirementMonth, internalRequirementNo, completedMonthParam, all);
         } else if (onlyMissingInvoice) {
             page = requirementService.pageMissingInvoice(
