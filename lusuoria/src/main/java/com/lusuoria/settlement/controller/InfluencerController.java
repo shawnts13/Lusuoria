@@ -85,28 +85,48 @@ public class InfluencerController {
             @RequestParam(defaultValue = "asc") String sortDir,
             @RequestParam(defaultValue = "0")  int page,
             @RequestParam(defaultValue = "20") int size) {
+        // 前端翻页大小做个上限保护，防止有人传一个超大 size 把这一页整表拉回来
         size = Math.max(1, Math.min(size, 200));
         Sort sort = sortDir.equalsIgnoreCase("desc")
                 ? Sort.by(Sort.Direction.DESC, sortBy)
                 : Sort.by(Sort.Direction.ASC,  sortBy);
+        // 第一步：只查 id（轻量投影，见 InfluencerRepository.findIdsByFilters 的 JPQL——
+        // SELECT i.id 而不是 SELECT i），按用户选的排序在数据库层面排好序返回。这一步查出来的
+        // 是"筛选命中的全部红人"，不是分页后的一小撮，但因为只有 id 一列，代价很小
         List<Long> allIds = influencerRepo.findIdsByFilters(
                 influencerType, platform, countryMarket, domain, brandId, teamId,
                 followerMin, followerMax, keyword, sort);
+        // 第二步：在内存里把这批 id 按"合作中项目优先、已完结项目其次"重排一遍（见方法上方类级
+        // 注释里说明的原因——这个优先级没法用一条 SQL 的 ORDER BY 表达）。传入/传出都只是
+        // id 列表，重排本身不涉及查完整实体
         List<Long> sortedIds = reorderIdsByProjectPriority(allIds);
 
+        // 第三步：分页——在已经排好序的 id 列表上手动切出"这一页"对应的下标区间，
+        // 用 Math.min 防止 page 传得太大导致下标越界
         int total = sortedIds.size();
         int fromIndex = Math.min(page * size, total);
         int toIndex = Math.min(fromIndex + size, total);
         List<Long> pageIds = sortedIds.subList(fromIndex, toIndex);
 
+        // 第四步：只对"这一页"的 id 才去查完整实体（含 notes/links 等大字段）——真正体积大的
+        // 数据到这一步才第一次触发，且规模固定就是 size 条，不会随筛选结果总量变大而变大
         List<Influencer> byId = influencerRepo.findAllById(pageIds);
+        // findAllById 底层是一条 WHERE id IN (...) 查询，返回顺序不保证跟传入的 pageIds 顺序
+        // 一致（IN 查询的返回顺序由数据库自行决定）——所以先转成 id->实体 的 Map，再按 pageIds
+        // 原本的顺序（也就是第二步排好的优先级顺序）重新取一遍，才能保证最终顺序不丢
         Map<Long, Influencer> byIdMap = byId.stream()
                 .collect(Collectors.toMap(Influencer::getId, inf -> inf));
         List<Influencer> pageContent = pageIds.stream()
                 .map(byIdMap::get).filter(java.util.Objects::nonNull).collect(Collectors.toList());
+        // 批量把这一页红人各自关联的"品牌方-团队"对填充上去，避免每条红人各查一次（N+1）
         attachBrandTeamPairs(pageContent);
+        // 因为分页/总数是我们自己手动算的（不是让 Repository 直接返回一个 Page），这里要手动
+        // 用 PageImpl 包装成 Page 对象，好让返回结构跟其他走 Repository 分页的接口保持一致，
+        // 前端不需要区分"这个接口是不是手动分页的"
         Page<Influencer> result = new org.springframework.data.domain.PageImpl<Influencer>(
                 pageContent, PageRequest.of(page, size, sort), total);
+        // GUEST 角色看不到成本类财务字段——不是在查询阶段就不查这些字段，而是查完整实体之后再
+        // 逐条克隆一份并清空敏感字段返回（maskSensitive），原始实体本身不会被改动
         if (!RoleUtil.canViewBaselineFinancials()) {
             return ApiResponse.success(result.map(this::maskSensitive));
         }

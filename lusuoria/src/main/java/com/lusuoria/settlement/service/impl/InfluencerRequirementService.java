@@ -415,13 +415,18 @@ public class InfluencerRequirementService {
             Long brandId, Long teamId, String accountName, String requirementMonth,
             String internalRequirementNo, String completedMonth,
             org.springframework.data.domain.Pageable pageable) {
+        // 第一步：轻量投影——只取 id/internalRequirementNo/totalItemCount 三列，不是完整实体
         List<Object[]> liteRows = requirementRepo.findLiteProjectionByFilters(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo,
                 completedMonth, pageable.getSort());
+        // 第二步：批量算出这批需求各自的"完成进度分子"（completedCount）/"已实施数"
+        // （establishedCount）——两条 GROUP BY 汇总查询，不是逐条需求各查一次
         List<String> nos = liteRows.stream().map(row -> (String) row[1]).collect(Collectors.toList());
         Map<String, Integer> completedByNo = completedCountByNos(nos);
         Map<String, Integer> establishedByNo = establishedCountByNos(nos);
 
+        // 第三步：在内存里筛出"未完成"的 id（completedCount 没到 totalItemCount，或者
+        // totalItemCount 本身为空/0），这一步只处理 id，不涉及完整实体
         List<Long> incompleteIds = new ArrayList<>();
         for (Object[] row : liteRows) {
             Long id = ((Number) row[0]).longValue();
@@ -433,11 +438,14 @@ public class InfluencerRequirementService {
             if (!isComplete) incompleteIds.add(id);
         }
 
+        // 第四步：在筛出来的 id 列表上手动分页，切出"当前页"对应的下标区间
         int total = incompleteIds.size();
         int start = Math.min((int) pageable.getOffset(), total);
         int end = Math.min(start + pageable.getPageSize(), total);
         List<Long> pageIds = incompleteIds.subList(start, end);
 
+        // 第五步：只对"当前页"这一小撮 id 才去查完整实体（含 influencer 关联、备注等大字段），
+        // 前面几步全程都只在 id/轻量投影上操作，到这里才第一次触发真正体积大的查询
         Map<Long, InfluencerRequirement> byId = requirementRepo.findAllById(pageIds).stream()
                 .collect(Collectors.toMap(InfluencerRequirement::getId, r -> r));
         List<InfluencerRequirement> pageContent = new ArrayList<>();
@@ -515,12 +523,16 @@ public class InfluencerRequirementService {
             Long brandId, Long teamId, String accountName, String requirementMonth,
             String internalRequirementNo, String completedMonth,
             org.springframework.data.domain.Pageable pageable) {
+        // 第一步：轻量投影，带出 pageable 里的排序（这里固定是 id 倒序）
         List<Object[]> liteRows = requirementRepo.findLiteProjectionByFilters(
                 brandId, teamId, accountName, requirementMonth, internalRequirementNo,
                 completedMonth, pageable.getSort());
         List<String> nos = liteRows.stream().map(row -> (String) row[1]).collect(Collectors.toList());
         Map<String, Integer> completedByNo = completedCountByNos(nos);
 
+        // 第二步：按"是否完成"分两桶，未完成的桶在前、已完成的桶在后——每个桶内部的相对顺序
+        // 就是第一步查询自带的排序（稳定分桶，不打乱桶内顺序），实现"未完成排最前，组内仍按
+        // id 倒序"的效果
         List<Long> incompleteIds = new ArrayList<>();
         List<Long> completeIds = new ArrayList<>();
         for (Object[] row : liteRows) {
@@ -535,11 +547,14 @@ public class InfluencerRequirementService {
         List<Long> orderedIds = new ArrayList<>(incompleteIds);
         orderedIds.addAll(completeIds);
 
+        // 第三步：在这份重排好的 id 列表上手动切出"当前页"
         int total = orderedIds.size();
         int start = Math.min((int) pageable.getOffset(), total);
         int end = Math.min(start + pageable.getPageSize(), total);
         List<Long> pageIds = orderedIds.subList(start, end);
 
+        // 第四步：只对"当前页"这一小撮 id 才去查完整实体 + 批量补上"完成进度"/"已实施数"两个
+        // 瞬态字段（列表页展示用），前面几步全程只在 id 上操作
         Map<Long, InfluencerRequirement> byId = requirementRepo.findAllById(pageIds).stream()
                 .collect(Collectors.toMap(InfluencerRequirement::getId, r -> r));
         Map<String, Integer> establishedByNo = establishedCountByNos(nos);

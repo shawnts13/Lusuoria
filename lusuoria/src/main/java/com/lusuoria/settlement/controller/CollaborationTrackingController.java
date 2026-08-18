@@ -206,6 +206,10 @@ public class CollaborationTrackingController {
             String clientOrderId, String clientPaymentBatch, Long projectManagerId,
             Long priorityEmployeeId, boolean prioritizeFinance, boolean onlyMyResponsibility, boolean onlyIncomplete,
             boolean onlyUnpublished, boolean onlyMissingRequirementNo, Sort sort, Pageable pageable) {
+        // 第一步：轻量投影查询——只取 id/progress/影响分桶用的结款批次id 这三列（不是完整实体），
+        // 但排序（sort 参数）已经在这条 SQL 里生效了，所以每个桶内部的记录相对顺序，就是
+        // "已经在正常工作的排序"（优先展示 + 用户选的列排序），下面分桶只是在这基础上再分组，
+        // 不会打乱桶内已经排好的顺序
         List<Object[]> liteRows = trackingRepo.findLitePriorityProjectionByFilters(
                 brandId, teamId, countryMarket, accountName, influencerId, platform,
                 progress, influencerPaymentProgress, videoType, videoMonthParam, videoDateStartParam, videoDateEndParam,
@@ -214,6 +218,8 @@ public class CollaborationTrackingController {
                 priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, onlyUnpublished,
                 onlyMissingRequirementNo, sort);
 
+        // 第二步：在内存里把每条记录的 id 按 (是否未完成, 是否未加入结款批次) 分进 4 个桶——
+        // 这一步只处理 id，不涉及完整实体
         List<Long> bucket0 = new ArrayList<>(); // 未完成 + 未加入结款批次
         List<Long> bucket1 = new ArrayList<>(); // 未完成 + 已加入结款批次
         List<Long> bucket2 = new ArrayList<>(); // 已完成 + 未加入结款批次
@@ -229,17 +235,24 @@ public class CollaborationTrackingController {
             else if (unbatched) bucket2.add(id);
             else bucket3.add(id);
         }
+        // 按桶的优先级顺序（0→1→2→3）依次拼接，就得到最终展示顺序：未完成的两桶排在已完成的
+        // 两桶前面，每个桶内部保留第一步查询自带的排序
         List<Long> orderedIds = new ArrayList<>(liteRows.size());
         orderedIds.addAll(bucket0);
         orderedIds.addAll(bucket1);
         orderedIds.addAll(bucket2);
         orderedIds.addAll(bucket3);
 
+        // 第三步：在这份重排好的 id 列表上手动切出"当前页"对应的下标区间（分页游标没法直接
+        // 应用在数据库查询上，因为排序结果是分桶重排过的，只能落到内存里手动分页）
         int total = orderedIds.size();
         int start = Math.min((int) pageable.getOffset(), total);
         int end = Math.min(start + pageable.getPageSize(), total);
         List<Long> pageIds = orderedIds.subList(start, end);
 
+        // 第四步：只对"当前页"这一小撮 id 才去查完整实体——真正体积大的数据到这一步才第一次
+        // 触发。findAllById 返回顺序不保证跟 pageIds 一致（同 InfluencerController#list 里的
+        // 同类写法），所以先转成 Map 再按 pageIds 的顺序重新取一遍，保证展示顺序不丢
         Map<Long, CollaborationTracking> byId = trackingRepo.findAllById(pageIds).stream()
                 .collect(Collectors.toMap(CollaborationTracking::getId, t -> t));
         List<CollaborationTracking> pageContent = new ArrayList<>();
@@ -247,6 +260,8 @@ public class CollaborationTrackingController {
             CollaborationTracking t = byId.get(id);
             if (t != null) pageContent.add(t);
         }
+        // 总数/分页信息是手动算的，用 PageImpl 包装成标准 Page 对象返回，前端不用区分这个接口
+        // 分页是不是"手动"的
         return new org.springframework.data.domain.PageImpl<>(pageContent, pageable, total);
     }
 
