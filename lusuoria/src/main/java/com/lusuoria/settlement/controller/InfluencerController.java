@@ -194,14 +194,21 @@ public class InfluencerController {
                             @RequestParam(required = false) Long followerMax,
                             @RequestParam(required = false) String keyword,
                             HttpServletResponse response) throws IOException {
+        // 跟 list() 第一步一样，先只查 id（轻量投影），按账号名排好序
         List<Long> ids = influencerRepo.findIdsByFilters(
                 influencerType, platform, countryMarket, domain, brandId, teamId,
                 followerMin, followerMax, keyword, Sort.by(Sort.Direction.ASC, "accountName"));
+        // 导出是要拿走全部匹配数据，不分页，所以这里直接查全部 id 对应的完整实体
+        // （不像 list() 那样只查"当前页"），同样要处理 findAllById 返回顺序不保证跟 ids
+        // 一致的问题——先转 Map 再按 ids 顺序取一遍
         Map<Long, Influencer> byId = influencerRepo.findAllById(ids).stream()
                 .collect(Collectors.toMap(Influencer::getId, inf -> inf));
         List<Influencer> list = ids.stream().map(byId::get)
                 .filter(java.util.Objects::nonNull).collect(Collectors.toList());
+        // 批量填充"品牌方-团队"关联（同 list()），避免 N+1
         attachBrandTeamPairs(list);
+        // 是否脱敏交给 excelHandler 内部处理（传角色判定结果进去，不是查完整数据后再脱敏克隆一份，
+        // 因为 Excel 导出这条路径本身就要控制"到底要不要生成这一列"，不只是"值要不要清空"）
         excelHandler.export(list, RoleUtil.canViewBaselineFinancials(), response);
     }
 
@@ -244,6 +251,8 @@ public class InfluencerController {
     public ApiResponse<Map<Long, ProjectCountResponse>> projectCounts(@RequestBody List<Long> influencerIds) {
         Map<Long, ProjectCountResponse> result = new java.util.LinkedHashMap<Long, ProjectCountResponse>();
         for (Long id : influencerIds) result.put(id, new ProjectCountResponse(0L, 0L));
+        // CollaborationTrackingRepository 的同一条合并 SQL（reorderIdsByProjectPriority 也在用），
+        // 一次性查出这批红人各自"合作中"/"已完结"的项目数，不是逐个红人各查一次
         trackingRepo.countActiveAndCompletedByInfluencerIds(influencerIds).forEach(row -> {
             ProjectCountResponse r = result.get((Long) row[0]);
             r.setActiveCount(((Number) row[1]).longValue());

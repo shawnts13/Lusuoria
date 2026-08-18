@@ -140,6 +140,9 @@ public class InfluencerPaymentController {
                             @RequestParam(defaultValue = "false") boolean onlyMissingReceipt,
                             HttpServletResponse response) throws IOException {
         if (!accessUtil.canView()) { response.sendError(403, "无权限导出红人结款"); return; }
+        // 下面到 attachTeamIds 为止，跟 list() 是同一套调用、同一套理由（按团队/按需求编号
+        // 筛选都要先转成 id 列表；IN 子句不能传空集合），只是最后传给 excelHandler.export
+        // 而不是包装成分页 Page 返回，各调用点的具体说明见 list() 方法体
         boolean filterByTeam = teamId != null;
         List<Long> matchingIds = filterByTeam ? paymentTeamRepo.findPaymentIdsByTeamId(teamId) : Collections.emptyList();
         if (matchingIds.isEmpty()) matchingIds = Collections.singletonList(-1L);

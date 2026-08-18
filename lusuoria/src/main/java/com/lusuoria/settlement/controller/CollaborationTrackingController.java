@@ -319,17 +319,21 @@ public class CollaborationTrackingController {
         size = Math.max(1, Math.min(size, 200));
         boolean completed = "COMPLETED".equalsIgnoreCase(category);
         String videoMonthParam = (videoMonth == null || videoMonth.trim().isEmpty()) ? null : videoMonth.trim();
+        // 这一页命中记录（已经是完整实体，这个下钻弹窗数据量小，不需要 list() 那套轻量投影优化）
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "id"));
         Page<CollaborationTracking> result = trackingRepo.findByInfluencerAndCompletionStatus(
                 influencerId, completed, brandId, teamId, platform, videoType, progress,
                 projectManagerId, videoMonthParam, pageable);
 
+        // 字段脱敏（跟列表页/详情同一套 ProjectFieldVisibility），只对当前页这几条做
         ProjectFieldVisibility.Context ctx = fieldVisibility.resolve();
         boolean canSeeBaseline = ctx.tier != ProjectFieldVisibility.Tier.GUEST;
         if (!ctx.isFull()) {
             result = result.map(t -> applyFieldVisibility(t, ctx));
         }
 
+        // 汇总数字（合计条数/总成本/总价格）是另一条独立的聚合 SQL，覆盖全部命中记录，
+        // 不受当前页限制——分页只影响下面列表展示，不影响这里的合计
         List<Object[]> sumRows = trackingRepo.sumByInfluencerAndCompletionStatus(
                 influencerId, completed, brandId, teamId, platform, videoType, progress,
                 projectManagerId, videoMonthParam);
