@@ -82,16 +82,23 @@ public class DbBackupService {
         String zipName = "lusuoria-db-backup-" + timestamp + ".zip";
         Path tempDir = null;
         try {
+            // 五步流水线，任何一步抛异常都直接跳到下面 catch，本类各私有方法名即对应步骤：
+            // 1) pg_dump 导出全库 SQL 到本地临时文件 2) 压缩成带密码的 zip
+            // 3) 用已授权的 Google Drive 客户端 4) 上传 5) 清理超出保留份数的旧备份
             tempDir = Files.createTempDirectory("db-backup-");
             Path dumpFile = tempDir.resolve("backup-" + timestamp + ".sql");
             runPgDump(dumpFile);
             Path zipFile = tempDir.resolve(zipName);
             zipFile(dumpFile, zipFile);
 
+            // GoogleDriveAuthService：读取已存的 OAuth token（必要时自动用 refresh token 续期）
+            // 构建出可直接调用 Drive API 的客户端；没连接/授权失效会抛
+            // GoogleDriveNotConnectedException，走下面专门的 catch 分支
             Drive drive = googleDriveAuthService.buildDriveClient();
             uploadToDrive(drive, zipFile, zipName);
             enforceRetention(drive);
 
+            // 五步都成功，说明"最近一次备份失败"这个告警（如果之前有）已经不成立了，清掉
             clearAlert();
             log.info("数据库备份成功：{}", zipName);
             return BackupResult.success(zipName);
