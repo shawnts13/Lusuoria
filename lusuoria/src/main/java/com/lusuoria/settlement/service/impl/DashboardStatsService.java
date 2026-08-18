@@ -1113,6 +1113,8 @@ public class DashboardStatsService {
             String startMonth, String endMonth, String startDate, String endDate, String currency, String dimension,
             java.util.function.Function<Computed, BigDecimal> extractor, boolean settledOnly) {
 
+        // fetchOrdersForPeriod：按月份区间或日期区间二选一取记录（本类下方，两种查询方式的
+        // 统一入口）；excludeDamaged：过滤掉"折损"记录，下钻的所有金额统计都不计入折损
         List<CollaborationTracking> orders = excludeDamaged(fetchOrdersForPeriod(startMonth, endMonth, startDate, endDate));
         // settledOnly=true 供"客户已回款总金额"下钻用：只统计视频项目进度=客户已结算的记录，
         // 维度/口径其余部分完全跟"客户合作价格"下钻一致（复用同一份分组逻辑）
@@ -1121,6 +1123,8 @@ public class DashboardStatsService {
                     .collect(Collectors.toList());
         }
         boolean toRmb = "RMB".equalsIgnoreCase(currency);
+        // 批量预取这批记录各自"发布月份"对应的汇率，下面循环里按条记录取用（monthRateOf），
+        // 避免每条记录都现查一次 ExchangeRateService
         Map<String, BigDecimal> monthRateCache = buildMonthRateCache(orders);
 
         Map<String, BigDecimal> grouped = new LinkedHashMap<>();
