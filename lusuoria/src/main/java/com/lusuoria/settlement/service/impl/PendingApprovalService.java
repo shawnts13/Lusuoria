@@ -255,6 +255,8 @@ public class PendingApprovalService {
         }
         assertCanResolve(p, currentEmployeeId);
 
+        // 按类别+目标模块分派到对应的"真正执行"私有方法（本类下方，各自有完整说明），
+        // 这四个分支互斥，一条待处理事项只会落进其中一个
         if (p.getCategory() == PendingApprovalCategory.PROGRESS_ROLLBACK) {
             executeProgressRollback(p);
         } else if (p.getCategory() == PendingApprovalCategory.EXECUTOR_COST_MODIFY) {

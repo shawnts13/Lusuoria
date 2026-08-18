@@ -317,6 +317,9 @@ public class InfluencerPaymentService {
             ===== 旧代码结束 ===== */
         }
 
+        // 三项独立校验（本类下方各自的私有方法，方法名即校验内容）：invoice/团队互斥规则、
+        // 对账日期是否必填、以及最后把请求里的合作跟踪 id 转成实体列表 + 校验这些记录确实
+        // 属于这个品牌方/团队范围且还没被别的结款单占用——任何一项不满足都直接抛异常中止
         validateInvoiceTeamExclusivity(brand, realTeamIds, includeNoTeam);
         validateReconcileDateIfNeeded(brand, req.getReconcileDate());
 
@@ -358,6 +361,11 @@ public class InfluencerPaymentService {
         long seq = paymentRepo.countByPaymentNoPrefix(prefix + "%");
         payment.setPaymentNo(paymentNoGenerator.generate(brand.getName(), req.getSettlementMonth(), seq));
 
+        // 落库顺序有讲究：先存结款单本身拿到 id，才能把明细/团队范围关联到这个 id 上——
+        // linkItems 把这批合作跟踪记录的红人结款进度改成"已纳入批次"+反向挂上 payment
+        // （本身也会落库，靠外层 @Transactional 一起提交，不是这里再显式 save 一次）；
+        // saveTeamScope 把选定的团队范围各自存一行 InfluencerPaymentTeam；
+        // refreshSettlementStatusFor 最后再刷新对应"红人需求"的结款状态展示
         payment = paymentRepo.save(payment);
         linkItems(payment, items);
         saveTeamScope(payment.getId(), req.getTeamIds());
