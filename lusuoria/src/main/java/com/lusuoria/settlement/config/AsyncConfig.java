@@ -42,4 +42,24 @@ public class AsyncConfig {
         executor.initialize();
         return executor;
     }
+
+    /**
+     * "项目流转后更新提示内容"按钮专用线程池（2026-08-21 新增）：这个操作本身是全表扫描，
+     * 数据量越大越慢，之前是同步执行、直接卡在 HTTP 请求里，前端把这一个接口的超时单独调到
+     * 120 秒都还是报"网络连接超时"（见 api/index.js 里这个调用的 timeout 覆盖），改成异步 +
+     * 前端轮询状态。核心/最大线程数都设成 1——`ProgressReminderService.triggerProjectFlowRecompute()`
+     * 本身就用 AtomicBoolean 保证同一时刻只有一次在跑（`clearCategories()` 先删后插，
+     * 并发跑两次会互相踩踏数据），不需要真正的并发线程，这里设 1 只是给它一个独立的执行
+     * 上下文，不占用/不跟 importTaskExecutor 抢位置。
+     */
+    @Bean("reminderRecomputeTaskExecutor")
+    public Executor reminderRecomputeTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(1);
+        executor.setQueueCapacity(5);
+        executor.setThreadNamePrefix("reminder-recompute-");
+        executor.initialize();
+        return executor;
+    }
 }

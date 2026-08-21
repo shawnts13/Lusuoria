@@ -45,14 +45,30 @@ public class ProgressReminderController {
         return ApiResponse.success(progressReminderService.listForCurrentUser());
     }
 
-    /** "项目流转后更新提示内容"（2026-07 新增）：手动立即重新计算进度滞留/Invoice逾期这3类 */
+    /**
+     * "项目流转后更新提示内容"（2026-07 新增，2026-08-21 改成异步）：这个操作是全表扫描，
+     * 数据量越大越慢，之前同步执行、把这一个接口的前端超时单独调到120秒都还是会超时（见
+     * ProgressReminderService 顶部"异步化"那段说明）。现在改成立刻返回"是否成功触发"，
+     * 真正的计算交给后台线程，前端改成轮询 recompute-project-flow/status 判断有没有跑完，
+     * 跑完后自己重新 GET 一次提醒列表刷新页面——不再像以前那样由这个接口直接把新列表带回来。
+     */
     @PostMapping("/recompute-project-flow")
-    public ApiResponse<List<ProgressReminder>> recomputeProjectFlow() {
+    public ApiResponse<Map<String, Object>> recomputeProjectFlow() {
         if (!progressReminderService.isCurrentUserManagement()) {
             return ApiResponse.error(403, "无权限执行此操作");
         }
-        progressReminderService.runProjectFlowBatches();
-        return ApiResponse.success(progressReminderService.listForCurrentUser());
+        boolean started = progressReminderService.triggerProjectFlowRecompute();
+        Map<String, Object> result = new HashMap<>();
+        // started=false 表示已经有一次在后台跑，没有重复触发——不是失败，前端应该照样进入
+        // "轮询等待"状态，而不是报错
+        result.put("started", started);
+        return ApiResponse.success(result);
+    }
+
+    /** 轮询"项目流转后更新提示内容"这次异步重算的进度（2026-08-21 新增），供按钮点击后前端定时调用 */
+    @GetMapping("/recompute-project-flow/status")
+    public ApiResponse<Map<String, Object>> recomputeProjectFlowStatus() {
+        return ApiResponse.success(progressReminderService.getProjectFlowRecomputeStatus());
     }
 
     /** 登录/进入系统时调用：是否应该弹出"进度提醒"弹窗 */

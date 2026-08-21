@@ -42,6 +42,8 @@ import com.lusuoria.settlement.util.WorkdayUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -175,6 +177,10 @@ public class ProgressReminderService {
     @Autowired private EmployeeCache employeeCache;
     // "项目管理员"角色需求（2026-08-21 新增）：按品牌方反查负责这个品牌方的项目管理员
     @Autowired private com.lusuoria.settlement.config.EmployeeManagedBrandCache employeeManagedBrandCache;
+    // "项目流转后更新提示内容"改异步（2026-08-21 新增）：@Async 方法必须经 Spring 代理调用才会
+    // 真正异步执行，同一个类内部直接 this.xxx() 调用会绕过代理、退化成同步——注入自己的代理引用
+    // 来调用，跟 CollaborationTrackingService.self 是同一个写法
+    @Autowired @Lazy private ProgressReminderService self;
     @Autowired private SysUserRepository sysUserRepo;
     @Autowired private com.lusuoria.settlement.config.SysUserCache sysUserCache;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
@@ -322,6 +328,65 @@ public class ProgressReminderService {
         } catch (RuntimeException e) {
             log.error("进度提醒（结款类）手动重算失败：{}", e.toString(), e);
             throw e;
+        }
+    }
+
+    // ============ "项目流转后更新提示内容"异步化（2026-08-21 新增） ============
+    // runProjectFlowBatches() 本身是全表扫描（trackingRepo.findByIsDeletedFalse()，不限条件），
+    // 数据量只会越来越大；"项目管理员"角色需求上线后，命中品牌方的记录还要多构建一份提醒明细，
+    // 单条记录的处理成本进一步增加。之前是同步跑在 HTTP 请求线程里，前端把这一个接口的超时
+    // 单独调到 120 秒（见 api/index.js）都还是报"网络连接超时"——这不是哪一步查询写错了、
+    // 能靠加个索引解决的问题，是"整张表全量重算"这个操作形状本身注定会越跑越慢，改成异步 +
+    // 前端轮询，参照 Excel 导入（AsyncConfig.importTaskExecutor）的既有模式，但不新增"导入
+    // 历史"那样的独立页面/按钮——只需要"当前有没有在跑、上一次跑完是什么时候/有没有报错"这一份
+    // 全局状态，不需要保留历史多条记录，用一个内存里的单例状态就够（Render 单实例部署，
+    // JVM 内存状态足够覆盖，不需要落库），比照抄 ImportBatch 那一整套持久化机制轻量得多。
+
+    /** 当前是否有一次"项目流转后更新提示内容"正在后台跑（AtomicBoolean 保证并发安全） */
+    private final java.util.concurrent.atomic.AtomicBoolean projectFlowRecomputeRunning =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+    /** 上一次跑完（不管成功/失败）的时间，供前端判断"这次触发是不是真的完成了"（对比触发前的旧值） */
+    private volatile Date projectFlowRecomputeFinishedAt;
+    /** 上一次是否失败、失败原因；成功完成时清空 */
+    private volatile String projectFlowRecomputeError;
+
+    /**
+     * 触发一次异步重算——按钮点击时调用这个方法，立刻返回，不等计算完成。
+     *
+     * @return true 表示这次真的触发了一次新的后台计算；false 表示已经有一次在跑，没有重复
+     *         触发（调用 runProjectFlowBatchesAsync() 前必须先拿到这个原子标志，否则并发点两次
+     *         按钮会导致 clearCategories() 的"先删后插"互相踩踏，产生数据错乱）
+     */
+    public boolean triggerProjectFlowRecompute() {
+        if (!projectFlowRecomputeRunning.compareAndSet(false, true)) {
+            return false;
+        }
+        projectFlowRecomputeError = null;
+        // 必须经 self 代理调用，@Async 才会真正在后台线程执行，见类字段 self 的注释
+        self.runProjectFlowBatchesAsync();
+        return true;
+    }
+
+    /** 供前端轮询："项目流转后更新提示内容"这次异步重算是不是还在跑、上次跑完的结果如何 */
+    public Map<String, Object> getProjectFlowRecomputeStatus() {
+        Map<String, Object> result = new HashMap<>();
+        result.put("running", projectFlowRecomputeRunning.get());
+        result.put("finishedAt", projectFlowRecomputeFinishedAt);
+        result.put("error", projectFlowRecomputeError);
+        return result;
+    }
+
+    /** runProjectFlowBatches() 的异步包装：捕获异常记到 projectFlowRecomputeError（不能让
+     *  后台线程的异常直接吞掉、前端却一直显示"运行中"），finally 里保证运行标志一定会被清掉 */
+    @Async("reminderRecomputeTaskExecutor")
+    public void runProjectFlowBatchesAsync() {
+        try {
+            runProjectFlowBatches();
+        } catch (RuntimeException e) {
+            projectFlowRecomputeError = e.getMessage() != null ? e.getMessage() : "重新计算失败，请联系技术支持";
+        } finally {
+            projectFlowRecomputeFinishedAt = new Date();
+            projectFlowRecomputeRunning.set(false);
         }
     }
 
