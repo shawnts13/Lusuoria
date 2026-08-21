@@ -122,6 +122,22 @@ public class InfluencerRequirement extends BaseEntity {
     private String contractLink;
 
     /**
+     * 该需求是否已经跟管理层确认"不涉及合同"（2026-08-21 新增，仅对"每次需求签一次合同"的
+     * 品牌方/团队有意义）。由 InfluencerRequirementService.confirmContractNotApplicable()
+     * 写入，无需管理层审核（直接生效）——跟 CollaborationTracking.executorCostNotApplicable
+     * 是同一类"确认不适用"标记。置为 true 后：
+     *   - 前端"合同链接"列不再显示"—"，改显示"已跟管理层确认此需求不涉及合同"；
+     *   - "待处理-合同上传逾期"（REQUIREMENT_CONTRACT_OVERDUE）批次不会再把这条需求算进候选，
+     *     见 ProgressReminderService.runRequirementContractOverdue()。
+     * 后续如果真的上传了合同链接（uploadContractLink()），这个标记会被自动清回 false——
+     * 一条需求不可能同时"已上传合同"又"确认不涉及合同"。用包装类型 Boolean 而不是 boolean：
+     * ddl-auto=update 给存量行新增这一列时是数据库层 NULL，用基本类型 boolean 读到 NULL
+     * 会直接抛异常，这里统一按"NULL 等同 false（未确认）"处理。
+     */
+    @Column(name = "contract_not_applicable")
+    private Boolean contractNotApplicable;
+
+    /**
      * 需求完成进度达到100%（completedCount >= totalItemCount）那一刻的时间（2026-07 新增，
      * 供"Invoice逾期"提醒批次计算"完成后第几个工作日还没上传invoice"）。如果后续某条关联的
      * 合作跟踪记录被"进度倒退"审批通过、导致完成数重新低于总数，这个字段会被清空。由

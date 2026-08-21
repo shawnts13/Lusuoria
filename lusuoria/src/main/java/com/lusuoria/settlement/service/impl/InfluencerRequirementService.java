@@ -637,6 +637,10 @@ public class InfluencerRequirementService {
             InfluencerTeam team = r.getTeamId() != null ? teamCache.findById(r.getTeamId()) : null;
             if (InfluencerTeam.isPerRequirementContract(brand, team)) {
                 if (r.getContractLink() != null && !r.getContractLink().trim().isEmpty()) continue;
+                // 2026-08-21 新增：已经"确认不涉及合同"的需求不算"未上传合同"，跟
+                // REQUIREMENT_CONTRACT_OVERDUE 提醒批次排除候选的口径保持一致，见
+                // InfluencerRequirementService.confirmContractNotApplicable()
+                if (Boolean.TRUE.equals(r.getContractNotApplicable())) continue;
             } else {
                 List<TeamContract> contracts = contractsByBrandTeam.getOrDefault(
                         brandTeamKey(r.getBrandId(), r.getTeamId()), Collections.emptyList());
@@ -1362,6 +1366,33 @@ public class InfluencerRequirementService {
         }
 
         requirement.setContractLink(contractLink);
+        // 2026-08-21 新增：真的上传了合同链接，之前"确认不涉及合同"的标记就不再成立了，
+        // 顺手清掉——一条需求不可能同时"已上传合同"又"确认不涉及合同"
+        requirement.setContractNotApplicable(false);
+        return requirementRepo.save(requirement);
+    }
+
+    /**
+     * "确认该需求不涉及合同"（2026-08-21 新增，Shawn 要求）：只针对"每次需求签一次合同"的
+     * 品牌方/团队（跟 uploadContractLink() 同一条前置校验），无需管理层审核，点击即直接生效。
+     * 已经上传过合同链接的需求不允许标记（语义矛盾：既然已经有合同链接，就不该是"不涉及合同"），
+     * 提示改走"上传合同"更新链接。
+     */
+    @Transactional
+    public InfluencerRequirement confirmContractNotApplicable(Long requirementId) {
+        InfluencerRequirement requirement = requirementRepo.findByIdAndIsDeletedFalse(requirementId)
+                .orElseThrow(() -> new RuntimeException("需求记录不存在：" + requirementId));
+
+        Brand brand = requirement.getBrandId() != null ? brandCache.findById(requirement.getBrandId()) : null;
+        InfluencerTeam team = requirement.getTeamId() != null ? teamCache.findById(requirement.getTeamId()) : null;
+        if (!InfluencerTeam.isPerRequirementContract(brand, team)) {
+            throw new RuntimeException("该品牌方/团队是一年签一次合同，请在\"品牌方/红人团队管理\"-\"管理团队\"处上传");
+        }
+        if (requirement.getContractLink() != null && !requirement.getContractLink().trim().isEmpty()) {
+            throw new RuntimeException("该需求已经上传了合同链接，如需更正请直接更新合同链接，不需要标记为不涉及合同");
+        }
+
+        requirement.setContractNotApplicable(true);
         return requirementRepo.save(requirement);
     }
 

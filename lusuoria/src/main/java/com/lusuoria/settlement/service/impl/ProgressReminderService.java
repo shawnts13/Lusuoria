@@ -1051,10 +1051,17 @@ public class ProgressReminderService {
      * 不做这类提醒（那种场景改由团队级维护年度合同，不是每个需求单独催，见
      * runContractExpiringSoon）。阈值14工作日，分组/归类逻辑完全跟 Part E（Invoice逾期）一致，
      * 按需求关联的合作跟踪记录的项目负责人归类。
+     *
+     * 2026-08-21 新增：已经"确认不涉及合同"（contractNotApplicable=true，见
+     * InfluencerRequirementService.confirmContractNotApplicable()）的需求排除在候选之外——
+     * 既然已经跟管理层确认过不涉及合同，就不该继续被这个批次催。候选量本身不大（已完成但
+     * 还没上传合同的需求），直接在内存里过滤一次即可，不用另外写一条 repository 查询方法。
      */
     private void runRequirementContractOverdue(LocalDate today, Date batchDate) {
         List<InfluencerRequirement> candidates =
-                requirementRepo.findByIsDeletedFalseAndCompletedAtIsNotNullAndContractLinkIsNull();
+                requirementRepo.findByIsDeletedFalseAndCompletedAtIsNotNullAndContractLinkIsNull().stream()
+                        .filter(r -> !Boolean.TRUE.equals(r.getContractNotApplicable()))
+                        .collect(Collectors.toList());
         if (candidates.isEmpty()) return;
 
         // 2026-08-16 修复：同 runRequirementInvoiceOverdue 的说明——之前逐条需求查一次关联的

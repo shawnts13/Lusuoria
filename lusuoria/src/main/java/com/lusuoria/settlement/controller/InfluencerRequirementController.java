@@ -18,7 +18,9 @@ import com.lusuoria.settlement.excel.InfluencerRequirementExcelHandler;
 import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
 import com.lusuoria.settlement.repository.PendingApprovalRepository;
 import com.lusuoria.settlement.service.impl.InfluencerRequirementService;
+import com.lusuoria.settlement.util.EmployeeRoleUtil;
 import com.lusuoria.settlement.util.PaymentAccessUtil;
+import com.lusuoria.settlement.util.RoleUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -47,6 +49,7 @@ public class InfluencerRequirementController {
     @Autowired private InfluencerRequirementExcelHandler excelHandler;
     @Autowired private PaymentAccessUtil paymentAccessUtil;
     @Autowired private PendingApprovalRepository pendingApprovalRepo;
+    @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
     /**
      * 红人需求管理列表页主查询——5个互斥快速筛选开关（未完成/未实施完/未传invoice/未传合同/
@@ -247,12 +250,41 @@ public class InfluencerRequirementController {
      * 上传/修改合同链接：只针对品牌方"每次需求签一次合同"的场景，一年签一次合同的品牌方
      * 后端会拒绝（前端按钮正常情况下也不会出现，这里是兜底），见
      * InfluencerRequirementService.uploadContractLink()。
+     *
+     * 2026-08-21 起额外放行员工角色="法务"的账号：法务通常是 SysUser 角色 AUDITOR（"全字段
+     * 只读+导出"），原来 @PreAuthorize 只放行 ADMIN/STAFF，AUDITOR 会被直接 403 挡在外面。
+     * 这里放宽成 AUDITOR 也能过注解这一关，再在方法体里用 canManageTeamContracts() 精确校验——
+     * 跟"品牌方/红人团队管理"维护团队级合同用的是同一个权限判定（EmployeeRoleUtil.
+     * canManageTeamContracts()：项目负责人/执行人员/法务/管理层/IT后勤，不含财务），
+     * Shawn 要求两处上传合同的入口权限保持一致。STAFF 账号不受这条限制约束——沿用原有口径，
+     * 任何 STAFF 都能操作这个接口，不额外收紧。
      */
     @PostMapping("/{id}/contract-link")
-    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF','AUDITOR')")
     public ApiResponse<InfluencerRequirement> uploadContractLink(
             @PathVariable Long id, @Valid @RequestBody ContractLinkRequest req) {
+        assertCanManageContractsForAuditor();
         return ApiResponse.success(requirementService.uploadContractLink(id, req.getContractLink()));
+    }
+
+    /**
+     * "确认该需求不涉及合同"（2026-08-21 新增，Shawn 要求）：无需管理层审核，点击即直接生效，
+     * 权限口径完全跟上面 uploadContractLink() 一致（同一批"谁能管合同"的角色）。
+     */
+    @PostMapping("/{id}/contract-not-applicable")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF','AUDITOR')")
+    public ApiResponse<InfluencerRequirement> confirmContractNotApplicable(@PathVariable Long id) {
+        assertCanManageContractsForAuditor();
+        return ApiResponse.success(requirementService.confirmContractNotApplicable(id));
+    }
+
+    /** AUDITOR 档位调这两个"合同"接口时，必须是 EmployeeRoleUtil.canManageTeamContracts() 允许的
+     *  员工角色（法务等）——不能只凭"SysUser 角色是 AUDITOR"放行，AUDITOR 也可能是财务这类不该
+     *  管合同的只读岗位。STAFF/ADMIN 不受这条限制，直接放行（沿用原有口径）。 */
+    private void assertCanManageContractsForAuditor() {
+        if ("AUDITOR".equals(RoleUtil.getCurrentRole()) && !employeeRoleUtil.canManageTeamContracts()) {
+            throw new RuntimeException("无权限执行此操作");
+        }
     }
 
     /** 需求导出 Excel，筛选条件跟 list() 保持一致（含5个快速筛选开关），导出的是当前筛选结果 */

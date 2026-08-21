@@ -186,15 +186,17 @@ public class InfluencerRequirementExcelHandler {
 
     /**
      * "合同链接"列文案，逻辑跟前端 RequirementListPage.vue 的 contractCellState() 保持一致：
-     * 品牌方/团队是"每次需求签一次合同"时看需求自己的 contractLink；是"一年签一次合同"时
-     * 按 (品牌方,团队,需求月份) 去匹配"品牌方/红人团队管理"里维护的团队级合同，匹配上展示
-     * 那条合同的链接，没匹配上展示引导文案（Excel 场景下是只读查看，所以文案用"查看"而不是
-     * 前端那句"上传"）。
+     * 品牌方/团队是"每次需求签一次合同"时看需求自己的 contractLink（2026-08-21 新增：还没上传
+     * 但已经"确认不涉及合同"的，展示回显文案而不是空字符串）；是"一年签一次合同"时按(品牌方,
+     * 团队,需求月份) 去匹配"品牌方/红人团队管理"里维护的团队级合同，匹配上展示那条合同的链接，
+     * 没匹配上展示引导文案（Excel 场景下是只读查看，所以文案用"查看"而不是前端那句"上传"）。
      */
     private String contractCell(InfluencerRequirement r, Brand brand, InfluencerTeam team,
                                  Map<String, List<TeamContract>> contractsByBrandTeam) {
         if (InfluencerTeam.isPerRequirementContract(brand, team)) {
-            return r.getContractLink() != null ? r.getContractLink() : "";
+            if (r.getContractLink() != null) return r.getContractLink();
+            if (Boolean.TRUE.equals(r.getContractNotApplicable())) return "已跟管理层确认此需求不涉及合同";
+            return "";
         }
         List<TeamContract> contracts = contractsByBrandTeam.getOrDefault(
                 brandTeamKey(r.getBrandId(), r.getTeamId()), Collections.emptyList());
