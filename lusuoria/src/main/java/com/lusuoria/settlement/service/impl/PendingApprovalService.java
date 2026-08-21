@@ -13,6 +13,7 @@ import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.ExchangeRateCacheRepository;
 import com.lusuoria.settlement.repository.InfluencerRequirementRepository;
 import com.lusuoria.settlement.repository.PendingApprovalRepository;
+import com.lusuoria.settlement.util.EmployeeRoleUtil;
 import com.lusuoria.settlement.util.MultiValueUtil;
 import com.lusuoria.settlement.util.ProfitCalculator;
 import com.lusuoria.settlement.util.RoleUtil;
@@ -63,6 +64,10 @@ public class PendingApprovalService {
     @Autowired private ProfitCalculator profitCalculator;
     @Autowired private ExchangeRateCacheRepository exchangeRateCacheRepo;
     @Autowired private com.lusuoria.settlement.config.ExchangeRateLookupCache rateLookupCache;
+    // "项目管理员"角色需求（2026-08-21 新增）：判断当前登录人是不是项目管理员、他负责哪些品牌方
+    @Autowired private EmployeeRoleUtil employeeRoleUtil;
+    @Autowired private com.lusuoria.settlement.config.EmployeeCache employeeCache;
+    @Autowired private com.lusuoria.settlement.config.EmployeeManagedBrandCache employeeManagedBrandCache;
 
     /**
      * 发起删除申请。如果这条记录已经有一条"待审核"的删除申请，直接复用（不重复创建）。
@@ -105,6 +110,8 @@ public class PendingApprovalService {
         trackingRepo.findByIdAndIsDeletedFalse(trackingId).ifPresent(t -> {
             p.setTargetProjectManagerId(t.getProjectManagerId());
             p.setTargetExecutorId(t.getExecutorId());
+            // 2026-08-21 新增：一并快照品牌方 id，供"项目管理员"角色的可见性/审核权限判断用
+            p.setTargetBrandId(t.getBrandId());
         });
     }
 
@@ -213,10 +220,22 @@ public class PendingApprovalService {
         return pendingApprovalRepo.findPendingTargetIds(module, PendingApprovalCategory.EXECUTOR_COST_MODIFY);
     }
 
-    /** "待处理"模块列表页：按分类（删除申请/进度倒退/执行成本修改）分页查待审核记录 */
+    /**
+     * "待处理"模块列表页：按分类（删除申请/进度倒退/执行成本修改）分页查待审核记录。
+     * 2026-08-21 新增"项目管理员"视角：ADMIN 看完整队列（不变）；不是 ADMIN 但是"项目管理员"
+     * 的，只看自己负责管理的品牌方范围内的记录（走 findPendingForBrands()）；都不是的账号
+     * 走到这里说明 Controller 层的 @PreAuthorize 放宽后没有兜底——理论上不会发生，这里
+     * 防御性地按"项目管理员但没配置任何品牌方"同等对待，返回空 Page，不抛异常（Controller
+     * 层的 @PreAuthorize("hasAnyRole('ADMIN','STAFF')") 已经挡掉了访客/无关角色，剩下的
+     * STAFF 账号里只有"项目管理员"这一种会调这个接口，其余角色前端根本不会展示这个入口）。
+     */
     @Transactional(readOnly = true)
     public Page<PendingApproval> listPending(PendingApprovalCategory category, Pageable pageable) {
-        return pendingApprovalRepo.findPending(category, pageable);
+        if (RoleUtil.isAdmin()) return pendingApprovalRepo.findPending(category, pageable);
+        // 调用 EmployeeManagedBrandCache 拿当前登录人（若是项目管理员）负责管理的品牌方范围
+        java.util.Set<Long> managedBrandIds = employeeRoleUtil.getCurrentEmployeeManagedBrandIds();
+        if (managedBrandIds.isEmpty()) return Page.empty(pageable);
+        return pendingApprovalRepo.findPendingForBrands(category, new ArrayList<>(managedBrandIds), pageable);
     }
 
     /**
@@ -230,19 +249,42 @@ public class PendingApprovalService {
     }
 
     /**
-     * 谁能审核这条待处理事项：DELETE_REQUEST/PROGRESS_ROLLBACK 只有 ADMIN 能处理（沿用原规则）；
-     * EXECUTOR_COST_MODIFY 只有该记录的项目负责人本人能处理，ADMIN 不能代替
-     * （2026-07 新增，跟"设置执行成本"本身"管理层提交修改也要走审核、不享受直接生效特权"
-     * 这条规则保持一致——审核权同样不给管理层/ADMIN 兜底）。
+     * 谁能审核这条待处理事项：DELETE_REQUEST/PROGRESS_ROLLBACK 原来只有 ADMIN 能处理；
+     * EXECUTOR_COST_MODIFY 只有该记录的项目负责人本人能处理，ADMIN 不能代替（2026-07 新增，
+     * 跟"设置执行成本"本身"管理层提交修改也要走审核、不享受直接生效特权"这条规则保持一致——
+     * 审核权同样不给管理层/ADMIN 兜底）。
+     *
+     * 2026-08-21 新增"项目管理员"：不管哪个类别，只要这条事项的品牌方在他负责管理的范围内，
+     * 都可以独立审核，不需要 ADMIN 事后再签字确认——Shawn 明确要求"项目管理员设置的初衷就是
+     * 分摊Admin的部分责任"，所以是完整的独立审核权，不是"建议权"。EXECUTOR_COST_MODIFY 这类
+     * 项目负责人本人已经能审核了，项目管理员是*额外*放开的一条通道（比如项目负责人本人休假时，
+     * 负责这个品牌方的项目管理员可以代为处理），两条通道任一满足即可。
      */
     private void assertCanResolve(PendingApproval p, Long currentEmployeeId) {
-        if (p.getCategory() == PendingApprovalCategory.EXECUTOR_COST_MODIFY) {
-            if (currentEmployeeId == null || !currentEmployeeId.equals(p.getTargetProjectManagerId())) {
-                throw new RuntimeException("只有该记录的项目负责人本人可以审核这条内部执行成本修改申请");
-            }
-        } else if (!RoleUtil.isAdmin()) {
-            throw new RuntimeException("无权限处理这条待处理事项");
+        if (p.getCategory() == PendingApprovalCategory.EXECUTOR_COST_MODIFY
+                && currentEmployeeId != null && currentEmployeeId.equals(p.getTargetProjectManagerId())) {
+            return;
         }
+        if (p.getCategory() != PendingApprovalCategory.EXECUTOR_COST_MODIFY && RoleUtil.isAdmin()) {
+            return;
+        }
+        if (canResolveAsProjectAdmin(p, currentEmployeeId)) return;
+        String msg = p.getCategory() == PendingApprovalCategory.EXECUTOR_COST_MODIFY
+                ? "只有该记录的项目负责人本人（或负责该品牌方的项目管理员）可以审核这条内部执行成本修改申请"
+                : "无权限处理这条待处理事项";
+        throw new RuntimeException(msg);
+    }
+
+    /**
+     * 项目管理员是否可以审核这条待处理事项：当前登录人是"项目管理员"身份，且这条事项的品牌方
+     * （targetBrandId，发起时快照下来的）在他负责管理的范围内。targetBrandId 为空（2026-08-21
+     * 之前创建的历史待审核记录，没有这个字段）一律不放行，只能走 ADMIN/项目负责人本人这两条
+     * 原有通道——见 PendingApproval.targetBrandId 字段注释。
+     */
+    private boolean canResolveAsProjectAdmin(PendingApproval p, Long currentEmployeeId) {
+        if (currentEmployeeId == null || p.getTargetBrandId() == null) return false;
+        if (!employeeRoleUtil.isProjectAdmin(employeeCache.findById(currentEmployeeId))) return false;
+        return employeeManagedBrandCache.manages(currentEmployeeId, p.getTargetBrandId());
     }
 
     /** 同意：按类别真正执行对应的改动 */

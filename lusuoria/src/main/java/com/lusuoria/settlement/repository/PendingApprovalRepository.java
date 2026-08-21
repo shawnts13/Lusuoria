@@ -37,6 +37,23 @@ public interface PendingApprovalRepository extends JpaRepository<PendingApproval
     Page<PendingApproval> findPending(@Param("category") PendingApprovalCategory category, Pageable pageable);
 
     /**
+     * "项目管理员"视角的待审核队列（2026-08-21 新增）：只看品牌方在自己负责范围内的记录。
+     * brandIds 由调用方保证非空（PendingApprovalService.listPending() 里没有品牌方时直接
+     * 返回空 Page，不会走到这条查询），所以这里不需要像 CollaborationTrackingRepository
+     * 那样为"list 可能为空/null"额外加 CollaborationFilterUtil 那套 xxxActive 占位符规避
+     * Hibernate 经典解析器 "unexpected AST node" 的 bug——那个 bug 的触发条件是"同一个参数
+     * 既被 IS NULL 判断、又被 IN 使用"，这里 brandIds 只参与 IN，从不参与 IS NULL 判断，
+     * category 才参与 IS NULL 判断且只用 = 比较（不是 IN），两者是不同参数，不属于同一类风险。
+     */
+    @Query("SELECT p FROM PendingApproval p " +
+           "WHERE p.status = 'PENDING' " +
+           "AND (:category IS NULL OR p.category = :category) " +
+           "AND p.targetBrandId IN :brandIds " +
+           "ORDER BY p.createdAt DESC")
+    Page<PendingApproval> findPendingForBrands(@Param("category") PendingApprovalCategory category,
+                                                 @Param("brandIds") List<Long> brandIds, Pageable pageable);
+
+    /**
      * 批量查询：某个模块下、某个类别，哪些记录当前有"待审核"事项
      * （用于列表页批量标记"审核中"，避免逐行查库）。
      */

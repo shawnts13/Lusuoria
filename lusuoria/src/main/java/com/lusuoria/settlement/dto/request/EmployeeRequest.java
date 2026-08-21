@@ -30,6 +30,18 @@ public class EmployeeRequest {
     // 财务 / IT后勤：固定月薪（人民币）
     private BigDecimal fixedMonthlySalary;
 
+    /** 是否同时具备"项目管理员"身份，只有 role=项目负责人 时前端才会展示这个开关，由后端兜底校验 */
+    private Boolean isProjectAdmin;
+
+    /** 成为项目管理员的时间，isProjectAdmin=true 时必填 */
+    private Date projectAdminSince;
+
+    /** 项目管理员固定月薪（人民币），isProjectAdmin=true 时必填 */
+    private BigDecimal projectAdminFixedMonthlySalary;
+
+    /** 项目管理员负责管理的品牌方 id 列表，可以为空（先开通身份、品牌方后续再配） */
+    private List<Long> managedBrandIds;
+
     private String notes;
 
     @Data

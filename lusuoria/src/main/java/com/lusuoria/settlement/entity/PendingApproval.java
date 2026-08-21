@@ -23,6 +23,8 @@ import java.util.Date;
         @Index(name = "idx_pa_target_lookup", columnList = "target_module, target_id, category, status"),
         // 覆盖 findPending（status 必筛，category 可选，按 createdAt 倒序）
         @Index(name = "idx_pa_status_category", columnList = "status, category"),
+        // 覆盖 findPendingForBrands（"项目管理员"按品牌方范围过滤待审核队列，2026-08-21 新增）
+        @Index(name = "idx_pa_target_brand_id", columnList = "target_brand_id"),
         // 覆盖 findResolvedForEmployee / findMyApprovalQueue 里按负责人/执行人员过滤
         @Index(name = "idx_pa_project_manager_id", columnList = "target_project_manager_id"),
         @Index(name = "idx_pa_executor_id", columnList = "target_executor_id")
@@ -98,6 +100,17 @@ public class PendingApproval extends BaseEntity {
 
     @Column(name = "target_executor_id")
     private Long targetExecutorId;
+
+    /**
+     * 目标记录的品牌方 id（2026-08-21 新增，"项目管理员"角色需求）：跟 snapshotOwner() 快照
+     * targetProjectManagerId/targetExecutorId 是同一个思路——发起那一刻快照下来，供"项目管理员"
+     * 按自己负责管理的品牌方范围过滤待审核队列/校验能否审核用（见 PendingApprovalService
+     * 的 canResolveAsProjectAdmin()/listPending()）。这个字段是 2026-08-21 才加的，
+     * 在此之前创建的历史待审核记录这个字段是空的——项目管理员看不到、也不能审核这些历史记录
+     * （只能走 ADMIN），不做历史数据回填。
+     */
+    @Column(name = "target_brand_id")
+    private Long targetBrandId;
 
     /**
      * 已经点过"确认删除"的员工 id，换行分隔（沿用系统"多值单列文本"的既有约定，

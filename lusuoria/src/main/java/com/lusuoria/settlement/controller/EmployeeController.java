@@ -1,13 +1,17 @@
 package com.lusuoria.settlement.controller;
 
+import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.config.EmployeeCache;
+import com.lusuoria.settlement.config.EmployeeManagedBrandCache;
 import com.lusuoria.settlement.dto.request.EmployeeRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.entity.CommissionBonusTier;
 import com.lusuoria.settlement.entity.Employee;
+import com.lusuoria.settlement.entity.EmployeeManagedBrand;
 import com.lusuoria.settlement.entity.ExecutorPayRateTier;
 import com.lusuoria.settlement.excel.EmployeeExcelHandler;
 import com.lusuoria.settlement.repository.CommissionBonusTierRepository;
+import com.lusuoria.settlement.repository.EmployeeManagedBrandRepository;
 import com.lusuoria.settlement.repository.EmployeeRepository;
 import com.lusuoria.settlement.repository.ExecutorPayRateTierRepository;
 import com.lusuoria.settlement.util.EmployeeRoleUtil;
@@ -23,6 +27,7 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -42,6 +47,10 @@ public class EmployeeController {
     @Autowired private ExecutorPayRateTierRepository executorPayRateTierRepo;
     @Autowired private com.lusuoria.settlement.config.ExecutorPayRateTierCache executorPayRateTierCache;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
+    // "项目管理员"角色需求（2026-08-21 新增）：负责管理的品牌方
+    @Autowired private EmployeeManagedBrandRepository employeeManagedBrandRepo;
+    @Autowired private EmployeeManagedBrandCache employeeManagedBrandCache;
+    @Autowired private BrandCache brandCache;
 
     /** 获取员工列表（完全走缓存） */
     @GetMapping
@@ -90,6 +99,28 @@ public class EmployeeController {
         for (Long id : employeeIds) {
             List<CommissionBonusTier> tiers = bonusTierCache.find(id);
             if (!tiers.isEmpty()) result.put(id, tiers);
+        }
+        return ApiResponse.success(result);
+    }
+
+    /**
+     * 某个项目管理员负责的品牌方 id 列表（编辑表单打开时调用，回显已配置的品牌方），完全走缓存。
+     * 品牌方名称不在这里解析——前端本身已经有全量品牌方列表（下拉选项数据），拿 id 在前端本地
+     * 映射即可，不需要后端多返回一份重复信息，跟 bonus-tiers 只返回原始档位、由前端拼文案是
+     * 同一个思路。
+     */
+    @GetMapping("/{id}/managed-brands")
+    public ApiResponse<List<Long>> getManagedBrands(@PathVariable Long id) {
+        return ApiResponse.success(new ArrayList<>(employeeManagedBrandCache.findBrandIdsByEmployeeId(id)));
+    }
+
+    /** 批量按员工 id 取负责的品牌方，供"员工管理"列表页展示"项目管理员"标签的 tooltip/详情用，避免逐行调用 by-id 接口 */
+    @GetMapping("/managed-brands")
+    public ApiResponse<Map<Long, List<Long>>> getManagedBrandsBulk(@RequestParam List<Long> employeeIds) {
+        Map<Long, List<Long>> result = new HashMap<>();
+        for (Long id : employeeIds) {
+            Set<Long> brandIds = employeeManagedBrandCache.findBrandIdsByEmployeeId(id);
+            if (!brandIds.isEmpty()) result.put(id, new ArrayList<>(brandIds));
         }
         return ApiResponse.success(result);
     }
@@ -176,9 +207,66 @@ public class EmployeeController {
             employee.setBonusTierCurrency(null);
         }
 
+        // "项目管理员"身份（2026-08-21 新增）：正交叠加在 role 之上的一个独立属性，不是 role
+        // 的一个取值——只允许叠加在"项目负责人"角色上（Shawn 明确要求），管理层不允许（管理层
+        // 本身已经包含这些权限，不需要也不应该再叠加）。关闭开关、或角色不是项目负责人时，
+        // 三个相关字段全部清空，防止脏数据残留，跟上面薪资字段按角色分组维护是同一个思路。
+        boolean wantsProjectAdmin = Boolean.TRUE.equals(req.getIsProjectAdmin());
+        if (wantsProjectAdmin && !"项目负责人".equals(role)) {
+            throw new RuntimeException("\"项目管理员\"身份只能叠加在\"项目负责人\"角色上");
+        }
+        if (wantsProjectAdmin) {
+            if (req.getProjectAdminSince() == null) {
+                throw new RuntimeException("请填写\"成为项目管理员的时间\"");
+            }
+            if (req.getProjectAdminFixedMonthlySalary() == null) {
+                throw new RuntimeException("请填写\"项目管理员固定月薪\"");
+            }
+            employee.setProjectAdminSince(req.getProjectAdminSince());
+            employee.setProjectAdminFixedMonthlySalary(req.getProjectAdminFixedMonthlySalary());
+        } else {
+            employee.setProjectAdminSince(null);
+            employee.setProjectAdminFixedMonthlySalary(null);
+        }
+
         employee.setNotes(req.getNotes());
 
         Employee saved = employeeRepo.save(employee);
+
+        // 负责管理的品牌方（仅"项目管理员"维护）：getOrCreate 式整理——复用已软删的旧关联而不是
+        // 硬删重插（避免历史记录被清空、也避免撞 (employee_id, brand_id) 这类潜在唯一约束），
+        // 不再需要的关联软删掉；不是项目管理员时视为"负责的品牌方清空"，把现存关联全部软删
+        List<EmployeeManagedBrand> existingLinks = employeeManagedBrandRepo.findByEmployeeId(saved.getId());
+        Set<Long> requestedBrandIds = wantsProjectAdmin && req.getManagedBrandIds() != null
+                ? new HashSet<>(req.getManagedBrandIds()) : Collections.emptySet();
+        for (Long brandId : requestedBrandIds) {
+            if (brandCache.findById(brandId) == null) throw new RuntimeException("品牌方不存在：" + brandId);
+        }
+        Set<Long> keptBrandIds = new HashSet<>();
+        for (EmployeeManagedBrand link : existingLinks) {
+            boolean shouldExist = requestedBrandIds.contains(link.getBrandId());
+            if (shouldExist) {
+                keptBrandIds.add(link.getBrandId());
+                if (Boolean.TRUE.equals(link.getIsDeleted())) {
+                    link.setIsDeleted(false);
+                    employeeManagedBrandRepo.save(link);
+                }
+            } else if (!Boolean.TRUE.equals(link.getIsDeleted())) {
+                link.setIsDeleted(true);
+                employeeManagedBrandRepo.save(link);
+            }
+        }
+        for (Long brandId : requestedBrandIds) {
+            if (!keptBrandIds.contains(brandId)) {
+                // isDeleted 是 BaseEntity（父类）字段，Lombok @Builder 不会给父类字段生成
+                // builder 方法（不是 @SuperBuilder），只能 build() 完之后单独 set
+                EmployeeManagedBrand link = EmployeeManagedBrand.builder()
+                        .employeeId(saved.getId()).brandId(brandId).build();
+                link.setIsDeleted(false);
+                employeeManagedBrandRepo.save(link);
+            }
+        }
+        employeeManagedBrandCache.refresh();
 
         // bonus 阶梯：仅项目负责人/管理层维护，先删后插整批替换；非本角色一律清空阶梯配置
         bonusTierRepo.deleteByEmployeeId(saved.getId());
@@ -238,7 +326,23 @@ public class EmployeeController {
             }
         }
 
-        excelHandler.export(list, bonusTiersByEmployeeId, executorRatesByExecutorId, response);
+        // 项目管理员负责管理的品牌方名称（2026-08-21 新增）：走缓存拿 brandId 集合，
+        // 再逐个 brandId 用 BrandCache.findById() 查名称拼成逗号分隔的字符串，只对
+        // projectAdminSince 不为空的员工才有意义，其余员工不用查
+        Map<Long, String> managedBrandNamesByEmployeeId = new HashMap<>();
+        for (Employee e : list) {
+            if (e.getProjectAdminSince() == null) continue;
+            List<String> names = employeeManagedBrandCache.findBrandIdsByEmployeeId(e.getId()).stream()
+                    .map(brandId -> {
+                        com.lusuoria.settlement.entity.Brand b = brandCache.findById(brandId);
+                        return b != null ? b.getName() : null;
+                    })
+                    .filter(java.util.Objects::nonNull)
+                    .collect(Collectors.toList());
+            if (!names.isEmpty()) managedBrandNamesByEmployeeId.put(e.getId(), String.join("、", names));
+        }
+
+        excelHandler.export(list, bonusTiersByEmployeeId, executorRatesByExecutorId, managedBrandNamesByEmployeeId, response);
     }
 
     /** 软删除员工，写完刷新 EmployeeCache；权限同 save()，见 assertCanManageEmployees() */

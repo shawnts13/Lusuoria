@@ -119,7 +119,8 @@ public class DashboardStatsService {
         // 维护的是"月薪"，这里就是这一个月的固定支出）+ 法务当月的工资（管理层每月手动在
         // "工资单"模块设置，不是固定月薪，设置了就计入，没设置就是0），都要从公司利润里扣掉
         BigDecimal totalOtherStaffCostRmb = otherStaffCostRmb(java.util.Collections.singletonList(yearMonth))
-                .add(legalStaffCostRmb(yearMonth, yearMonth));
+                .add(legalStaffCostRmb(yearMonth, yearMonth))
+                .add(projectAdminCostRmb(java.util.Collections.singletonList(yearMonth)));
         BigDecimal totalOtherStaffCostUsd = (rate != null && rate.compareTo(BigDecimal.ZERO) > 0)
                 ? totalOtherStaffCostRmb.divide(rate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
         totalCompanyProfit = totalCompanyProfit.subtract(totalOtherStaffCostUsd);
@@ -218,7 +219,8 @@ public class DashboardStatsService {
         ExchangeRateInfo rateInfo = exchangeRateService.getRateForMonth(endMonth);
         BigDecimal rate = rateInfo.getUsdToCny();
 
-        BigDecimal totalOtherStaffCostRmb = otherStaffCostRmb(touchedMonths).add(legalStaffCostRmb(startMonth, endMonth));
+        BigDecimal totalOtherStaffCostRmb = otherStaffCostRmb(touchedMonths).add(legalStaffCostRmb(startMonth, endMonth))
+                .add(projectAdminCostRmb(touchedMonths));
         BigDecimal totalOtherStaffCostUsd = (rate != null && rate.compareTo(BigDecimal.ZERO) > 0)
                 ? totalOtherStaffCostRmb.divide(rate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
         totalCompanyProfit = totalCompanyProfit.subtract(totalOtherStaffCostUsd);
@@ -387,6 +389,46 @@ public class DashboardStatsService {
     }
 
     /**
+     * "项目管理员"固定月薪合计（人民币，2026-08-21 新增）——第三个"内部其他员工成本"贡献项，
+     * 跟财务/IT后勤固定月薪、法务当月工资并列（都要从公司利润里扣掉）。取数方式仿
+     * tierBonusTotalUsd()：只统计 finalConfirmed=true 的 Payslip 快照（detailJson 里的
+     * projectAdminSalaryRmb，PayslipService.computeProjectManager() 写入，人民币原值，不需要
+     * 按汇率换算），逐月累加（跟 otherStaffCostRmb()/legalStaffCostRmb() 一样是"按月份列表求和"
+     * 的思路，不是"当前值 × 月份数"——项目管理员固定月薪本身可能中途变过，必须逐月读各自那个
+     * 月份确认时冻结的快照值，不能用现在的 Employee.projectAdminFixedMonthlySalary 现值回填
+     * 历史月份）。
+     *
+     * 这里跟 PayslipService.computeManagement() 里同样读 projectAdminSalaryRmb 的那段逻辑是
+     * 两份独立实现（历史上 tierBonusAmount/法务工资都各自出过一次"两边公式漏算导致对不上"的
+     * bug，见 payslip_dashboard_profit_mismatch 记忆），这里刻意保持跟 PayslipService 那边
+     * 完全相同的判断条件（finalConfirmed + 直接读快照原值不做转换），降低再次跑偏的风险。
+     */
+    private BigDecimal projectAdminCostRmb(List<String> months) {
+        BigDecimal sum = BigDecimal.ZERO;
+        for (BigDecimal v : projectAdminCostRmbByEmployee(months).values()) sum = sum.add(v);
+        return sum;
+    }
+
+    /** projectAdminCostRmb() 的按人拆分版本，供 drilldownOtherStaffCost() 复用，避免两份重复的解析逻辑 */
+    private Map<Long, BigDecimal> projectAdminCostRmbByEmployee(List<String> months) {
+        Map<Long, BigDecimal> result = new HashMap<>();
+        for (String month : months) {
+            for (Payslip p : payslipRepo.findByYearMonthAndIsDeletedFalse(month)) {
+                if (!Boolean.TRUE.equals(p.getFinalConfirmed()) || p.getDetailJson() == null) continue;
+                try {
+                    PayslipDetailResponse snap = objectMapper.readValue(p.getDetailJson(), PayslipDetailResponse.class);
+                    if (snap.getProjectAdminSalaryRmb() != null) {
+                        result.merge(p.getEmployeeId(), snap.getProjectAdminSalaryRmb(), BigDecimal::add);
+                    }
+                } catch (Exception e) {
+                    // 反序列化失败不该让整个看板汇总接口挂掉，跳过这一条按0处理，同 tierBonusTotalUsd()
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
      * 财务、IT后勤角色是固定月薪，跟具体记录无关，走 otherStaffEmployees()/otherStaffCostRmb()
      * 这条路径。法务角色（2026-07 起管理层设置了当月工资就计入）走单独的 legalStaffCostRmb()
      * 路径，两者共同构成"内部其他员工成本"，不合并进这个角色集合是因为取数方式完全不同
@@ -551,6 +593,22 @@ public class DashboardStatsService {
                     .amount(hasAmount ? convertFromRmb(totalRmb, rate, toRmb) : null)
                     .build());
         }
+        // "项目管理员"固定月薪按人拆分（2026-08-21 新增）：只展示这段范围内实际有金额的项目
+        // 管理员，不像法务那样把"当前所有法务角色"都列出来（法务是每月手动录入、需要提醒管理层
+        // "还没设置"；项目管理员固定月薪是自动从 Employee 配置+确认快照算出来的，没有金额就
+        // 单纯是这段时间还没被确认过，不需要用一整行提示文案强调"待设置"）
+        for (Map.Entry<Long, BigDecimal> entry : projectAdminCostRmbByEmployee(months).entrySet()) {
+            if (entry.getValue().compareTo(BigDecimal.ZERO) <= 0) continue;
+            Employee e = employeeCache.findById(entry.getKey());
+            String name = e != null ? e.getName() : ("员工#" + entry.getKey());
+            rows.add(DashboardDrilldownResponse.DrilldownRow.builder()
+                    .dimensionLabel("项目管理员 - " + name)
+                    .dimensionType("role_name")
+                    .videoCount(1L)
+                    .amount(convertFromRmb(entry.getValue(), rate, toRmb))
+                    .build());
+        }
+
         rows.sort((a, b) -> {
             if (a.getAmount() == null && b.getAmount() == null) return 0;
             if (a.getAmount() == null) return 1;

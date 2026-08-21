@@ -36,10 +36,18 @@ import java.util.stream.Collectors;
 @Component
 public class EmployeeExcelHandler {
 
-    /** "员工管理"列表页的"导出Excel"：员工基础信息 + 提成比例 + Bonus阶梯 + 执行人员薪资标准，写成 xlsx 下载 */
+    /**
+     * "员工管理"列表页的"导出Excel"：员工基础信息 + 提成比例 + Bonus阶梯 + 执行人员薪资标准 +
+     * 项目管理员相关字段（2026-08-21 新增：负责管理的品牌方/项目管理员固定月薪/成为项目管理员
+     * 的时间），写成 xlsx 下载。managedBrandNamesByEmployeeId 由调用方（EmployeeController）
+     * 现查 EmployeeManagedBrandCache + BrandCache 拼好品牌方名称传进来，这里只负责渲染，
+     * 不直接依赖缓存（保持这个类"纯粹按传入数据拼表格"的职责边界，跟 bonusTiersByEmployeeId/
+     * executorRatesByExecutorId 两个已有参数是同一个设计）。
+     */
     public void export(List<Employee> employees,
                         Map<Long, List<CommissionBonusTier>> bonusTiersByEmployeeId,
                         Map<Long, List<ExecutorPayRateTier>> executorRatesByExecutorId,
+                        Map<Long, String> managedBrandNamesByEmployeeId,
                         HttpServletResponse response) throws IOException {
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setCharacterEncoding("UTF-8");
@@ -65,6 +73,10 @@ public class EmployeeExcelHandler {
         cols.add("Bonus阶梯");
         cols.add("执行人员薪资标准");
         cols.add("固定月薪（人民币）");
+        cols.add("是否项目管理员");
+        cols.add("项目管理员负责管理的品牌方");
+        cols.add("项目管理员固定月薪（人民币）");
+        cols.add("成为项目管理员的时间");
         cols.add("备注");
 
         Row headerRow = sheet.createRow(0);
@@ -74,9 +86,10 @@ public class EmployeeExcelHandler {
             cell.setCellStyle(hdr);
             sheet.setColumnWidth(i, 16 * 256);
         }
-        // Bonus阶梯/执行人员薪资标准这两列内容比较长，单独放宽
+        // Bonus阶梯/执行人员薪资标准/负责管理的品牌方这三列内容比较长，单独放宽
         sheet.setColumnWidth(7, 36 * 256);
         sheet.setColumnWidth(8, 40 * 256);
+        sheet.setColumnWidth(11, 30 * 256);
 
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
 
@@ -96,6 +109,12 @@ public class EmployeeExcelHandler {
             setCellStr(row, c++, formatBonusTiers(bonusTiersByEmployeeId.get(e.getId()), e.getBonusTierCurrency()), wrap);
             setCellStr(row, c++, formatExecutorRates(executorRatesByExecutorId.get(e.getId())), wrap);
             setCellMoney(row, c++, e.getFixedMonthlySalary(), money);
+            // 项目管理员相关四列：只有 projectAdminSince 不为空才是项目管理员，其余角色/未开通的项目负责人全部留空
+            boolean isProjectAdmin = e.getProjectAdminSince() != null;
+            setCellStr(row, c++, isProjectAdmin ? "是" : "", nor);
+            setCellStr(row, c++, isProjectAdmin ? managedBrandNamesByEmployeeId.get(e.getId()) : "", wrap);
+            setCellMoney(row, c++, isProjectAdmin ? e.getProjectAdminFixedMonthlySalary() : null, money);
+            setCellStr(row, c++, isProjectAdmin ? sdf.format(e.getProjectAdminSince()) : "", nor);
             setCellStr(row, c++, e.getNotes(), nor);
         }
 

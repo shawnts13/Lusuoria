@@ -44,6 +44,15 @@ public class PayslipDetailResponse {
      */
     private BigDecimal tierBonusRate;
 
+    /**
+     * "项目管理员"固定月薪（2026-08-21 新增，人民币原值，展示时换算成请求币种）：仅当这个
+     * 项目负责人同时是"项目管理员"（Employee.projectAdminSince 不为空）且这个月份已经生效
+     * （>= projectAdminSince 所在月份）时非空——正交叠加在提成/阶梯Bonus 之上的一块独立收入，
+     * 不是互斥关系，见 PayslipService.computeProjectManager()。未开通/还没生效=null=不展示该行。
+     * 只有 type=PROJECT_MANAGER 会用到，其余角色恒为 null。
+     */
+    private BigDecimal projectAdminSalaryRmb;
+
     /** "奖金"：管理层手动设置的月度额外奖励，任何角色通用，未设置=null=不展示该行（已按请求币种换算） */
     private BigDecimal extraBonusAmount;
 

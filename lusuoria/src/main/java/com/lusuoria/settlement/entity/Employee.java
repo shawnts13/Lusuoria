@@ -52,6 +52,22 @@ public class Employee extends BaseEntity {
     @Column(name = "fixed_monthly_salary", precision = 12, scale = 2)
     private BigDecimal fixedMonthlySalary;
 
+    /**
+     * "成为项目管理员的时间"（2026-08-21 新增，"项目管理员"角色需求）：非空表示这个员工同时
+     * 具备"项目管理员"身份——这是叠加在 role 之上的正交属性，不是 role 本身的一个取值。只允许
+     * role="项目负责人" 的员工设置（管理层不允许，因为管理层本身就已经包含了这些权限），由
+     * EmployeeController.save() 校验。用于工资单/数据看板按月计算时判断"这个月要不要把项目
+     * 管理员固定月薪计入这个员工"——只有 >= 这个日期所在月份才计入，之前的月份/已确认的工资单
+     * 不受这个字段影响（即使之后改这个日期，已确认的工资单也不会跟着变，见 PayslipService）。
+     */
+    @Temporal(TemporalType.DATE)
+    @Column(name = "project_admin_since")
+    private Date projectAdminSince;
+
+    /** 项目管理员固定月薪（人民币），只有 projectAdminSince 不为空时才有意义，非项目管理员留空 */
+    @Column(name = "project_admin_fixed_monthly_salary", precision = 12, scale = 2)
+    private BigDecimal projectAdminFixedMonthlySalary;
+
     @Column(name = "notes", columnDefinition = "TEXT")
     private String notes;
 }

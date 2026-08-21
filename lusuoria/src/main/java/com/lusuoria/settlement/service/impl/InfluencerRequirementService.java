@@ -1339,6 +1339,9 @@ public class InfluencerRequirementService {
                     p.setRequestedBy(RoleUtil.getCurrentUsername());
                     p.setStatus(PendingApprovalStatus.PENDING);
                     p.setTargetProjectManagerId(requesterEmployeeId);
+                    // 2026-08-21 新增：快照品牌方 id，供"项目管理员"角色的可见性/审核权限判断用，
+                    // 跟 PendingApprovalService.snapshotOwner() 是同一个思路
+                    p.setTargetBrandId(requirement.getBrandId());
                     return pendingApprovalRepo.save(p);
                 });
     }

@@ -28,6 +28,7 @@ public class AuthController {
     @Autowired private PasswordEncoder passwordEncoder;
     @Autowired private EmployeeCache employeeCache;
     @Autowired private com.lusuoria.settlement.service.impl.ProgressReminderService progressReminderService;
+    @Autowired private com.lusuoria.settlement.util.EmployeeRoleUtil employeeRoleUtil;
 
     /**
      * 登录：校验用户名密码（Spring Security AuthenticationManager，内部走
@@ -66,6 +67,10 @@ public class AuthController {
         // "红人结款"模块受众：登录账号关联的员工角色（管理层/财务/法务才能看到，仅管理层能新增），
         // 同样跟 SysUser.role 无关，见 PaymentAccessUtil
         result.put("employeeRole", emp != null ? emp.getRole() : null);
+        // "项目管理员"角色需求（2026-08-21 新增）：供前端决定要不要展示"待处理"审批队列/进度
+        // 提醒里项目管理员专属的那部分入口，跟 employeeRole="项目负责人" 是两个独立的判断——
+        // 见 Employee.projectAdminSince 字段注释
+        result.put("isProjectAdmin", employeeRoleUtil.isProjectAdmin(emp));
 
         return ApiResponse.success(result);
     }

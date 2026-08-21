@@ -31,9 +31,15 @@ public class PendingApprovalController {
     @Autowired private PendingApprovalService pendingApprovalService;
     @Autowired private EmployeeRoleUtil employeeRoleUtil;
 
-    /** ADMIN 视角的完整待审批队列（删除申请/进度倒退申请/内部执行成本修改申请），可按类别筛选 */
+    /**
+     * 待审批队列（删除申请/进度倒退申请/内部执行成本修改申请），可按类别筛选。ADMIN 看完整
+     * 队列；2026-08-21 起"项目管理员"也能看，但只看自己负责管理的品牌方范围内的记录（真正
+     * 的范围过滤在 Service 层的 listPending() 里做，这里只是把 @PreAuthorize 从
+     * hasRole('ADMIN') 放宽到 hasAnyRole('ADMIN','STAFF')，放行项目管理员这种 STAFF 账号
+     * 能调用到这个接口，具体谁能看到什么仍然由 Service 层精确控制）。
+     */
     @GetMapping
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
     public ApiResponse<Page<PendingApproval>> list(
             @RequestParam(required = false) PendingApprovalCategory category,
             @RequestParam(defaultValue = "0")  int page,

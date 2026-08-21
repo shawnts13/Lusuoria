@@ -562,8 +562,28 @@ public class PayslipService {
         List<CommissionBonusTier> tiers = commissionBonusService
                 .findTiersByEmployeeIds(Collections.singletonList(emp.getId()))
                 .getOrDefault(emp.getId(), Collections.emptyList());
-        return buildProjectManagerDetail(emp, new ArrayList<>(grouped.values()), totalCommission, rate, tiers,
+        PayslipDetailResponse detail = buildProjectManagerDetail(emp, new ArrayList<>(grouped.values()), totalCommission, rate, tiers,
                 byPmThenExec, confirmationByManagerId);
+        // "项目管理员"固定月薪（2026-08-21 新增）：正交叠加在提成/阶梯Bonus 之上，不影响上面
+        // 任何提成计算——这里只是在算好的 detail 上顺带补一个字段。写在这里（而不是 doSave 之外
+        // 单独处理）能让这个值自动跟着现有的确认快照机制走：确认时 detailJson 会把整个 detail
+        // 对象序列化落库（见 applyFinalSnapshot/confirm()），这个字段自然也被冻结进去，不需要
+        // 额外为它单独实现"确认后不随 Employee 后续改动而变化"这条规则
+        detail.setProjectAdminSalaryRmb(resolveProjectAdminSalaryRmb(emp, yearMonth));
+        return detail;
+    }
+
+    /**
+     * 这个项目负责人本月是否应该计入"项目管理员"固定月薪：本身要是"项目管理员"身份
+     * （EmployeeRoleUtil.isProjectAdmin），且这个月份已经落在 projectAdminSince 生效之后
+     * （含当月）——早于生效月份的历史月份不计入，晚于/等于才计入，不做"按天折算"（月薪本身
+     * 就是按整月发放的概念，见 Employee.projectAdminSince 字段注释）。
+     */
+    private BigDecimal resolveProjectAdminSalaryRmb(Employee emp, String yearMonth) {
+        if (!employeeRoleUtil.isProjectAdmin(emp)) return null;
+        String sinceMonth = new SimpleDateFormat("yyyyMM").format(emp.getProjectAdminSince());
+        if (yearMonth.compareTo(sinceMonth) < 0) return null;
+        return emp.getProjectAdminFixedMonthlySalary();
     }
 
     /** 计算"执行人员"角色的实时工资明细：跨多个项目负责人汇总这个人本月执行的所有项目 */
@@ -718,6 +738,16 @@ public class PayslipService {
                 otherStaffCostBreakdownRows.add(PayslipDimensionRow.builder()
                         .brandName("法务 - " + employeeNameOf(other.getEmployeeId()))
                         .amount(other.getLegalSalaryRmb().setScale(SCALE, RoundingMode.HALF_UP))
+                        .isSummaryRow(false).build());
+            }
+            // "项目管理员"固定月薪（2026-08-21 新增）：来源是同一个已经解出来的快照对象 snap，
+            // 不需要额外查询——这个字段只在 type=PROJECT_MANAGER 且这个人是项目管理员时非空，
+            // 见 PayslipDetailResponse.projectAdminSalaryRmb 字段注释
+            if (snap.getProjectAdminSalaryRmb() != null) {
+                otherStaffCostRmb = otherStaffCostRmb.add(snap.getProjectAdminSalaryRmb());
+                otherStaffCostBreakdownRows.add(PayslipDimensionRow.builder()
+                        .brandName("项目管理员 - " + employeeNameOf(other.getEmployeeId()))
+                        .amount(snap.getProjectAdminSalaryRmb().setScale(SCALE, RoundingMode.HALF_UP))
                         .isSummaryRow(false).build());
             }
         }
@@ -1407,6 +1437,9 @@ public class PayslipService {
 
         BigDecimal baseAmount = convertAmount(src.getBaseAmount(), baseIsRmb, rate, toRmb);
         BigDecimal tierBonus = convertAmount(src.getTierBonusAmount(), false, rate, toRmb);
+        // "项目管理员"固定月薪（2026-08-21 新增）：人民币原值，换算方式跟 baseAmount 在
+        // FIXED_SALARY/LEGAL 类型时的换算是同一个思路（amountIsRmb=true）
+        BigDecimal projectAdminSalary = convertAmount(src.getProjectAdminSalaryRmb(), true, rate, toRmb);
         BigDecimal grossProfit = convertAmount(src.getGrossProfit(), false, rate, toRmb);
         BigDecimal distributable = convertAmount(src.getDistributableProfit(), false, rate, toRmb);
         BigDecimal managerCommissionTotal = convertAmount(src.getManagerCommissionTotal(), false, rate, toRmb);
@@ -1421,7 +1454,10 @@ public class PayslipService {
             extraBonus = convertAmount(draft.getExtraBonusAmount(), extraIsRmb, rate, toRmb);
         }
 
-        BigDecimal total = "MANAGEMENT".equals(type) ? companyProfit : safeAdd(safeAdd(baseAmount, tierBonus), extraBonus);
+        // "管理层所发工资"（PROJECT_MANAGER 这一行的 totalAmount）2026-08-21 起把项目管理员
+        // 固定月薪也叠加进来——Shawn 明确要求"会加到'管理层所发工资'的这个总工资里"
+        BigDecimal total = "MANAGEMENT".equals(type) ? companyProfit
+                : safeAdd(safeAdd(safeAdd(baseAmount, tierBonus), extraBonus), projectAdminSalary);
 
         // ===== 项目负责人 + 管理层（作为"特殊项目负责人"）专属：应发给执行人员的工资
         // （人民币原值）换算。finalNetWage（最终净得工资）只有项目负责人有意义——管理层的
@@ -1453,6 +1489,7 @@ public class PayslipService {
                 .type(type).rows(convertedRows)
                 .commissionRate(src.getCommissionRate())
                 .baseAmount(baseAmount).tierBonusAmount(tierBonus).tierBonusRate(src.getTierBonusRate())
+                .projectAdminSalaryRmb(src.getProjectAdminSalaryRmb() != null ? projectAdminSalary : null)
                 .extraBonusAmount(extraBonus)
                 .extraBonusAmountNative(draft != null ? draft.getExtraBonusAmount() : null)
                 .extraBonusCurrencyNative(draft != null ? draft.getExtraBonusCurrency() : null)
