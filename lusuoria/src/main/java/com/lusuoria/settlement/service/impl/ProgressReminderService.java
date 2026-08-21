@@ -553,7 +553,7 @@ public class ProgressReminderService {
                     ? brand.getDaysWithinThreshold() : brand.getDaysAboveThreshold();
             LocalDate deadlineLocalDate = toLocalDate(t.getPublishDate()).plusDays(cycleDays);
             addCollabPaymentDueDetail(byUrgency, today, overdueMaxDays, nearMaxDays, windowMaxDays,
-                    t, brand, accountNameById, cycleDays, deadlineLocalDate, null);
+                    t, brand, accountNameById, cycleDays, deadlineLocalDate, null, false);
         }
 
         for (CollaborationTracking t : perRequirementCandidates) {
@@ -566,7 +566,7 @@ public class ProgressReminderService {
                     ? brand.getDaysWithinThreshold() : brand.getDaysAboveThreshold();
             LocalDate deadlineLocalDate = toLocalDate(info.completedAt).plusDays(cycleDays);
             addCollabPaymentDueDetail(byUrgency, today, overdueMaxDays, nearMaxDays, windowMaxDays,
-                    t, brand, accountNameById, cycleDays, deadlineLocalDate, info.completedAt);
+                    t, brand, accountNameById, cycleDays, deadlineLocalDate, info.completedAt, false);
         }
 
         // 月结品牌方：按单条记录处理，用"视频发布月份的最后一个工作日"模拟对账日期
@@ -579,7 +579,7 @@ public class ProgressReminderService {
             int cycleDays = brand.getDaysAfterMonthEnd();
             LocalDate deadlineLocalDate = simulatedReconcileDate.plusDays(cycleDays);
             addCollabPaymentDueDetail(byUrgency, today, overdueMaxDays, nearMaxDays, windowMaxDays,
-                    t, brand, accountNameById, cycleDays, deadlineLocalDate, null);
+                    t, brand, accountNameById, cycleDays, deadlineLocalDate, null, false);
         }
 
         // 红人"特殊回款周期"（2026-08-21 新增）：起算点统一是"关联需求完成进度达到100%"
@@ -596,7 +596,7 @@ public class ProgressReminderService {
             int cycleDays = specialCycleDaysByInfluencerId.get(t.getInfluencerId());
             LocalDate deadlineLocalDate = toLocalDate(info.completedAt).plusDays(cycleDays);
             addCollabPaymentDueDetail(byUrgency, today, overdueMaxDays, nearMaxDays, windowMaxDays,
-                    t, brand, accountNameById, cycleDays, deadlineLocalDate, info.completedAt);
+                    t, brand, accountNameById, cycleDays, deadlineLocalDate, info.completedAt, true);
         }
 
         for (ReminderUrgency urgency : ReminderUrgency.values()) {
@@ -612,7 +612,14 @@ public class ProgressReminderService {
             reminder.setCount(details.size());
             // 严重度已经用单独的彩色标签展示在卡片上了（见前端 ProgressReminderCardList.vue
             // 的 urgencyLabel），标题文字里不需要再重复一遍"3-7天"这种档位描述
-            reminder.setTitle(details.size() + "笔临近结款的红人合作跟踪记录");
+            // 2026-08-21 新增：这一档里如果有走"特殊回款周期"算出来的行，标题额外带上笔数，
+            // 方便管理层不用点开详情就知道这批里有没有需要特别注意的特殊规则记录
+            long specialCount = details.stream().filter(d -> Boolean.TRUE.equals(d.getSpecialPaymentCycle())).count();
+            String title = details.size() + "笔临近结款的红人合作跟踪记录";
+            if (specialCount > 0) {
+                title += "（包含" + specialCount + "笔特殊回款的红人合作跟踪记录）";
+            }
+            reminder.setTitle(title);
             reminder = reminderRepo.save(reminder);
 
             for (ProgressReminderDetail d : details) d.setReminderId(reminder.getId());
@@ -620,11 +627,15 @@ public class ProgressReminderService {
         }
     }
 
-    /** runCollabPaymentDue 的公共收尾：算严重度分档、组装明细行，两条路径（单笔/按需求）共用 */
+    /**
+     * runCollabPaymentDue 的公共收尾：算严重度分档、组装明细行，四条路径（阈值分档单笔/按需求/
+     * 月结/特殊回款周期）共用。isSpecial（2026-08-21 新增）标记这一行是不是走红人"特殊回款周期"
+     * 算出来的，前端"查看详情"据此标红提示。
+     */
     private void addCollabPaymentDueDetail(Map<ReminderUrgency, List<ProgressReminderDetail>> byUrgency,
             LocalDate today, int overdueMaxDays, int nearMaxDays, int windowMaxDays,
             CollaborationTracking t, Brand brand, Map<Long, String> accountNameById,
-            int cycleDays, LocalDate deadlineLocalDate, Date requirementCompletedAt) {
+            int cycleDays, LocalDate deadlineLocalDate, Date requirementCompletedAt, boolean isSpecial) {
         long daysRemaining = ChronoUnit.DAYS.between(today, deadlineLocalDate);
         ReminderUrgency urgency = ReminderUrgency.fromDaysRemaining(daysRemaining, overdueMaxDays, nearMaxDays, windowMaxDays);
         if (urgency == null) return; // 超过窗口天数，暂时不用提醒
@@ -648,6 +659,7 @@ public class ProgressReminderService {
         detail.setOverdueDays((int) Math.max(0, -daysRemaining));
         detail.setPaymentProgressLabel(t.getInfluencerPaymentProgress() != null
                 ? t.getInfluencerPaymentProgress().getLabel() : null);
+        detail.setSpecialPaymentCycle(isSpecial);
 
         byUrgency.computeIfAbsent(urgency, k -> new ArrayList<>()).add(detail);
     }

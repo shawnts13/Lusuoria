@@ -206,4 +206,14 @@ public class ProgressReminderDetail extends BaseEntity {
      */
     @Column(name = "involved_requirement_nos", columnDefinition = "TEXT")
     private String involvedRequirementNos;
+
+    /**
+     * 这一行是不是走的红人"特殊回款周期"（2026-08-21 新增，COLLAB_PAYMENT_DUE 专用，优先级
+     * 最高、覆盖品牌方/团队级别配置，见 InfluencerPaymentService.computeCycleInfo() 的同名分支）
+     * 算出来的结款周期/最迟结款日——前端"查看详情"弹窗据此在红人名字旁边标红提示、把
+     * "结款周期"这一列标红，方便管理层第一眼看出哪些是走的特殊规则、需要额外注意。
+     * 其余类别不设置，为 null。
+     */
+    @Column(name = "special_payment_cycle")
+    private Boolean specialPaymentCycle;
 }
