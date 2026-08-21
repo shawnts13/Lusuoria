@@ -15,6 +15,7 @@ import com.lusuoria.settlement.entity.ExchangeRateCache;
 import com.lusuoria.settlement.entity.ExecutorPayRateTier;
 import com.lusuoria.settlement.entity.ExecutorWageConfirmation;
 import com.lusuoria.settlement.entity.Influencer;
+import com.lusuoria.settlement.entity.InfluencerTeam;
 import com.lusuoria.settlement.entity.PendingApproval;
 import com.lusuoria.settlement.enums.CollaborationProgress;
 import com.lusuoria.settlement.enums.InfluencerPaymentProgress;
@@ -49,6 +50,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -1252,46 +1254,119 @@ public class CollaborationTrackingService {
     }
 
     /**
-     * "批量标记为已收到客户回款"弹窗打开时调用：按当前筛选条件取出命中记录，按"客户方付款批次"
-     * 分组统计条数/客户合作总价格（美金），供财务在真正提交前肉眼核对范围对不对，不修改任何数据。
+     * "批量标记为已收到客户回款"弹窗打开时调用：按当前筛选条件取出命中记录，分组统计条数/客户
+     * 合作总价格（美金），供财务在真正提交前肉眼核对范围对不对，不修改任何数据。
      *
-     * 命中范围里只要有一条记录"客户方付款批次"是空的，就直接把 hasEmptyPaymentBatch 置 true、
-     * 不再费劲分组（前端据此展示"当前页面存在'客户方付款批次'为空的记录，请重新确认筛选条件！"，
-     * 不渲染分组明细）——这是防止财务筛选条件选错、误将不该动的记录也纳入范围的硬性前置校验，
-     * 见 markClientPaymentReceivedBulk() 里同样的校验（那边是防御两次请求之间数据发生变化，
-     * 不能只信预览接口这一次判断）。已经是"已收到客户回款"状态的记录允许留在范围内（财务可能
-     * 只是想更新"收到回款日期"），不额外排除。
+     * 命中范围里只要有一条记录"该品牌方涉及客户方付款批次却没填"，就直接把 hasEmptyPaymentBatch
+     * 置 true、不再费劲分组（前端据此展示"当前页面存在'客户方付款批次'为空的记录，请重新确认
+     * 筛选条件！"，不渲染分组明细）——这是防止财务筛选条件选错、误将不该动的记录也纳入范围的
+     * 硬性前置校验，见 markClientPaymentReceivedBulk() 里同样的校验（那边是防御两次请求之间
+     * 数据发生变化，不能只信预览接口这一次判断）、isMissingRequiredPaymentBatch() 的判断口径。
+     * 已经是"已收到客户回款"状态的记录允许留在范围内（财务可能只是想更新"收到回款日期"），
+     * 不额外排除。
+     *
+     * 2026-08-21 分组口径调整（Shawn 反馈：之前漏了"品牌方不涉及客户方付款批次"这种场景，
+     * 误把这类记录也当成"填漏了"一并拦下）：
+     *   - 有客户方付款批次的记录：按批次号分组（原有逻辑），一个批次一行；这个批次下如果涉及
+     *     多个"品牌方/团队"组合，都在 brandTeamLabel 里换行列出，不能只展示一个。
+     *   - 不涉及客户方付款批次的记录（品牌方 requiresClientPaymentBatch()==false）：改成按
+     *     "品牌方/团队"分组，一个组合一行，clientPaymentBatch 固定展示"不涉及"。
      */
     @Transactional(readOnly = true)
     public PaymentReceivedPreviewResponse markClientPaymentReceivedPreview(MarkPaymentReceivedRequest req) {
         requireFinanceOrManagementForPaymentReceived();
         List<CollaborationTracking> matched = findAllMatchingFilters(req);
         PaymentReceivedPreviewResponse resp = new PaymentReceivedPreviewResponse();
-        boolean hasEmpty = matched.stream()
-                .anyMatch(t -> t.getClientPaymentBatch() == null || t.getClientPaymentBatch().trim().isEmpty());
+        boolean hasEmpty = matched.stream().anyMatch(this::isMissingRequiredPaymentBatch);
         resp.setHasEmptyPaymentBatch(hasEmpty);
         if (hasEmpty) {
             return resp;
         }
-        Map<String, List<CollaborationTracking>> byBatch = matched.stream()
-                .collect(Collectors.groupingBy(CollaborationTracking::getClientPaymentBatch, LinkedHashMap::new, Collectors.toList()));
+
         List<PaymentReceivedPreviewResponse.Group> groups = new ArrayList<>();
         BigDecimal grandTotal = BigDecimal.ZERO;
+
+        // 有客户方付款批次的记录：按批次号分组
+        Map<String, List<CollaborationTracking>> byBatch = matched.stream()
+                .filter(t -> !isPaymentBatchEmpty(t))
+                .collect(Collectors.groupingBy(CollaborationTracking::getClientPaymentBatch, LinkedHashMap::new, Collectors.toList()));
         for (Map.Entry<String, List<CollaborationTracking>> e : byBatch.entrySet()) {
-            BigDecimal sum = e.getValue().stream()
-                    .map(t -> t.getClientPrice() != null ? t.getClientPrice() : BigDecimal.ZERO)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal sum = sumClientPrice(e.getValue());
             grandTotal = grandTotal.add(sum);
             PaymentReceivedPreviewResponse.Group g = new PaymentReceivedPreviewResponse.Group();
             g.setClientPaymentBatch(e.getKey());
+            g.setBrandTeamLabel(distinctBrandTeamLabels(e.getValue()));
             g.setCount(e.getValue().size());
             g.setTotalClientPrice(sum);
             groups.add(g);
         }
+
+        // 不涉及客户方付款批次的记录：改按"品牌方/团队"分组，一个组合一行
+        Map<String, List<CollaborationTracking>> byBrandTeam = matched.stream()
+                .filter(this::isPaymentBatchEmpty)
+                .collect(Collectors.groupingBy(this::brandTeamKey, LinkedHashMap::new, Collectors.toList()));
+        for (List<CollaborationTracking> group : byBrandTeam.values()) {
+            BigDecimal sum = sumClientPrice(group);
+            grandTotal = grandTotal.add(sum);
+            PaymentReceivedPreviewResponse.Group g = new PaymentReceivedPreviewResponse.Group();
+            g.setClientPaymentBatch("不涉及");
+            g.setBrandTeamLabel(brandTeamLabel(group.get(0)));
+            g.setCount(group.size());
+            g.setTotalClientPrice(sum);
+            groups.add(g);
+        }
+
         resp.setGroups(groups);
         resp.setTotalCount(matched.size());
         resp.setTotalClientPrice(grandTotal);
         return resp;
+    }
+
+    /** 这条记录的"客户方付款批次"字段本身是不是空的（不看品牌方要不要求这个字段） */
+    private boolean isPaymentBatchEmpty(CollaborationTracking t) {
+        return t.getClientPaymentBatch() == null || t.getClientPaymentBatch().trim().isEmpty();
+    }
+
+    /**
+     * 这条记录是不是"该品牌方涉及客户方付款批次却没填"——只有这种才算误操作，品牌方本身不涉及
+     * 这个字段（Brand.requiresClientPaymentBatch()==false）时留空是正常情况，不算
+     */
+    private boolean isMissingRequiredPaymentBatch(CollaborationTracking t) {
+        if (!isPaymentBatchEmpty(t)) return false;
+        Brand brand = t.getBrandId() != null ? brandCache.findById(t.getBrandId()) : null;
+        boolean requiresBatch = brand == null || brand.requiresClientPaymentBatch();
+        return requiresBatch;
+    }
+
+    /** 客户合作价格求和，空值当0处理，供分组汇总/总计共用 */
+    private BigDecimal sumClientPrice(List<CollaborationTracking> list) {
+        return list.stream()
+                .map(t -> t.getClientPrice() != null ? t.getClientPrice() : BigDecimal.ZERO)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /** "品牌方/团队"分组用的 key（brandId+teamId 拼接），团队为空时不影响唯一性 */
+    private String brandTeamKey(CollaborationTracking t) {
+        return t.getBrandId() + "|" + (t.getTeamId() != null ? t.getTeamId() : -1L);
+    }
+
+    /** "品牌方/团队"展示文案：查缓存拿最新名称，不查库；没有团队时只展示品牌方名 */
+    private String brandTeamLabel(CollaborationTracking t) {
+        Brand brand = t.getBrandId() != null ? brandCache.findById(t.getBrandId()) : null;
+        String label = brand != null ? brand.getName() : "未知品牌";
+        if (t.getTeamId() != null) {
+            InfluencerTeam team = teamCache.findById(t.getTeamId());
+            if (team != null) label += "/" + team.getName();
+        }
+        return label;
+    }
+
+    /** 一组记录里出现过的全部"品牌方/团队"组合，去重后按换行符拼接（供同一客户方付款批次
+     *  下涉及多个品牌方/团队时使用），用 LinkedHashSet 保留第一次出现的顺序，不打乱展示 */
+    private String distinctBrandTeamLabels(List<CollaborationTracking> list) {
+        Set<String> labels = new LinkedHashSet<>();
+        for (CollaborationTracking t : list) labels.add(brandTeamLabel(t));
+        return String.join("\n", labels);
     }
 
     /**
@@ -1326,8 +1401,9 @@ public class CollaborationTrackingService {
         if (matched.isEmpty()) {
             throw new RuntimeException("当前筛选条件下没有命中任何记录，请重新确认筛选条件");
         }
-        boolean hasEmpty = matched.stream()
-                .anyMatch(t -> t.getClientPaymentBatch() == null || t.getClientPaymentBatch().trim().isEmpty());
+        // 只拦"该品牌方涉及客户方付款批次却没填"这种误操作，品牌方本身不涉及这个字段的记录
+        // 留空是正常情况，不拦截，见 isMissingRequiredPaymentBatch() 的说明
+        boolean hasEmpty = matched.stream().anyMatch(this::isMissingRequiredPaymentBatch);
         if (hasEmpty) {
             throw new RuntimeException("当前页面存在\"客户方付款批次\"为空的记录，请重新确认筛选条件！");
         }
