@@ -42,6 +42,10 @@ import java.util.*;
  *   "1 IG+TT" -> Instagram + TikTok
  *   "1IG Reel" / "IG" -> Instagram
  *   "YT" -> YouTube
+ *
+ * 2026-08-21 新增：员工角色="财务"的账号导入时只允许"更新"已有记录（financeImportUpdateOnly
+ * 参数，见 importData() 系列方法），任何会落到"新增"分支的行一律拒绝，防止财务误操作把不该
+ * 新建的行当成新记录导进来。
  */
 @Component
 public class CollaborationTrackingExcelHandler {
@@ -361,9 +365,10 @@ public class CollaborationTrackingExcelHandler {
     // ============ 导入 ============
     /** 保留 MultipartFile 入口，兼容以后可能需要同步调用的场景 */
     public List<String> importData(MultipartFile file, boolean canViewSensitive, boolean canSetFinanceSettlementProgress,
-                                    boolean isAdminOrManagement, Long currentEmployeeId) throws IOException {
+                                    boolean isAdminOrManagement, Long currentEmployeeId,
+                                    boolean financeImportUpdateOnly) throws IOException {
         return importData(file.getInputStream(), canViewSensitive, canSetFinanceSettlementProgress,
-                isAdminOrManagement, currentEmployeeId);
+                isAdminOrManagement, currentEmployeeId, financeImportUpdateOnly);
     }
 
     /**
@@ -389,11 +394,16 @@ public class CollaborationTrackingExcelHandler {
      * 异常会自然冒泡到调用方。如果这个方法签名改成返回 Future<T>/CompletableFuture<T>，异常就会
      * 被包进返回的 Future 里，调用方 .get() 时才会抛出来——那是另一种用法，这里用不上（调用方根本
      * 不 care 结果，只关心"已经开始跑了"）。
+     *
+     * financeImportUpdateOnly（2026-08-21 新增）：员工角色="财务"的账号导入时只允许"更新"
+     * 已有记录，任何会落到"新增"分支的行一律拒绝——防止财务误操作把不该新建的行当成新记录
+     * 导进来。同样必须在 HTTP 请求线程里现场算好传下来，原因跟其余几个权限参数一致。
      */
     @org.springframework.scheduling.annotation.Async("importTaskExecutor")
     public void importDataAsync(Long batchId, byte[] fileBytes, boolean canViewSensitive,
                                  boolean canSetFinanceSettlementProgress,
-                                 boolean isAdminOrManagement, Long currentEmployeeId) {
+                                 boolean isAdminOrManagement, Long currentEmployeeId,
+                                 boolean financeImportUpdateOnly) {
         // 【Java 8 知识点】JpaRepository.findById() 返回的不是 ImportBatch，而是 Optional<ImportBatch>——
         // 这是 Java 8 引入的一个"可能有值、也可能没有值"的包装容器，目的是逼调用方在拿到结果的
         // 那一刻就必须显式处理"查不到"的情况，而不是像以前那样直接拿到一个可能是 null 的对象，
@@ -408,7 +418,8 @@ public class CollaborationTrackingExcelHandler {
         if (batch == null) return; // 理论上不会发生，防御性判断
         try {
             List<String> errors = importData(new java.io.ByteArrayInputStream(fileBytes), canViewSensitive,
-                    canSetFinanceSettlementProgress, isAdminOrManagement, currentEmployeeId, (processed, total) -> {
+                    canSetFinanceSettlementProgress, isAdminOrManagement, currentEmployeeId, financeImportUpdateOnly,
+                    (processed, total) -> {
                         // 每处理一批就回写一次进度，前端"导入历史"页面轮询的时候就能看到实时进度
                         batch.setTotalRows(total);
                         batch.setProcessedCount(processed);
@@ -464,9 +475,10 @@ public class CollaborationTrackingExcelHandler {
      * 用 ByteArrayInputStream 包一层传进来。
      */
     public List<String> importData(InputStream fileStream, boolean canViewSensitive, boolean canSetFinanceSettlementProgress,
-                                    boolean isAdminOrManagement, Long currentEmployeeId) throws IOException {
+                                    boolean isAdminOrManagement, Long currentEmployeeId,
+                                    boolean financeImportUpdateOnly) throws IOException {
         return importData(fileStream, canViewSensitive, canSetFinanceSettlementProgress,
-                isAdminOrManagement, currentEmployeeId, (processed, total) -> {});
+                isAdminOrManagement, currentEmployeeId, financeImportUpdateOnly, (processed, total) -> {});
     }
 
     /**
@@ -486,6 +498,7 @@ public class CollaborationTrackingExcelHandler {
      */
     public List<String> importData(InputStream fileStream, boolean canViewSensitive, boolean canSetFinanceSettlementProgress,
                                     boolean isAdminOrManagement, Long currentEmployeeId,
+                                    boolean financeImportUpdateOnly,
                                     java.util.function.BiConsumer<Integer, Integer> progressCallback) throws IOException {
         List<String> errors = new ArrayList<String>();
         Workbook workbook = WorkbookFactory.create(fileStream);
@@ -861,6 +874,16 @@ public class CollaborationTrackingExcelHandler {
                 if (existingOrNull != null) {
                     req.setId(existingOrNull.getId());
                     isUpdate = true;
+                }
+
+                // 2026-08-21 新增（Shawn 要求）：员工角色="财务"的账号导入时只允许"更新"，
+                // 这一行三条匹配路径（内部项目编号精确匹配/内部需求编号+红人等组合匹配/红人+
+                // 发布链接+发布时间兜底匹配）都没能定位到存量记录、真会落到"新增"分支时直接拒绝，
+                // 防止财务误操作把不该新建的行当成新记录导进来——提示语按 Shawn 要求的措辞，
+                // 附上行号方便财务对照 Excel 原文件核对
+                if (financeImportUpdateOnly && !isUpdate) {
+                    errors.add("第" + (i + 1) + "行：财务角色只允许更新记录，请检查\"新增\"的记录是否是误操作");
+                    continue;
                 }
                 // 注："客户方的项目订单"现在就是一个普通的录入字段（"项目订单"模块已废弃），
                 // 改这个字段不再有任何联动限制

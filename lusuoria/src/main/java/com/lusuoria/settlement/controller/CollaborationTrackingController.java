@@ -624,8 +624,13 @@ public class CollaborationTrackingController {
                 || employeeRoleUtil.canSetSettlementProgressExtraRole();
         boolean isAdminOrManagement = RoleUtil.isAdmin() || "管理层".equals(employeeRoleUtil.getCurrentEmployeeRole());
         Long currentEmployeeId = employeeRoleUtil.getCurrentEmployeeId();
+        // 2026-08-21 新增（Shawn 要求）：员工角色="财务"的账号导入时只允许"更新"已有记录，
+        // 新增一律拒绝——ADMIN 排除在外（即便某个 ADMIN 账号巧合关联了"财务"员工角色，也不受
+        // 这条限制约束，ADMIN 在这套权限体系里历来都是完全放行的），见
+        // CollaborationTrackingExcelHandler.importData() 里 financeImportUpdateOnly 的用法
+        boolean financeImportUpdateOnly = !RoleUtil.isAdmin() && "财务".equals(employeeRoleUtil.getCurrentEmployeeRole());
         excelHandler.importDataAsync(batch.getId(), fileBytes, RoleUtil.canViewBaselineFinancials(),
-                canSetFinanceSettlementProgress, isAdminOrManagement, currentEmployeeId);
+                canSetFinanceSettlementProgress, isAdminOrManagement, currentEmployeeId, financeImportUpdateOnly);
         return ApiResponse.success(batch.getId());
     }
 
