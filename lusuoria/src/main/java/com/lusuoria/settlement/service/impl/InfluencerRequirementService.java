@@ -101,6 +101,17 @@ public class InfluencerRequirementService {
         }
         requirement.setInfluencer(influencer);
 
+        // 2026-08-21 新增：编辑已有需求时，品牌方不允许中途变更——CollaborationTrackingService.
+        // doSave() 里 validateTrackingLinkage() 只在"红人合作跟踪"这一侧保存/关联时校验它的
+        // 品牌方跟需求的品牌方一致，从来不会在"需求"这一侧编辑时反向校验；如果这里放任需求的
+        // 品牌方被改掉，已经关联的合作跟踪记录（当初是按旧品牌方校验通过的）就会跟需求的新品牌方
+        // 对不上，且不会被自动发现（除非那些记录后续恰好又被重新保存一次）。Shawn 明确要求
+        // 品牌方一旦确定就不允许变，不做"没有关联记录时允许改"这种例外
+        if (requirement.getId() != null && requirement.getBrandId() != null
+                && !java.util.Objects.equals(requirement.getBrandId(), req.getBrandId())) {
+            throw new RuntimeException("需求的品牌方一旦确定不允许修改（当前品牌方：" + requirement.getBrand().getName() + "）");
+        }
+
         // 品牌方：必须是该红人在红人模块里已关联的"品牌方-团队"对里出现过的品牌方，跟
         // CollaborationTrackingService.doSave() 的校验规则完全一致
         List<InfluencerBrandTeam> teamOptions = null;
@@ -940,6 +951,56 @@ public class InfluencerRequirementService {
             requirement.setCompletedAt(null);
             requirementRepo.save(requirement);
         }
+    }
+
+    /**
+     * refreshCompletedAt() 的批量版本（2026-08-21 新增）：对一批需求编号一次性刷新 completedAt，
+     * 只发 2 条查询（跟 completedByNo/maxPublishDateByNo 各一条，模式抄自 recomputeAllCompletedAt()，
+     * 区别是这里只扫描传入的这批编号，不是全表）+ 最多 1 条批量保存，而不是每个编号各自触发
+     * refreshCompletedAt() 那一套 2-4 条查询。
+     *
+     * 修的是 CollaborationTrackingService.markClientPaymentReceivedBulk() 的一个 N+1 bug：
+     * 那个批量按钮之前在循环里对每一条命中的"红人合作跟踪"记录都调一次 refreshCompletedAt()——
+     * 一个需求底下往往挂着好几条记录（同一个需求的不同视频条目），391 条记录很可能只对应
+     * 一百来个不同的需求编号，却被反复对同一个编号重复刷新了好几遍。Shawn 反馈处理6月391条
+     * 数据时前端报"网络连接失败"，根因就是这里——Render 免费层数据库连接池只有3个（见
+     * application.yml），几百次冗余查询排队执行，很容易超过前端 axios 30秒的请求超时
+     * （http.js），表现成"网络连接失败"而不是真的连接失败。调用方应该在循环里只收集"这次
+     * 进度真的变了"的需求编号（去重），循环结束后调一次这个方法，而不是在循环内部逐条调
+     * refreshCompletedAt()。
+     */
+    @Transactional
+    public void refreshCompletedAtBatch(java.util.Collection<String> internalRequirementNos) {
+        if (internalRequirementNos == null || internalRequirementNos.isEmpty()) return;
+        // 去重、过滤 null——调用方传来的可能是"这一批记录各自的需求编号"，同一个编号会重复出现
+        List<String> nos = internalRequirementNos.stream().filter(java.util.Objects::nonNull).distinct()
+                .collect(Collectors.toList());
+        if (nos.isEmpty()) return;
+        List<InfluencerRequirement> requirements = requirementRepo.findByInternalRequirementNoInAndIsDeletedFalse(nos);
+        if (requirements.isEmpty()) return;
+        // 批量查"已完成条数"和"最晚视频发布时间"，各发一条查询，不按编号逐个查
+        Map<String, Integer> completedByNo = completedCountByNos(nos);
+        Map<String, Date> maxPublishDateByNo = new HashMap<>();
+        for (Object[] row : trackingRepo.maxPublishDateByRequirementNos(nos)) {
+            maxPublishDateByNo.put((String) row[0], (Date) row[1]);
+        }
+        List<InfluencerRequirement> toSave = new ArrayList<>();
+        for (InfluencerRequirement r : requirements) {
+            int completed = completedByNo.getOrDefault(r.getInternalRequirementNo(), 0);
+            int total = r.getTotalItemCount() != null ? r.getTotalItemCount() : 0;
+            boolean isComplete = total > 0 && completed >= total;
+            if (isComplete) {
+                Date correctValue = maxPublishDateByNo.getOrDefault(r.getInternalRequirementNo(), new Date());
+                if (r.getCompletedAt() == null || r.getCompletedAt().getTime() != correctValue.getTime()) {
+                    r.setCompletedAt(correctValue);
+                    toSave.add(r);
+                }
+            } else if (r.getCompletedAt() != null) {
+                r.setCompletedAt(null);
+                toSave.add(r);
+            }
+        }
+        if (!toSave.isEmpty()) requirementRepo.saveAll(toSave);
     }
 
     /**

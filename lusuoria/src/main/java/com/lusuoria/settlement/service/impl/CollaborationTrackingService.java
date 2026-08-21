@@ -417,12 +417,30 @@ public class CollaborationTrackingService {
         // 团队 / 国家：teamName 这个红人库单团队字段已经被"品牌方-团队"关联对取代，不再使用
         tracking.setInfluencer(influencer);
 
-        // 服务国家/市场：2026-07 起红人库改为多选，这里跟红人团队一样的"单个自动填/多个手动选"
-        // 规则——选中的红人只维护了 1 个服务国家/市场时，不管请求传了什么，直接采用这唯一的选项；
-        // 维护了多个时，请求必须明确指定其中一个合法值，否则拒绝（一条视频/一次合作只涉及
-        // 一个国家/市场，不像红人库本身允许维护多个）
-        tracking.setCountryMarket(MultiValueUtil.resolveSingleChoice(
-                influencer.getCountryMarket(), req.getCountryMarket(), "服务国家/市场"));
+        // 服务国家/市场：2026-07 起红人库改为多选，"单个自动填/多个手动选"规则——选中的红人
+        // 只维护了 1 个服务国家/市场时，不管请求传了什么，直接采用这唯一的选项；维护了多个时，
+        // 请求必须明确指定其中一个合法值，否则拒绝。
+        //
+        // 2026-08-21 修复：这个字段的设计初衷是"保存时从红人库拷贝的快照，不随红人库变化"（见
+        // 类头注释），但改造前这段逻辑不分新建/编辑，每次 doSave() 都无条件重新按红人*当前*
+        // 数据算一遍——导致任何不涉及"服务国家/市场"本身的保存（编辑表单改个备注、Excel
+        // 更新导入没勾这一列）都会静默把已经落库的快照覆盖掉：红人库那边的服务国家/市场后来
+        // 变成 0 个选项时直接被覆盖成 null，变成只剩 1 个选项时又会被覆盖成那唯一的选项，
+        // 不管这条记录当初落的快照是不是同一个值。这正是 Shawn 反馈"两次导出同一条记录，
+        // 服务国家/市场不一致（其中一次是空的）"的根因——两次导出之间这条记录被别的字段改动
+        // 触发了重新保存，顺带把这个字段静默改掉了。
+        // 修复后：新建时行为不变（必须按红人当前数据算出初始快照）；编辑/Excel导入更新时，
+        // 只有请求里*明确*给了新值才重新校验/覆盖快照（这是"仍然允许通过编辑表单/Excel导入
+        // 主动改这个字段"的口子，Shawn 要求保留），请求没给值（表单没改、Excel 这一列留空）时
+        // 原样保留已有快照，不再跟着红人库当前数据静默漂移。
+        String requestedCountryMarket = emptyToNull(req.getCountryMarket());
+        if (existingOrNull == null || requestedCountryMarket != null) {
+            // 调用 MultiValueUtil.resolveSingleChoice()：按"红人当前维护了几个服务国家/市场"
+            // 决定是自动采用唯一选项、留空，还是要求请求值必须精确匹配其中一个
+            tracking.setCountryMarket(MultiValueUtil.resolveSingleChoice(
+                    influencer.getCountryMarket(), requestedCountryMarket, "服务国家/市场"));
+        }
+        // else：编辑/Excel更新且请求未提供新值——保留 tracking（=existingOrNull）已有的快照，不动
 
         // 品牌方：必须是该红人在红人模块里已关联的"品牌方-团队"对里出现过的品牌方
         // （不管那个品牌方下有没有配团队，只要有关联记录就算数）
@@ -454,23 +472,35 @@ public class CollaborationTrackingService {
         // - 该品牌方下只有 1 个团队选项：不管请求里传的是什么，直接采用这唯一的选项
         // - 该品牌方下有多个团队选项（包括"有团队"和"没配团队"这两种都算一个选项）：
         //   请求里必须明确指定其中一个，且必须能对上，对不上就报错
-        if (teamOptions == null || teamOptions.isEmpty()) {
-            if (req.getTeamId() != null) {
-                throw new RuntimeException("请先选择品牌方，或该红人在此品牌方下没有关联任何团队");
+        //
+        // 2026-08-21 修复：teamId 这块跟 countryMarket 一样是"保存时的快照"，改造前无条件每次
+        // 都重新按红人团队关联*当前*的状态算一遍——编辑/Excel更新时哪怕这次改动跟团队完全无关，
+        // 只要关联数据后来变了，也会被静默改掉（关联现在只剩1个选项时）或者直接把整条保存拦下来
+        // 报错（关联现在变多、旧值对不上时）。修复后：新建时行为不变；编辑/Excel导入更新时，
+        // 只有请求明确提供了新值（req.getTeamIdProvided() 不是显式 false——Excel"红人团队"列
+        // 留空时才会显式传 false，前端单条编辑表单/批量新建走的都是实时对着当前选项操作，不传
+        // 这个字段时默认按"已提供"处理，行为不变）才重新计算/校验，否则原样保留已有的团队快照。
+        boolean teamShouldRecompute = existingOrNull == null || !Boolean.FALSE.equals(req.getTeamIdProvided());
+        if (teamShouldRecompute) {
+            if (teamOptions == null || teamOptions.isEmpty()) {
+                if (req.getTeamId() != null) {
+                    throw new RuntimeException("请先选择品牌方，或该红人在此品牌方下没有关联任何团队");
+                }
+                tracking.setTeam(null);
+            } else if (teamOptions.size() == 1) {
+                Long onlyTeamId = teamOptions.get(0).getTeamId();
+                tracking.setTeam(onlyTeamId != null ? teamCache.findById(onlyTeamId) : null);
+            } else {
+                boolean matched = teamOptions.stream()
+                        .anyMatch(t -> java.util.Objects.equals(t.getTeamId(), req.getTeamId()));
+                if (!matched) {
+                    throw new RuntimeException("该红人在品牌方 [" + tracking.getBrand().getName()
+                            + "] 下关联了多个团队，请明确选择其中一个团队");
+                }
+                tracking.setTeam(req.getTeamId() != null ? teamCache.findById(req.getTeamId()) : null);
             }
-            tracking.setTeam(null);
-        } else if (teamOptions.size() == 1) {
-            Long onlyTeamId = teamOptions.get(0).getTeamId();
-            tracking.setTeam(onlyTeamId != null ? teamCache.findById(onlyTeamId) : null);
-        } else {
-            boolean matched = teamOptions.stream()
-                    .anyMatch(t -> java.util.Objects.equals(t.getTeamId(), req.getTeamId()));
-            if (!matched) {
-                throw new RuntimeException("该红人在品牌方 [" + tracking.getBrand().getName()
-                        + "] 下关联了多个团队，请明确选择其中一个团队");
-            }
-            tracking.setTeam(req.getTeamId() != null ? teamCache.findById(req.getTeamId()) : null);
         }
+        // else：编辑/Excel更新且请求未明确提供新值——保留 tracking（=existingOrNull）已有的团队快照，不动
 
         tracking.setPlatform(req.getPlatform());
         tracking.setDemandContent(req.getDemandContent());
@@ -1461,6 +1491,13 @@ public class CollaborationTrackingService {
         }
         Date batchNow = new Date();
         int updated = 0;
+        // 2026-08-21 性能修复：以前在循环内部逐条调 requirementService.refreshCompletedAt()，
+        // 每条记录各自触发一次 2-4 条查询——同一个需求编号底下常常挂着好几条记录（同一个需求
+        // 的不同视频条目），几百条命中记录很容易被拆成几百次冗余查询，在 Render 免费层只有
+        // 3 个数据库连接的情况下排队执行，容易超过前端 30 秒的请求超时（Shawn 反馈处理6月
+        // 391条数据时前端报"网络连接失败"，根因就是这里）。改成只在循环里收集"这次进度真的
+        // 变了"的需求编号，循环结束后统一调一次 refreshCompletedAtBatch()，批量刷新
+        java.util.Set<String> changedRequirementNos = new java.util.HashSet<>();
         for (CollaborationTracking t : matched) {
             boolean progressChanged = t.getProgress() != CollaborationProgress.PAYMENT_RECEIVED;
             t.setProgress(CollaborationProgress.PAYMENT_RECEIVED);
@@ -1474,12 +1511,15 @@ public class CollaborationTrackingService {
             // 计算口径，但每次状态变更都跟着重算一遍，避免遗留脏数据）
             profitCalculator.calculate(t);
             trackingRepo.save(t);
-            // 联动刷新"红人需求管理"里这条需求的完成时间（取关联记录里最晚的视频发布时间）
+            // 只收集需求编号，不在循环内立即刷新——见上面方法注释
             if (progressChanged && t.getInternalRequirementNo() != null) {
-                requirementService.refreshCompletedAt(t.getInternalRequirementNo());
+                changedRequirementNos.add(t.getInternalRequirementNo());
             }
             updated++;
         }
+        // 联动批量刷新"红人需求管理"里这些需求的完成时间（取各自关联记录里最晚的视频发布时间），
+        // 一次性处理，不再逐条调用
+        requirementService.refreshCompletedAtBatch(changedRequirementNos);
         return updated;
     }
 

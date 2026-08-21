@@ -32,6 +32,18 @@ public class CollaborationTrackingRequest {
     private Long teamId;
 
     /**
+     * 2026-08-21 新增：这次请求是否*明确*想设置/改动 teamId——teamId 是 Long，null 本身就是
+     * "该红人在这个品牌方下没有团队"这个合法值，没法像 countryMarket（String）那样直接靠"是否
+     * 为空"区分"请求没提供新值"和"请求明确要清空"。不传这个字段时（前端单条编辑表单/批量新建
+     * 走的都是这条路径，本身就是实时对着当前团队选项操作，不需要特意区分）默认视为 true——
+     * 跟改造前行为完全一致，每次都重新按当前红人团队关联校验/覆盖。只有 Excel 导入更新场景
+     * （CollaborationTrackingExcelHandler，"红人团队"列留空 = 不想动这个字段）会显式传 false，
+     * 配合 CollaborationTrackingService.doSave() 里"请求未明确提供新值时保留已有快照，不再
+     * 跟着红人团队关联的当前状态静默漂移"的修复使用。
+     */
+    private Boolean teamIdProvided;
+
+    /**
      * 服务国家/市场：选中的红人在红人库里只维护了 1 个服务国家/市场时可以不传（后端自动采用
      * 这唯一的选项）；维护了多个时必须传其中一个合法值，由 service 层校验。
      */

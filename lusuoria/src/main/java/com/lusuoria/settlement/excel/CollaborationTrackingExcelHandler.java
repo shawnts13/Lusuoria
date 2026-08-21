@@ -660,6 +660,11 @@ public class CollaborationTrackingExcelHandler {
                 // 红人团队：这里只负责按名称查出 id（没填就是 null），
                 // 具体"这个红人在这个品牌方下能不能用这个团队"交给 service.save() 统一校验
                 // （0个选项时必须留空、1个选项时可以留空自动采用、多个选项时必须填对其中一个）
+                //
+                // 2026-08-21 新增 teamIdProvided：这一列留空，在更新场景下代表"不想动这个字段"
+                // 而不是"想清空团队"——显式传 false，配合 doSave() 里"未明确提供新值时保留已有
+                // 快照"的修复，避免这一列没填也会被当成"红人团队关联现在只有0/1个选项"重新计算，
+                // 静默把已经落库的团队改掉/清空（新建场景不受影响，doSave() 新建时始终会重新算）
                 String teamNameRaw = getStr(row, colMap, "红人团队");
                 if (teamNameRaw != null && !teamNameRaw.trim().isEmpty()) {
                     InfluencerTeam team = teamCache.findByName(teamNameRaw.trim());
@@ -668,6 +673,9 @@ public class CollaborationTrackingExcelHandler {
                         continue;
                     }
                     req.setTeamId(team.getId());
+                    req.setTeamIdProvided(true);
+                } else {
+                    req.setTeamIdProvided(false);
                 }
 
                 // 服务国家/市场：这里只负责按原样传值，具体"这个红人只有0/1个选项时忽略这个值/
