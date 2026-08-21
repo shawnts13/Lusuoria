@@ -1740,9 +1740,16 @@ public class ProgressReminderService {
         if (groupedPmId == null) {
             return audienceRoleLabel + "-" + empName + "-手下的";
         }
+        // "项目管理员"卡片标题格式（2026-08-21 改版，Shawn 反馈原来"项目管理员-XX-管理的
+        // 项目负责人-YY-手下的"这个顺序不好看）：改成以"项目负责人"开头、项目管理员的名字挪进
+        // 括号里作为补充说明——"项目负责人-梁珈绫（对应的项目管理员：吴凤懿）-手下的..."。
+        // 注意 audienceRoleLabel 参数在这个分支不再直接拼进标题里（调用方仍然传"项目管理员"，
+        // 只是为了保持 ProgressReminder.audienceEmployeeRole 这个字段本身不变——那个字段是
+        // resolveVisibleReminders() 用来识别/过滤"项目管理员卡片"的依据，不能因为标题文案
+        // 改版就跟着变，见 isProjectAdminCard() 的说明）
         Employee pm = employeeCache.findById(groupedPmId);
         String pmName = pm != null ? pm.getName() : ("员工#" + groupedPmId);
-        return audienceRoleLabel + "-" + empName + "-管理的项目负责人-" + pmName + "-手下的";
+        return "项目负责人-" + pmName + "（对应的项目管理员：" + empName + "）-手下的";
     }
 
     // ============ 查询（供 Controller 用） ============
@@ -1777,6 +1784,17 @@ public class ProgressReminderService {
     }
 
     /** 按当前登录账号的角色/权限，筛出这个人能看到的提醒列表（全量可见 vs 按角色/员工定向可见，见类注释权限矩阵） */
+    /**
+     * 这条提醒是不是"项目管理员"顺带可见的那批卡片（2026-08-21 新增）：只看
+     * audienceEmployeeRole 这个纯展示用字段是不是"项目管理员"——不受标题文案改动影响
+     * （buildOwnerPrefix() 2026-08-21 起把这类卡片的标题改成以"项目负责人"开头展示，但
+     * audienceEmployeeRole 这个字段本身保持不变，专门留给这种"按类型过滤"的场景用，两者是
+     * 分开的：一个管标题怎么显示，一个管这条记录的"类型"是什么）。
+     */
+    private boolean isProjectAdminCard(ProgressReminder r) {
+        return "项目管理员".equals(r.getAudienceEmployeeRole());
+    }
+
     private List<ProgressReminder> resolveVisibleReminders() {
         if (hasFullReminderVisibility()) {
             List<ProgressReminder> all = new ArrayList<>(reminderRepo.findAllByIsDeletedFalse());
@@ -1785,6 +1803,13 @@ public class ProgressReminderService {
             if (!RoleUtil.isAdmin()) {
                 all.removeIf(r -> ADMIN_ONLY_CATEGORIES.contains(r.getCategory()));
             }
+            // 2026-08-21 新增：管理层/ADMIN 全量可见时排除"项目管理员"卡片——这类卡片的内容
+            // 本来就是从某个项目负责人自己的卡片"顺带"复制出来的一份（同一批记录），管理层
+            // 已经能通过项目负责人自己的卡片看到完全一样的信息，两张卡片放在一起纯属重复
+            // （Shawn 反馈"项目负责人-梁珈绫-手下的15笔..."和"项目管理员-吴凤懿-管理的项目
+            // 负责人-梁珈绫-手下的15笔..."内容完全一样）。"项目管理员"卡片存在的意义只是让
+            // 项目管理员本人在自己的"待处理"视角能看到，不是给管理层看的，见 isProjectAdminCard()
+            all.removeIf(this::isProjectAdminCard);
             return all;
         }
         List<ProgressReminder> result = new ArrayList<>();
@@ -1793,9 +1818,12 @@ public class ProgressReminderService {
             result.addAll(reminderRepo.findByAudienceEmployeeRole(FINANCE_ROLE));
         }
         // 2026-07 新增：法务全量可见合同相关提醒（合同上传逾期 + 合同即将到期），不按具体
-        // 项目负责人/是否涉及执行人员过滤——这两类跟法务的职责直接相关，不是"顺带看到"
+        // 项目负责人/是否涉及执行人员过滤——这两类跟法务的职责直接相关，不是"顺带看到"。
+        // 2026-08-21 同样排除"项目管理员"卡片，理由同上面管理层那段——法务全量可见这两类时
+        // 也会看到项目负责人自己的卡片，项目管理员卡片是重复信息
         if (LEGAL_ROLE.equals(employeeRole)) {
-            result.addAll(reminderRepo.findByCategoryIn(CONTRACT_CATEGORIES));
+            result.addAll(reminderRepo.findByCategoryIn(CONTRACT_CATEGORIES).stream()
+                    .filter(r -> !isProjectAdminCard(r)).collect(Collectors.toList()));
         }
         Long employeeId = employeeRoleUtil.getCurrentEmployeeId();
         if (employeeId != null) {
