@@ -58,6 +58,8 @@ public class DashboardStatsService {
     @Autowired private CollaborationTrackingRepository trackingRepo;
     @Autowired private BrandCache brandCache;
     @Autowired private EmployeeCache employeeCache;
+    // "项目管理员"固定月薪判断需要（2026-08-21 新增）
+    @Autowired private com.lusuoria.settlement.util.EmployeeRoleUtil employeeRoleUtil;
     @Autowired private ExchangeRateService exchangeRateService;
     @Autowired private com.lusuoria.settlement.util.ProfitCalculator profitCalculator;
     @Autowired private CommissionBonusService commissionBonusService;
@@ -389,19 +391,21 @@ public class DashboardStatsService {
     }
 
     /**
-     * "项目管理员"固定月薪合计（人民币，2026-08-21 新增）——第三个"内部其他员工成本"贡献项，
-     * 跟财务/IT后勤固定月薪、法务当月工资并列（都要从公司利润里扣掉）。取数方式仿
-     * tierBonusTotalUsd()：只统计 finalConfirmed=true 的 Payslip 快照（detailJson 里的
-     * projectAdminSalaryRmb，PayslipService.computeProjectManager() 写入，人民币原值，不需要
-     * 按汇率换算），逐月累加（跟 otherStaffCostRmb()/legalStaffCostRmb() 一样是"按月份列表求和"
-     * 的思路，不是"当前值 × 月份数"——项目管理员固定月薪本身可能中途变过，必须逐月读各自那个
-     * 月份确认时冻结的快照值，不能用现在的 Employee.projectAdminFixedMonthlySalary 现值回填
-     * 历史月份）。
+     * "项目管理员"固定月薪合计（人民币）——第三个"内部其他员工成本"贡献项，跟财务/IT后勤
+     * 固定月薪并列（都要从公司利润里扣掉）。
      *
-     * 这里跟 PayslipService.computeManagement() 里同样读 projectAdminSalaryRmb 的那段逻辑是
-     * 两份独立实现（历史上 tierBonusAmount/法务工资都各自出过一次"两边公式漏算导致对不上"的
-     * bug，见 payslip_dashboard_profit_mismatch 记忆），这里刻意保持跟 PayslipService 那边
-     * 完全相同的判断条件（finalConfirmed + 直接读快照原值不做转换），降低再次跑偏的风险。
+     * 2026-08-21 同日修正：最初仿照 tierBonusTotalUsd()/法务工资，只统计 finalConfirmed=true
+     * 的 Payslip 快照——但这个门槛是给"这个月的确切金额要等确认时才能算出来"的值用的（阶梯
+     * Bonus 依赖当月提成总额锁定；法务工资是每月手动录入，没设置就是真的没有）。项目管理员
+     * 固定月薪不是这类值，它完全由 Employee 配置决定（固定月薪 + 生效日期），本质跟财务/
+     * IT后勤的固定月薪是同一种性质——不需要等这个人的工资单被确认才能知道金额。改成跟
+     * otherStaffCostRmb() 同一个思路：直接读 Employee 当前配置，按"生效日期是否覆盖到这个
+     * 月份"逐月判断资格（isProjectAdminEligibleMonth()，跟 isBeforeHireMonth() 是同一套
+     * "按月份列表算资格月数、不是简单乘以总月数"的写法）。
+     *
+     * Shawn 反馈：给某项目负责人设置了9月生效的项目管理员身份，切到数据看板9月却在"内部其他
+     * 员工成本明细"里看不到这一项——根因就是最初错误地用了 finalConfirmed 门槛，9月这个人
+     * 压根还没有任何工资单记录（更没确认），自然读不到任何快照。
      */
     private BigDecimal projectAdminCostRmb(List<String> months) {
         BigDecimal sum = BigDecimal.ZERO;
@@ -409,23 +413,25 @@ public class DashboardStatsService {
         return sum;
     }
 
-    /** projectAdminCostRmb() 的按人拆分版本，供 drilldownOtherStaffCost() 复用，避免两份重复的解析逻辑 */
+    /** projectAdminCostRmb() 的按人拆分版本，供 drilldownOtherStaffCost() 复用 */
     private Map<Long, BigDecimal> projectAdminCostRmbByEmployee(List<String> months) {
         Map<Long, BigDecimal> result = new HashMap<>();
-        for (String month : months) {
-            for (Payslip p : payslipRepo.findByYearMonthAndIsDeletedFalse(month)) {
-                if (!Boolean.TRUE.equals(p.getFinalConfirmed()) || p.getDetailJson() == null) continue;
-                try {
-                    PayslipDetailResponse snap = objectMapper.readValue(p.getDetailJson(), PayslipDetailResponse.class);
-                    if (snap.getProjectAdminSalaryRmb() != null) {
-                        result.merge(p.getEmployeeId(), snap.getProjectAdminSalaryRmb(), BigDecimal::add);
-                    }
-                } catch (Exception e) {
-                    // 反序列化失败不该让整个看板汇总接口挂掉，跳过这一条按0处理，同 tierBonusTotalUsd()
-                }
-            }
+        for (Employee e : employeeCache.getAll()) {
+            if (!employeeRoleUtil.isProjectAdmin(e)) continue;
+            long eligibleMonths = months.stream().filter(m -> isProjectAdminEligibleMonth(e, m)).count();
+            if (eligibleMonths <= 0) continue;
+            result.put(e.getId(), safe(e.getProjectAdminFixedMonthlySalary()).multiply(BigDecimal.valueOf(eligibleMonths)));
         }
         return result;
+    }
+
+    /** 该项目管理员在给定月份是否已经生效（>= projectAdminSince 所在月份），跟
+     *  PayslipService.resolveProjectAdminSalaryRmb() 是同一套判断口径，两个模块各自维护一份
+     *  （跟 isBeforeHireMonth() 一样，这两个模块目前没有共享工具类） */
+    private boolean isProjectAdminEligibleMonth(Employee e, String yearMonth) {
+        if (e.getProjectAdminSince() == null) return false;
+        String sinceMonth = new SimpleDateFormat("yyyyMM").format(e.getProjectAdminSince());
+        return yearMonth.compareTo(sinceMonth) >= 0;
     }
 
     /**

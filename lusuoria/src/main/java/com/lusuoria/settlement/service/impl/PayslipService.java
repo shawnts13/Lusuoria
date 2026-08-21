@@ -158,7 +158,7 @@ public class PayslipService {
         List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
         Map<Long, Map<Long, ExecutorWageConfirmation>> confirmationByManagerId = fetchWageConfirmations(yearMonth);
         Map<Long, PayslipDetailResponse> liveMap =
-                batchComputeCommissionRoles(commissionRoleEmployees, rate, orders, confirmationByManagerId);
+                batchComputeCommissionRoles(yearMonth, commissionRoleEmployees, rate, orders, confirmationByManagerId);
 
         // 本月所有执行人员的"确认"按钮拦截原因批量算好（见上面方法注释），不在下面的行循环里
         // 逐个现查——跟 batchComputeCommissionRoles 共用同一份 orders/confirmationByManagerId，
@@ -682,16 +682,13 @@ public class PayslipService {
         rows.sort((a, b) -> b.getVideoCount().compareTo(a.getVideoCount()));
         rows.add(buildSummaryRow(rows));
 
-        // 当月所有"已确认"的其他员工：阶梯Bonus + 奖金 + 法务当月工资，都要从公司利润里扣掉
-        // （上面这套公式本身只扣了内部执行成本/负责人提成，没扣这三项）。法务工资挪到这里
-        // 一起处理是 2026-08-10 修复：之前"内部其他员工成本"只累加了财务/IT后勤固定月薪，
-        // 完全漏了法务——数据看板那边（DashboardStatsService.getSummary()）2026-07 起已经把
-        // 法务当月工资（Payslip.legalSalaryRmb）计入"内部其他员工成本"，但这边没有同步改，
-        // 导致管理层确认某个月后，数据看板算出来的公司利润比工资单这边少（少扣的法务工资部分
-        // 让工资单的利润显得偏高），Shawn 手动比对两边公式发现的。法务工资只在这里、从
-        // othersConfirmed 里取（employeeRole 字段是 confirm() 时顺带存的，不用再单独查一次
-        // 员工角色）——法务不涉及"手下执行人员工资"那套下游依赖，只要 confirmed 就是
-        // finalConfirmed，所以能跟阶梯Bonus/奖金用同一批 othersConfirmed 数据源，不需要额外查询。
+        // 阶梯Bonus + 奖金 + 法务当月工资 + 项目管理员固定月薪，都要从公司利润里扣掉（上面这套
+        // 公式本身只扣了内部执行成本/负责人提成，没扣这四项）。这四项里只有阶梯Bonus 真正需要
+        // "该员工工资单已 finalConfirmed" 这个前置条件（当月提成总额要锁定了才能判档）——
+        // 其余三项都是 Payslip 表上/Employee 配置上直接能读到的确切值，不该被这个门槛卡住，
+        // 2026-08-21 起改成分两批读：othersConfirmed（finalConfirmed=true）只给阶梯Bonus 用，
+        // 奖金/法务工资见下面 othersThisMonth 那段的说明，项目管理员固定月薪在上面 allEmployees
+        // 循环里已经处理。
         List<Payslip> othersConfirmed = payslipRepo
                 .findByYearMonthAndFinalConfirmedTrueAndIsDeletedFalseAndEmployeeIdNot(yearMonth, mgmt.getId());
         BigDecimal tierBonusTotalUsd = BigDecimal.ZERO;
@@ -717,13 +714,52 @@ public class PayslipService {
                         .amount(salary.setScale(SCALE, RoundingMode.HALF_UP))
                         .isSummaryRow(false).build());
             }
+            // "项目管理员"固定月薪（2026-08-21 新增，同日修正）：一开始误放进下面
+            // othersConfirmed 循环、按 finalConfirmed 门槛计入——那套门槛是给"这个月的确切
+            // 金额要等确认时才能算出来"的值用的（阶梯Bonus 要等提成总额锁定；法务工资是
+            // 每月手动录入，"设置了没有"本身就是信息）。项目管理员固定月薪不是这类值——它
+            // 完全由 Employee 配置决定（固定月薪 + 生效日期），跟财务/IT后勤的固定月薪是
+            // 同一种性质，不需要等这个人的工资单被确认才能知道金额，所以改成跟财务/IT后勤
+            // 一样在这个无条件循环里直接算，不再依赖 othersConfirmed（Shawn 反馈"设置了
+            // 9月生效但还没确认任何工资单，数据看板9月的内部其他员工成本明细里看不到项目
+            // 管理员这一项"，根因就是最初这个门槛设错了）
+            BigDecimal projectAdminSalary = resolveProjectAdminSalaryRmb(e, yearMonth);
+            if (projectAdminSalary != null) {
+                otherStaffCostRmb = otherStaffCostRmb.add(projectAdminSalary);
+                otherStaffCostBreakdownRows.add(PayslipDimensionRow.builder()
+                        .brandName("项目管理员 - " + e.getName())
+                        .amount(projectAdminSalary.setScale(SCALE, RoundingMode.HALF_UP))
+                        .isSummaryRow(false).build());
+            }
         }
+        // tierBonus 只从 othersConfirmed（finalConfirmed=true）取——这是真正"没确认就是算不出来"
+        // 的值：阶梯Bonus 要按当月最终锁定的提成总额判档，没到 finalConfirmed 之前这个数字本身
+        // 就不存在，不是"故意不展示"，是真的还没有
         for (Payslip other : othersConfirmed) {
             PayslipDetailResponse snap = readSnapshot(other);
             if (snap.getTierBonusAmount() != null) {
                 tierBonusTotalUsd = tierBonusTotalUsd.add(snap.getTierBonusAmount());
                 tierBonusByManager.put(other.getEmployeeId(), snap.getTierBonusAmount());
             }
+        }
+        // 2026-08-21 修复：奖金（extraBonusAmount）/法务当月工资（legalSalaryRmb）之前也是从
+        // othersConfirmed 里取，等于"这个人没确认工资单，管理层这边看到的奖金/内部其他员工成本
+        // 就当0算"——但这两个值是管理层直接手动录入在 Payslip 表上的，一旦设置就是确切金额，
+        // 不像阶梯Bonus那样依赖"当月提成锁定"这个前置条件，不该被这个门槛卡住。Shawn 反馈"给
+        // 员工设置了奖金、还没确认工资单，公司利润公式下面奖金合计还是0"，违反了"未确认时看到
+        // 的应该是实时计算结果，只有'确认'这个动作本身才该被下游依赖挡住"这条预期——数据看板
+        // 那边的 DashboardStatsService.extraBonusTotalUsd() 从一开始就是无条件读取（不筛
+        // finalConfirmed），这里是两边公式又一次走偏，这次是工资单这边偏了、看板是对的。改成
+        // 读"这个月全部未软删的工资单记录"（不筛 finalConfirmed），法务角色改查 allEmployees
+        // 的实时角色（不能再依赖 Payslip.employeeRole——那个字段只有 confirm() 时才写入，
+        // 未确认的法务工资单这个字段是 null，之前混在 othersConfirmed 循环里巧合没暴露，
+        // 因为未确认的法务本来就不会进 othersConfirmed）
+        Map<Long, String> roleById = allEmployees.stream()
+                .collect(Collectors.toMap(Employee::getId, Employee::getRole, (a, b) -> a));
+        List<Payslip> othersThisMonth = payslipRepo.findByYearMonthAndIsDeletedFalse(yearMonth).stream()
+                .filter(p -> !p.getEmployeeId().equals(mgmt.getId()))
+                .collect(Collectors.toList());
+        for (Payslip other : othersThisMonth) {
             if (other.getExtraBonusAmount() != null) {
                 boolean isRmb = "RMB".equals(other.getExtraBonusCurrency());
                 BigDecimal usd = isRmb
@@ -733,21 +769,11 @@ public class PayslipService {
                         : other.getExtraBonusAmount();
                 extraBonusTotalUsd = extraBonusTotalUsd.add(usd);
             }
-            if ("法务".equals(other.getEmployeeRole()) && other.getLegalSalaryRmb() != null) {
+            if ("法务".equals(roleById.get(other.getEmployeeId())) && other.getLegalSalaryRmb() != null) {
                 otherStaffCostRmb = otherStaffCostRmb.add(other.getLegalSalaryRmb());
                 otherStaffCostBreakdownRows.add(PayslipDimensionRow.builder()
                         .brandName("法务 - " + employeeNameOf(other.getEmployeeId()))
                         .amount(other.getLegalSalaryRmb().setScale(SCALE, RoundingMode.HALF_UP))
-                        .isSummaryRow(false).build());
-            }
-            // "项目管理员"固定月薪（2026-08-21 新增）：来源是同一个已经解出来的快照对象 snap，
-            // 不需要额外查询——这个字段只在 type=PROJECT_MANAGER 且这个人是项目管理员时非空，
-            // 见 PayslipDetailResponse.projectAdminSalaryRmb 字段注释
-            if (snap.getProjectAdminSalaryRmb() != null) {
-                otherStaffCostRmb = otherStaffCostRmb.add(snap.getProjectAdminSalaryRmb());
-                otherStaffCostBreakdownRows.add(PayslipDimensionRow.builder()
-                        .brandName("项目管理员 - " + employeeNameOf(other.getEmployeeId()))
-                        .amount(snap.getProjectAdminSalaryRmb().setScale(SCALE, RoundingMode.HALF_UP))
                         .isSummaryRow(false).build());
             }
         }
@@ -824,7 +850,7 @@ public class PayslipService {
      * 方法注释），两处共用同一份数据才能真正做到"整月记录只查一次"。
      */
     private Map<Long, PayslipDetailResponse> batchComputeCommissionRoles(
-            List<Employee> employees, BigDecimal rate,
+            String yearMonth, List<Employee> employees, BigDecimal rate,
             List<CollaborationTracking> orders, Map<Long, Map<Long, ExecutorWageConfirmation>> confirmationByManagerId) {
         Map<Long, Employee> pmById = new HashMap<>();
         Map<Long, Employee> execById = new HashMap<>();
@@ -858,9 +884,16 @@ public class PayslipService {
             List<PayslipDimensionRow> rows = new ArrayList<>(
                     pmGrouped.getOrDefault(e.getId(), Collections.emptyMap()).values());
             List<CommissionBonusTier> tiers = tiersByPmId.getOrDefault(e.getId(), Collections.emptyList());
-            result.put(e.getId(), buildProjectManagerDetail(
+            PayslipDetailResponse detail = buildProjectManagerDetail(
                     e, rows, pmCommission.getOrDefault(e.getId(), BigDecimal.ZERO), rate, tiers,
-                    byPmThenExec, confirmationByManagerId));
+                    byPmThenExec, confirmationByManagerId);
+            // 2026-08-21 修复：这条批量路径（工资单列表页"总工资"列用）之前完全没调
+            // resolveProjectAdminSalaryRmb()，导致项目管理员固定月薪只在单独打开"查看详情"
+            // （走 computeProjectManager()）时才会被算进去，列表页"总工资"列一直显示成不含
+            // 这块的旧值——Shawn 反馈"详情里有这行、但总工资栏位还是0"，根因就是这里，
+            // 两条路径本该展示同一个数字，之前只改了 computeProjectManager() 那一条
+            detail.setProjectAdminSalaryRmb(resolveProjectAdminSalaryRmb(e, yearMonth));
+            result.put(e.getId(), detail);
         }
         for (Employee e : execById.values()) {
             result.put(e.getId(), buildExecutorCrossManagerDetail(e.getId(), byPmThenExec, confirmationByManagerId));
