@@ -91,10 +91,10 @@ public class CollaborationTrackingExcelHandler {
         {"视频发布链接",               "0", "0"},
         {"视频发布时间",               "0", "0"},  // 原名"发布时间"，导入时仍兼容旧列名"发布时间"
         {"视频项目进度",               "0", "0"},  // 原名"进度"，导入时仍兼容旧列名"进度"
-        {"收到回款日期",               "0", "1"},  // 2026-08-21 新增，仅导出展示，不放进导入模板（跟"红人结款
-                                                    // 进度"一样是"状态流转"/"批量标记为已收到客户回款"专属写入口，
-                                                    // 不通过 Excel 导入设置——避免导入时缺这一列却把进度设成
-                                                    // "已收到客户回款"，doSave() 校验会直接拒绝这一行）
+        {"收到回款日期",               "0", "0"},  // 2026-08-21 新增，起初仅导出展示；同日改成导入也支持——
+                                                    // 财务用 Excel 导入更新记录到"已收到客户回款"时，这一列
+                                                    // 必须能一起填，不然 doSave() 的必填校验永远读不到值，见
+                                                    // parseDateColumn() 的用法
         {"红人结款进度",               "0", "1"},  // 2026-08 起完全由系统控制，模板不再提供这一列，仅导出展示
         {"项目视频类型",               "0", "0"},
         {"采买旧视频的原链接",         "0", "0"},
@@ -146,6 +146,10 @@ public class CollaborationTrackingExcelHandler {
     private static final String PUBLISH_DATE_HINT =
         "只有当\"视频项目进度\"为\"已发布（未结算）\"、\"已加入客户未结算列表\"、\"客户已结算\"、"
         + "\"已收到客户回款\"时才能填写，否则这一行会导入失败";
+
+    /** 模板里"收到回款日期"表头的提示语（2026-08-21 新增，Excel 原生批注，鼠标悬停可见） */
+    private static final String CLIENT_PAYMENT_RECEIVED_DATE_HINT =
+        "只有当\"视频项目进度\"为\"已收到客户回款\"时才必须填写；这个状态下缺了这一列会导入失败";
 
     /** 模板里两个金额列表头的提示语（Excel 原生批注，鼠标悬停可见） */
     private static final String MONEY_FIELD_HINT =
@@ -276,6 +280,8 @@ public class CollaborationTrackingExcelHandler {
 
         // "视频发布时间"表头加一条批注提示前置条件，避免误填
         addHeaderComment(sheet, wb, colIdxMap, "视频发布时间", PUBLISH_DATE_HINT);
+        // "收到回款日期"表头同样加一条批注提示前置条件（2026-08-21 新增）
+        addHeaderComment(sheet, wb, colIdxMap, "收到回款日期", CLIENT_PAYMENT_RECEIVED_DATE_HINT);
         // "视频发布链接"表头加一条批注提示支持多条+需要跟"合作平台"对得上
         addHeaderComment(sheet, wb, colIdxMap, "视频发布链接", PUBLISH_LINK_HINT);
         // 两个金额列加批注提示必须是数字，避免误填文本备注
@@ -290,6 +296,7 @@ public class CollaborationTrackingExcelHandler {
         ex.put("需求内容(具体产品名)", "手持游戏机");
         ex.put("视频发布链接", "https://instagram.com/p/xxx\nhttps://www.tiktok.com/@bigdogtech/video/xxx");
         ex.put("视频发布时间", "2026-04-09");
+        ex.put("收到回款日期", "");  // 仅"视频项目进度"为"已收到客户回款"时才必须填写，其余情况留空
         ex.put("视频项目进度", "已发布（未结算）");
         ex.put("项目视频类型", "实拍新视频");
         ex.put("采买旧视频的原链接", "");  // 仅"项目视频类型"为"旧素材重发"时才填写，其余情况留空
@@ -705,6 +712,13 @@ public class CollaborationTrackingExcelHandler {
                 Date publishDate = parseDate(row, colMap, dateFormats);
                 req.setPublishDate(publishDate);
 
+                // 收到回款日期（2026-08-21 新增）：不像视频发布时间那样有"进度不达标就不能填"的
+                // 强校验，这里原样读了就设置——跟 clientOrderId/clientPaymentBatch 是同一种"任何
+                // 时候都能填，只在流转到特定进度时才强制要求"的字段，具体的必填校验交给
+                // doSave() 统一处理（视频项目进度="已收到客户回款"却没有这一列的值时，doSave()
+                // 会抛出"必须填写收到回款日期"，这里不用重复校验）
+                req.setClientPaymentReceivedDate(parseDateColumn(row, colMap, dateFormats, "收到回款日期"));
+
                 // 视频项目进度、项目视频类型：Excel 导入无论新建还是更新已有记录，都允许带状态
                 // 填了但匹配不到有效选项时要报错，不能像以前那样静默地变成空值
                 String progressRaw = firstNonNull(
@@ -1039,9 +1053,18 @@ public class CollaborationTrackingExcelHandler {
         return CollaborationProgress.fromLabel(label.trim());
     }
 
-    /** 读"视频发布时间"列：优先按 Excel 原生日期/公式求值取，取不到再退化成按候选格式挨个尝试解析文本 */
+    /** 读"视频发布时间"列，兼容旧列名 */
     private Date parseDate(Row row, Map<String, Integer> colMap, SimpleDateFormat[] formats) {
-        Integer idx = firstNonNullIdx(colMap, "视频发布时间", "发布时间", "发布日期");
+        return parseDateColumn(row, colMap, formats, "视频发布时间", "发布时间", "发布日期");
+    }
+
+    /**
+     * 读一个日期类列：优先按 Excel 原生日期/公式求值取，取不到再退化成按候选格式挨个尝试解析
+     * 文本（2026-08-21 从 parseDate() 抽出来改成通用方法，供"视频发布时间"和"收到回款日期"
+     * 两列共用同一套解析逻辑，headers 支持传多个候选列名兼容旧列名）。
+     */
+    private Date parseDateColumn(Row row, Map<String, Integer> colMap, SimpleDateFormat[] formats, String... headers) {
+        Integer idx = firstNonNullIdx(colMap, headers);
         if (idx == null) return null;
         Cell cell = row.getCell(idx);
         if (cell == null) return null;
