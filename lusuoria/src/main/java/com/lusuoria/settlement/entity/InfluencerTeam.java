@@ -30,11 +30,11 @@ public class InfluencerTeam extends BaseEntity {
     private Long brandId;
 
     /**
-     * 特殊：即使品牌方整体是"一年签一次合同"，这个团队单独按"一次需求签一次合同"处理。
-     * 只支持这一个方向的覆盖——品牌方是"每需求一签"时，团队不能覆盖成"一年一签"。
-     * null 按 false 处理（沿用 Brand.requiresInvoice 的 null 安全默认思路：用 Boolean 包装类型
-     * 而不是基本类型 boolean，这样 ddl-auto=update 给已有数据的表加这个新列时不需要在同一条
-     * ALTER语句里带 DEFAULT，不会导致部署时因为 NOT NULL 约束报错）。
+     * 团队级"合同签订周期"覆盖：三态——null=不覆盖，跟随品牌方整体设置；true=覆盖成"一次
+     * 需求签一次合同"；false=覆盖成"一年签一次合同"。2026-08-21 起支持双向覆盖（原来只支持
+     * "品牌方一年一签、团队覆盖成每需求一签"这一个方向，Shawn 反馈需要反过来也能覆盖——
+     * 品牌方整体是"每需求一签"，个别团队特殊按"一年签一次合同"处理），跟同一个实体上
+     * involvesCorporateInvoice 字段的双向覆盖是同一个思路，见 isPerRequirementContract()。
      */
     @Column(name = "force_per_requirement_contract")
     private Boolean forcePerRequirementContract;
@@ -50,13 +50,16 @@ public class InfluencerTeam extends BaseEntity {
     private Date defaultContractEndDate;
 
     /**
-     * 合同签订周期判定优先级统一入口：先看团队有没有覆盖，没有就退回品牌方级别配置。
-     * 只支持"品牌方一年一签、团队覆盖成每需求一签"这一个方向——品牌方本身已经是"每需求一签"
-     * 时，团队覆盖与否不影响结果。team 为空（该记录没配团队）时完全按品牌方级别判断。
+     * 合同签订周期判定优先级统一入口：团队有显式覆盖（forcePerRequirementContract 非 null）
+     * 就用团队的值（不管是 true 还是 false，都直接覆盖品牌方整体设置，双向覆盖，2026-08-21
+     * 起支持——之前只支持"品牌方一年一签、团队覆盖成每需求一签"单方向）；团队没配置
+     * （null）时退回品牌方级别判断。team 为空（该记录没配团队）时完全按品牌方级别判断。
      */
     public static boolean isPerRequirementContract(Brand brand, InfluencerTeam team) {
-        if (brand == null || brand.isPerRequirementContract()) return true;
-        return team != null && Boolean.TRUE.equals(team.getForcePerRequirementContract());
+        if (team != null && team.getForcePerRequirementContract() != null) {
+            return team.getForcePerRequirementContract();
+        }
+        return brand == null || brand.isPerRequirementContract();
     }
 
     /**

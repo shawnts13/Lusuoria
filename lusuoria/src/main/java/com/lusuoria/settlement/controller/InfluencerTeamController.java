@@ -85,10 +85,15 @@ public class InfluencerTeamController {
         }
         team.setName(name);
         team.setBrandId(req.getBrandId());
-        team.setForcePerRequirementContract(Boolean.TRUE.equals(req.getForcePerRequirementContract()));
+        // 2026-08-21 修复：forcePerRequirementContract 之前强制用 Boolean.TRUE.equals(...) 转成
+        // 纯布尔值——这个字段原本只支持"品牌方一年一签→团队覆盖成每需求一签"单方向，null 和
+        // false 在旧逻辑下效果完全等价（都是"不覆盖"），所以强转成 false 当时是无害的。现在改成
+        // 双向覆盖（InfluencerTeam.isPerRequirementContract()），false 变成了一个有意义的独立
+        // 状态（"强制：一年签一次合同"），必须原样透传 null/true/false，不能再强转——跟下面
+        // involvesCorporateInvoice 是同一个道理（那个字段当初就设计对了，这次照抄它的写法）
+        team.setForcePerRequirementContract(req.getForcePerRequirementContract());
         team.setDefaultContractEndDate(req.getDefaultContractEndDate());
-        // 三态字段，不像上面 forcePerRequirementContract 那样强制转成 false——null 就是"跟随品牌方默认"，
-        // 原样透传，不能用 Boolean.TRUE.equals(...) 强转，否则"跟随默认"这个状态就没法表达了
+        // 三态字段，原样透传，不能用 Boolean.TRUE.equals(...) 强转，否则"跟随默认"这个状态就没法表达了
         team.setInvolvesCorporateInvoice(req.getInvolvesCorporateInvoice());
         InfluencerTeam saved = teamRepo.save(team);
         teamCache.refresh();
