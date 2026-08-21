@@ -5,7 +5,7 @@ package com.lusuoria.settlement.enums;
  *
  * 枚举顺序即前端下拉框/Excel模板下拉框的展示顺序，对应真实业务流程先后：
  * 待客户出brief -> 合同已发给红人 -> 待红人下单 -> 红人已下单 -> 拍摄指导已发给红人
- * -> 待草稿 -> 待红人修改 -> 待发布
+ * -> 待草稿 -> 待客户给草稿反馈 -> 待红人修改 -> 待发布
  * -> 已发布（未结算） -> 已加入客户未结算列表 -> 客户已结算
  * -> 折损（流程外的异常终止状态，放在最后）
  *
@@ -15,6 +15,12 @@ package com.lusuoria.settlement.enums;
  * 地方依赖写死的 ordinal 数字做比较（进度倒退检测走的是 allowsPaymentProgress() 这个语义
  * 方法，不是序号），所以是安全的。滞留提醒阈值单独一档（4个工作日，可在"进度提醒阈值维护"
  * 调），见 ProgressReminderService.stallThreshold()。
+ *
+ * 2026-08-21 新增"待客户给草稿反馈"（PENDING_CLIENT_DRAFT_FEEDBACK），插在"待草稿"和"待红人
+ * 修改"之间——草稿做完发给客户之后、客户反馈意见之前，之前这段空档也没有单独的状态覆盖，跟上面
+ * "待红人下单"是同一类插入。这次滞留提醒阈值不单独开一档，直接复用"其余进度状态滞留阈值"
+ * （STALL_THRESHOLD_MID，见 ProgressReminderService.PM_EXECUTOR_3DAY_STATES），因为 Shawn
+ * 明确要求共用，不需要新增阈值参数。
  */
 public enum CollaborationProgress {
     PENDING_CLIENT_BRIEF("待客户出brief"),
@@ -23,6 +29,7 @@ public enum CollaborationProgress {
     INFLUENCER_ORDERED("红人已下单"),
     SHOOTING_GUIDE_SENT("拍摄指导已发给红人"),
     PENDING_DRAFT("待草稿"),
+    PENDING_CLIENT_DRAFT_FEEDBACK("待客户给草稿反馈"),   // 2026-08-21 新增，插在"待草稿"和"待红人修改"之间
     PENDING_REVISION("待红人修改"),          // 枚举 key 不变，仅显示名称由"待修改"改为"待红人修改"
     PENDING_PUBLISH("待发布"),
     PUBLISHED_UNSETTLED("已发布（未结算）"),

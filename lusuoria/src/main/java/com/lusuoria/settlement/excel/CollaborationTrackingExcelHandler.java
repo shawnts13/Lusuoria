@@ -117,11 +117,11 @@ public class CollaborationTrackingExcelHandler {
         return col.length > 2 && "1".equals(col[2]);
     }
 
-    // 2026-08-17 新增"待红人下单"，插在"合同已发给红人"和"红人已下单"之间，
-    // 见 CollaborationProgress 枚举类注释
+    // 2026-08-17 新增"待红人下单"，插在"合同已发给红人"和"红人已下单"之间；2026-08-21 新增
+    // "待客户给草稿反馈"，插在"待草稿"和"待红人修改"之间，见 CollaborationProgress 枚举类注释
     private static final String[] PROGRESS_LABELS = {
         "待客户出brief", "合同已发给红人", "待红人下单", "红人已下单", "拍摄指导已发给红人",
-        "待草稿", "待红人修改", "待发布",
+        "待草稿", "待客户给草稿反馈", "待红人修改", "待发布",
         "已发布（未结算）", "已加入客户未结算列表", "客户已结算", "折损"
     };
 

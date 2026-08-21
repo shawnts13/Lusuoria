@@ -89,10 +89,13 @@ public class ProgressReminderService {
 
     /** 2026-07 新增：PM_EXECUTOR_PROGRESS_STALL 里"3个工作日未流转"提醒的状态集合
      * （INFLUENCER_ORDERED 单独按5个工作日，PENDING_INFLUENCER_ORDER 单独按4个工作日
-     * [2026-08-17 新增]，见 stallThreshold()） */
+     * [2026-08-17 新增]，见 stallThreshold()）。PENDING_CLIENT_DRAFT_FEEDBACK
+     * （待客户给草稿反馈，2026-08-21 新增）不单独开一档阈值，直接归到这个集合里复用
+     * STALL_THRESHOLD_MID——Shawn 明确要求共用"其余进度状态滞留阈值"，不新增阈值参数 */
     private static final Set<CollaborationProgress> PM_EXECUTOR_3DAY_STATES = EnumSet.of(
             CollaborationProgress.PENDING_CLIENT_BRIEF, CollaborationProgress.CONTRACT_SENT,
             CollaborationProgress.SHOOTING_GUIDE_SENT, CollaborationProgress.PENDING_DRAFT,
+            CollaborationProgress.PENDING_CLIENT_DRAFT_FEEDBACK,
             CollaborationProgress.PENDING_REVISION, CollaborationProgress.PENDING_PUBLISH);
 
     /** "结款后更新提示内容"手动触发范围 */
@@ -742,9 +745,10 @@ public class ProgressReminderService {
      * 以"项目负责人-XX-手下的"命名，查看详情时执行人员看到的明细会按自己实际执行的那部分
      * 动态过滤（见 filterToMyExecutorRecords）。
      *
-     * "待红人下单"阈值4工作日（2026-08-17 新增），"红人已下单"阈值5工作日，其余6个中间状态
-     * 阈值3工作日；已发布未结算及以后的终态、或折损，不算滞留。没有项目负责人的记录（理论上
-     * 不该出现）直接跳过——没有主责人就没法归类。
+     * "待红人下单"阈值4工作日（2026-08-17 新增），"红人已下单"阈值5工作日，其余7个中间状态
+     * （含2026-08-21 新增的"待客户给草稿反馈"，复用同一档）阈值3工作日；已发布未结算及以后的
+     * 终态、或折损，不算滞留。没有项目负责人的记录（理论上不该出现）直接跳过——没有主责人就
+     * 没法归类。
      * 没有 progressChangedAt（老数据，从没触发过一次这个字段的维护逻辑）的记录也跳过，
      * 避免上线当天把所有历史记录都误判成"长期未流转"。
      */
@@ -797,8 +801,9 @@ public class ProgressReminderService {
     }
 
     /** PENDING_INFLUENCER_ORDER（待红人下单，2026-08-17 新增）/INFLUENCER_ORDERED（红人已下单）
-     * 各自单独一档阈值；6个中间状态另一档阈值；其余（含终态）不生成提醒。三档阈值都可在
-     * "进度提醒阈值维护"里改，默认值分别是4/5/3工作日 */
+     * 各自单独一档阈值；7个中间状态（含2026-08-21 新增的 PENDING_CLIENT_DRAFT_FEEDBACK
+     * "待客户给草稿反馈"，复用同一档，不单独开阈值）另一档阈值；其余（含终态）不生成提醒。
+     * 三档阈值都可在"进度提醒阈值维护"里改，默认值分别是4/5/3工作日 */
     private Integer stallThreshold(CollaborationProgress progress) {
         if (progress == CollaborationProgress.PENDING_INFLUENCER_ORDER) {
             return thresholdCache.getInt(ReminderCategory.PM_EXECUTOR_PROGRESS_STALL, "STALL_THRESHOLD_PENDING_ORDER", 4);

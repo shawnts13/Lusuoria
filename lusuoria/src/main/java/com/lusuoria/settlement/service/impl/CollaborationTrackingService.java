@@ -102,17 +102,18 @@ public class CollaborationTrackingService {
      *  记录才会撞上，重试一两次基本必中，留够余量设成 3 次 */
     private static final int PROJECT_NO_CONFLICT_MAX_RETRY = 3;
 
-    /** "状态流转"到这9个前期制作流程状态（待客户出brief~已发布未结算，即"已加入客户未结算
-     * 列表"/"客户已结算"/"折损"以外的全部状态；2026-08-17 新增"待红人下单"后从8个变成9个）时，
-     * 同步提供"客户方的项目订单"输入框、可选填写（2026-08 新增，Shawn 要求：拿到订单号就顺手
-     * 登记，不用等到"已加入客户未结算列表"那一步才能填）。跟下面 JOINED_CLIENT_UNSETTLED_LIST/
-     * SETTLED 那条"按品牌方配置强制要求填写"的规则是两回事——这里永远不强制、永远不会因为
-     * 空值报错。 */
+    /** "状态流转"到这10个前期制作流程状态（待客户出brief~已发布未结算，即"已加入客户未结算
+     * 列表"/"客户已结算"/"折损"以外的全部状态；2026-08-17 新增"待红人下单"后从8个变成9个，
+     * 2026-08-21 新增"待客户给草稿反馈"后从9个变成10个）时，同步提供"客户方的项目订单"
+     * 输入框、可选填写（2026-08 新增，Shawn 要求：拿到订单号就顺手登记，不用等到"已加入客户
+     * 未结算列表"那一步才能填）。跟下面 JOINED_CLIENT_UNSETTLED_LIST/SETTLED 那条"按品牌方
+     * 配置强制要求填写"的规则是两回事——这里永远不强制、永远不会因为空值报错。 */
     private static final Set<CollaborationProgress> EARLY_STAGE_CLIENT_ORDER_ID_PROGRESSES = java.util.EnumSet.of(
             CollaborationProgress.PENDING_CLIENT_BRIEF, CollaborationProgress.CONTRACT_SENT,
             CollaborationProgress.PENDING_INFLUENCER_ORDER, CollaborationProgress.INFLUENCER_ORDERED,
             CollaborationProgress.SHOOTING_GUIDE_SENT,
-            CollaborationProgress.PENDING_DRAFT, CollaborationProgress.PENDING_REVISION,
+            CollaborationProgress.PENDING_DRAFT, CollaborationProgress.PENDING_CLIENT_DRAFT_FEEDBACK,
+            CollaborationProgress.PENDING_REVISION,
             CollaborationProgress.PENDING_PUBLISH, CollaborationProgress.PUBLISHED_UNSETTLED);
 
     /** 这次 DataIntegrityViolationException 是不是 internal_project_no 唯一约束冲突导致的
@@ -1043,7 +1044,7 @@ public class CollaborationTrackingService {
             t.setNotes(req.getNotes().trim());
         }
 
-        // 客户方的项目订单——前期制作流程这8个状态（待客户出brief~已发布未结算）可选填写
+        // 客户方的项目订单——前期制作流程这10个状态（待客户出brief~已发布未结算）可选填写
         // （2026-08 新增）：有值就更新，没值就保持原样，永远不校验/不报错，纯粹是"拿到订单号
         // 就顺手登记"，跟下面"已加入客户未结算列表"/"客户已结算"那条强制要求的规则完全独立
         if (EARLY_STAGE_CLIENT_ORDER_ID_PROGRESSES.contains(newProgress)) {
