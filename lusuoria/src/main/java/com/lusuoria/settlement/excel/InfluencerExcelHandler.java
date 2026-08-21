@@ -87,6 +87,7 @@ public class InfluencerExcelHandler {
         cols.add(new String[]{"粉丝量",              "0"});
         cols.add(new String[]{"建联情况",            "0"});
         cols.add(new String[]{"跟进人",              "0"});
+        cols.add(new String[]{"特殊回款周期（天，可留空）", "0"});
         cols.add(new String[]{"备注",                "0"});
         cols.add(new String[]{"红人视频制作与发布成本（美金）", "1"});
         cols.add(new String[]{"视频投流成本（美金）",          "1"});
@@ -122,6 +123,11 @@ public class InfluencerExcelHandler {
             setCellStr(row, c++, inf.getFollowerCount() != null ? String.valueOf(inf.getFollowerCount()) : "", wrap); // 粉丝量
             setCellStr(row, c++, inf.getContactStatus() != null ? inf.getContactStatus().getLabel() : "", wrap); // 建联情况
             setCellStr(row, c++, inf.getFollowerPerson(), wrap);                // 跟进人
+            // 特殊回款周期（2026-08-21 新增）：Shawn 要求红色字体标记，直接复用已有的 red 样式——
+            // 跟"1"这个敏感字段标记是两回事，这一列不需要按权限隐藏，任何能看这份导出的人都能看到
+            setCellStrColored(row, c++,
+                    inf.getSpecialPaymentCycleDays() != null ? String.valueOf(inf.getSpecialPaymentCycleDays()) : "",
+                    wrap, red);
             setCellStr(row, c++, inf.getNotes(), wrap);                         // 备注
             if (canViewSensitive) {
                 setCellStrColored(row, c++, inf.getInfluencerCost(), wrap, red);  // 红人视频制作与发布成本
@@ -185,6 +191,7 @@ public class InfluencerExcelHandler {
         cols.add(new String[]{"粉丝量",                   "0"});
         cols.add(new String[]{"建联情况",                 "0"});
         cols.add(new String[]{"跟进人",                   "0"});
+        cols.add(new String[]{"特殊回款周期（天，可留空）", "0"});
         cols.add(new String[]{"备注",                     "0"});
         cols.add(new String[]{"红人视频制作与发布成本（美金）", "1"});
         cols.add(new String[]{"视频投流成本（美金）",          "1"});
@@ -238,6 +245,8 @@ public class InfluencerExcelHandler {
         examples.put("红人Telegram",             "@telegram_xxx");
         examples.put("建联情况",                 "有合作意愿");
         examples.put("跟进人",                   "Charlene");
+        // 特殊回款周期（天）：不给示例值，数字类字段留空更不容易误导（大多数红人都不需要填这个），
+        // 说明文字放进下面导入模板列头本身（"（天，可留空）"），不占用示例行
         examples.put("红人视频制作与发布成本（美金）", "500");
         examples.put("视频投流成本（美金）",           "200");
         examples.put("视频版权成本（美金）",           "300");
@@ -416,6 +425,7 @@ public class InfluencerExcelHandler {
             {"粉丝量"},
             {"建联情况"},
             {"跟进人"},
+            {"特殊回款周期（天，可留空）"},
             {"红人电话"},
             {"红人WhatsApp"},
             {"红人Line"},
@@ -645,6 +655,25 @@ public class InfluencerExcelHandler {
                         errors.add("第" + (i + 1) + "行：跟进人 [" + followerPersonName + "] 不存在"); continue;
                     }
                     inf.setFollowerPerson(emp.getName());
+                }
+
+                // 特殊回款周期（2026-08-21 新增）：留空=不改动这个字段（这一行没有明确表达"要
+                // 清空"的意图，跟本方法里其它可选字段是同一套"setIfPresent"式约定——留空不等于
+                // 主动清空，要清空得去红人管理表单里手动清掉，Excel导入只负责"填了就按填的更新"，
+                // 不负责"没填就当清空"，避免批量更新其它字段时不小心把已经配置好的特殊回款周期
+                // 冲掉）；填了就必须是正整数，格式不对直接拒绝这一行，不像"粉丝量"那样静默忽略——
+                // 这个字段一旦填错会影响回款周期计算，不能悄悄吞掉错误输入
+                String specialCycleStr = getStr(row, colMap, "特殊回款周期（天，可留空）");
+                if (hasValue(specialCycleStr)) {
+                    try {
+                        int days = Integer.parseInt(specialCycleStr.trim());
+                        if (days <= 0) {
+                            errors.add("第" + (i + 1) + "行：特殊回款周期必须是正整数"); continue;
+                        }
+                        inf.setSpecialPaymentCycleDays(days);
+                    } catch (NumberFormatException e) {
+                        errors.add("第" + (i + 1) + "行：特殊回款周期 [" + specialCycleStr + "] 不是合法整数"); continue;
+                    }
                 }
 
                 setIfPresent(inf::setNotes, getStr(row, colMap, "备注"));
@@ -895,6 +924,7 @@ public class InfluencerExcelHandler {
             || !eq(original.getContactStatus() != null ? original.getContactStatus().name() : null,
                    updated.getContactStatus()   != null ? updated.getContactStatus().name()   : null)
             || !eq(original.getFollowerPerson(), updated.getFollowerPerson())
+            || !java.util.Objects.equals(original.getSpecialPaymentCycleDays(), updated.getSpecialPaymentCycleDays())
             || !eq(original.getNotes(),          updated.getNotes())
             || !eq(original.getInfluencerCost(), updated.getInfluencerCost())
             || !eq(original.getAdSpendCost(),    updated.getAdSpendCost())

@@ -343,6 +343,12 @@ public class InfluencerController {
         inf.setContactStatus(req.getContactStatus());
         inf.setFollowerPerson(req.getFollowerPerson());
         inf.setNotes(req.getNotes());
+        // 特殊回款周期（2026-08-21 新增）：正数校验放在这里而不是 DTO 层的 @Positive 之类的
+        // 注解，因为这个字段本身允许留空（null=没有特殊周期），只有填了值才需要校验合法性
+        if (req.getSpecialPaymentCycleDays() != null && req.getSpecialPaymentCycleDays() <= 0) {
+            throw new RuntimeException("特殊回款周期必须是正整数");
+        }
+        inf.setSpecialPaymentCycleDays(req.getSpecialPaymentCycleDays());
 
         // 敏感字段只有有权限的角色才能修改
         if (RoleUtil.canViewBaselineFinancials()) {

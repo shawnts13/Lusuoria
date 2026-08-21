@@ -82,8 +82,10 @@ public class TeamContractController {
         // 重叠校验，四个校验全部通过才往下走，任何一步失败都直接抛异常中止（本类下方
         // 各私有方法，方法名即校验内容，见各自定义处的注释）
         assertCanManageContracts();
-        Brand brand = resolveBrand(req.getBrandId());
+        // 先解析团队、再传给 resolveBrand()，因为它现在需要 team 一起判断双向覆盖后的
+        // 合同签订周期，见 resolveBrand() 的说明
         InfluencerTeam team = resolveTeam(req.getTeamId());
+        Brand brand = resolveBrand(req.getBrandId(), team);
         validateDateRange(req);
         rejectOverlap(req, null);
 
@@ -102,10 +104,10 @@ public class TeamContractController {
         assertCanManageContracts();
         TeamContract contract = contractRepo.findById(id)
                 .orElseThrow(() -> new RuntimeException("合同记录不存在：" + id));
-        // 跟 create() 同一套校验序列（查品牌方/团队 -> 日期区间 -> 重叠校验），rejectOverlap
+        // 跟 create() 同一套校验序列（查团队/品牌方 -> 日期区间 -> 重叠校验），rejectOverlap
         // 多传一个 excludeId=id，排除自己不跟自己算重叠
-        Brand brand = resolveBrand(req.getBrandId());
         InfluencerTeam team = resolveTeam(req.getTeamId());
+        Brand brand = resolveBrand(req.getBrandId(), team);
         validateDateRange(req);
         rejectOverlap(req, id);
 
@@ -139,12 +141,20 @@ public class TeamContractController {
         throw new RuntimeException("无权限维护团队合同信息");
     }
 
-    /** 查品牌方（走缓存）+ 拦下"该品牌方走按需求签合同、不该走团队级合同"这种误用 */
-    private Brand resolveBrand(Long brandId) {
+    /**
+     * 查品牌方（走缓存）+ 拦下"这个(品牌方,团队)组合走按需求签合同、不该走团队级合同"这种
+     * 误用。2026-08-21 修复：之前只看 brand.isPerRequirementContract()，没考虑团队级覆盖——
+     * 品牌方整体是"每需求一签"、但这个团队被单独覆盖成"一年签一次合同"时（2026-08-21 起
+     * 支持这个方向的覆盖），团队级合同上传应该放行，之前会被这里误拦下来（Shawn 反馈"团队
+     * 已经设置成一年签一次合同，上传合同却报错"）。改成用 InfluencerTeam.
+     * isPerRequirementContract(brand, team) 这个双向覆盖感知的统一判断入口，不再只看品牌方
+     * 自己的设置——调用方必须先解析出 team（哪怕是 null，代表该品牌方下没配团队），再传进来。
+     */
+    private Brand resolveBrand(Long brandId, InfluencerTeam team) {
         Brand brand = brandCache.findById(brandId);
         if (brand == null) throw new RuntimeException("品牌方不存在：" + brandId);
-        if (brand.isPerRequirementContract()) {
-            throw new RuntimeException("该品牌方是\"一次需求签一次合同\"，请在红人需求管理处上传合同");
+        if (InfluencerTeam.isPerRequirementContract(brand, team)) {
+            throw new RuntimeException("该品牌方/团队是\"一次需求签一次合同\"，请在红人需求管理处上传合同");
         }
         return brand;
     }

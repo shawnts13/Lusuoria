@@ -47,6 +47,9 @@ public class InfluencerRequest {
 
     private String notes;
 
+    /** 特殊回款周期（天数），优先级最高，覆盖品牌方/团队级别配置的回款周期规则，见 Influencer 实体字段注释 */
+    private Integer specialPaymentCycleDays;
+
     /** 一个"品牌方-团队"对，teamId 可为空 */
     @Data
     public static class BrandTeamPair {

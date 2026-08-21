@@ -87,6 +87,17 @@ public class Influencer extends BaseEntity {
     @Column(name = "notes", columnDefinition = "TEXT")
     private String notes;
 
+    /**
+     * 特殊回款周期（天数，2026-08-21 新增）：配置了这个值的红人，回款周期计算优先级最高——
+     * 覆盖品牌方/团队级别配置的回款周期规则（不管品牌方是按红人成本阈值分档、还是月结）。
+     * 触发起算点统一是"红人需求管理"里关联需求的完成进度达到100%（InfluencerRequirement.
+     * completedAt），不管该品牌方是否要求invoice——见 InfluencerPaymentService.computeCycleInfo()/
+     * ProgressReminderService.runCollabPaymentDue() 里对这个字段的判断，两处保持同一套口径。
+     * null 表示这个红人没有特殊回款周期，走原来的品牌方/团队级别规则。
+     */
+    @Column(name = "special_payment_cycle_days")
+    private Integer specialPaymentCycleDays;
+
     // ===== 非持久化字段：关联的"品牌方-团队"对，由 Controller 查询中间表后手动填充 =====
     /** 关联的"品牌方-团队"对列表（不持久化，仅用于 API 响应；一个红人可以有多个对，
      * 同一品牌方下也可能有多个不同团队，团队也可能为空） */

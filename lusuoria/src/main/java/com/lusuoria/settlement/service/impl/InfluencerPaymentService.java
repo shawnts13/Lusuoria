@@ -155,9 +155,16 @@ public class InfluencerPaymentService {
         Set<Long> influencerIds = new HashSet<>();
         for (CollaborationTracking t : list) if (t.getInfluencerId() != null) influencerIds.add(t.getInfluencerId());
         Map<Long, String> accountNameById = new HashMap<>();
+        // "特殊回款周期"需要（2026-08-21 新增）：复用同一次 findAllById() 批量查询，不额外
+        // 逐条查一次红人——避免在 computeCycleInfo() 内部按每条记录各查一次红人重新引入 N+1
+        // （这个方法本身就是因为之前有过 N+1 问题才把红人账号名改成批量查的，见上面的既有写法）
+        Map<Long, Integer> specialCycleDaysByInfluencerId = new HashMap<>();
         if (!influencerIds.isEmpty()) {
             for (Influencer inf : influencerRepo.findAllById(influencerIds)) {
                 accountNameById.put(inf.getId(), inf.getAccountName());
+                if (inf.getSpecialPaymentCycleDays() != null) {
+                    specialCycleDaysByInfluencerId.put(inf.getId(), inf.getSpecialPaymentCycleDays());
+                }
             }
         }
 
@@ -200,7 +207,8 @@ public class InfluencerPaymentService {
             }
 
             if (brand != null) {
-                CycleInfo cycleInfo = computeCycleInfo(t, brand, requirement);
+                Integer specialCycleDays = specialCycleDaysByInfluencerId.get(t.getInfluencerId());
+                CycleInfo cycleInfo = computeCycleInfo(t, brand, requirement, specialCycleDays);
                 item.setCycleDays(cycleInfo.cycleDays);
                 item.setDeadlineDate(cycleInfo.deadlineDate);
             }
@@ -253,8 +261,25 @@ public class InfluencerPaymentService {
      * 两边口径保证一致，不要再各自维护一份需求成本聚合逻辑。
      */
     private CycleInfo computeCycleInfo(CollaborationTracking t, Brand brand,
-                                        InfluencerRequirementService.RequirementPaymentInfo requirement) {
+                                        InfluencerRequirementService.RequirementPaymentInfo requirement,
+                                        Integer specialPaymentCycleDays) {
         CycleInfo info = new CycleInfo();
+
+        // 红人"特殊回款周期"（2026-08-21 新增，specialPaymentCycleDays 由调用方批量查好传入，
+        // 不在这里现查——避免每条记录各查一次红人重新引入 N+1）：优先级最高，覆盖品牌方/团队
+        // 级别配置的回款周期规则，不管该品牌方是按成本阈值分档还是月结，统一用"关联需求完成
+        // 进度达到100%"作为起算点（Shawn 明确确认：不区分品牌方是否要求invoice，统一按这个
+        // 触发点）——跟下面 COST_THRESHOLD + requiresInvoiceUpload 那个分支的触发点完全一致，
+        // 只是天数来源换成红人自己配置的固定值，不再按成本分档。需求还没完成（completedAt
+        // 为空）时算不出最迟结款日，返回空 CycleInfo，等需求真正完成后再算，不当场用其它
+        // 口径顶替。
+        if (specialPaymentCycleDays != null) {
+            if (requirement == null || requirement.completedAt == null) return info;
+            info.cycleDays = specialPaymentCycleDays;
+            info.deadlineDate = toDate(toLocalDate(requirement.completedAt).plusDays(specialPaymentCycleDays));
+            return info;
+        }
+
         if (brand.getPaymentCycleType() == null) return info;
 
         if (brand.getPaymentCycleType() == PaymentCycleType.COST_THRESHOLD) {
