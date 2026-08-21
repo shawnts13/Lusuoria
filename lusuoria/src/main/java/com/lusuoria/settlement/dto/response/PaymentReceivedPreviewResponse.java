@@ -3,6 +3,7 @@ package com.lusuoria.settlement.dto.response;
 import lombok.Data;
 
 import java.math.BigDecimal;
+import java.util.Date;
 import java.util.List;
 
 /**
@@ -11,10 +12,11 @@ import java.util.List;
  * 见 CollaborationTrackingService.markClientPaymentReceivedPreview()。
  *
  * hasEmptyPaymentBatch=true 时 groups/totalCount/totalClientPrice 都不会填（没有意义），
- * 前端应该直接展示报错文案、不渲染分组明细——命中范围里只要有一条记录"该品牌方涉及客户方付款
- * 批次却没填"，就说明筛选条件很可能选错了，见 CollaborationTrackingController 上这两个接口
- * 的说明。"品牌方不涉及客户方付款批次"这个字段本身可以留空的场景不算在内（2026-08-21 起，
- * Shawn 反馈：之前漏了这种品牌方，误把这类记录也当成"填漏了"一并拦下）。
+ * 前端应该直接展示报错文案 + missingPaymentBatchRecords 明细、不渲染分组表格——命中范围里
+ * 只要有一条记录"该品牌方涉及客户方付款批次却没填"，就说明筛选条件很可能选错了，见
+ * CollaborationTrackingController 上这两个接口的说明。"品牌方不涉及客户方付款批次"这个字段
+ * 本身可以留空的场景不算在内（2026-08-21 起，Shawn 反馈：之前漏了这种品牌方，误把这类记录也
+ * 当成"填漏了"一并拦下）。
  */
 @Data
 public class PaymentReceivedPreviewResponse {
@@ -22,6 +24,9 @@ public class PaymentReceivedPreviewResponse {
     private int totalCount;
     private BigDecimal totalClientPrice;
     private List<Group> groups;
+    /** hasEmptyPaymentBatch=true 时才会填：具体是哪些记录"该品牌方涉及客户方付款批次却没填"，
+     *  供财务对照 Excel/列表页排查是哪一条漏填了（2026-08-21 新增，Shawn 要求） */
+    private List<MissingBatchRecord> missingPaymentBatchRecords;
 
     /**
      * 分组后的一行（2026-08-21 起分两种分组口径，见 markClientPaymentReceivedPreview()）：
@@ -39,5 +44,19 @@ public class PaymentReceivedPreviewResponse {
         private String brandTeamLabel;
         private int count;
         private BigDecimal totalClientPrice;
+    }
+
+    /** "客户方付款批次为空"报错时的问题记录明细一行，字段跟 Shawn 要求的排查用列一一对应 */
+    @Data
+    public static class MissingBatchRecord {
+        private String internalRequirementNo;
+        private String internalProjectNo;
+        private String brandName;
+        private String teamName;
+        private String accountName;
+        private String demandContent;
+        private String publishLink;
+        private Date publishDate;
+        private BigDecimal clientPrice;
     }
 }

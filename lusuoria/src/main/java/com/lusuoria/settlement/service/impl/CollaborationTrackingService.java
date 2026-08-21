@@ -29,6 +29,7 @@ import com.lusuoria.settlement.repository.InfluencerBrandTeamRepository;
 import com.lusuoria.settlement.repository.InfluencerRepository;
 import com.lusuoria.settlement.config.InfluencerTeamCache;
 import com.lusuoria.settlement.entity.InfluencerBrandTeam;
+import com.lusuoria.settlement.util.CollaborationFilterUtil;
 import com.lusuoria.settlement.util.ProjectNoAllocator;
 import com.lusuoria.settlement.util.ProjectNoGenerator;
 import com.lusuoria.settlement.util.MultiValueUtil;
@@ -1227,13 +1228,25 @@ public class CollaborationTrackingService {
      * 负责的"这个跟本功能无关的筛选，这里固定传 null/false/false，不影响命中范围。
      */
     private List<CollaborationTracking> findAllMatchingFilters(MarkPaymentReceivedRequest req) {
+        // progress/influencerPaymentProgress/videoType/projectManagerId 这4个多选筛选要先转成
+        // (xxxActive, xxx) 参数对再传给 findByFilters，不能直接传可能为 null 的 List，见
+        // CollaborationTrackingRepository.findByFilters 上方对 Hibernate "unexpected AST node:
+        // {vector}" 解析器 bug 的说明——跟 CollaborationTrackingController.list()/exportExcel()
+        // 用的是同一套转换逻辑（CollaborationFilterUtil），三处必须保持一致
         return trackingRepo.findByFilters(
                 req.getBrandId(), req.getTeamId(), req.getCountryMarket(), emptyToNull(req.getAccountName()),
                 req.getInfluencerId(), emptyToNull(req.getPlatform()),
-                req.getProgress(), req.getInfluencerPaymentProgress(), req.getVideoType(),
+                CollaborationFilterUtil.isActive(req.getProgress()),
+                CollaborationFilterUtil.orPlaceholder(req.getProgress(), CollaborationProgress.PENDING_CLIENT_BRIEF),
+                CollaborationFilterUtil.isActive(req.getInfluencerPaymentProgress()),
+                CollaborationFilterUtil.orPlaceholder(req.getInfluencerPaymentProgress(), InfluencerPaymentProgress.PENDING_INVOICE),
+                CollaborationFilterUtil.isActive(req.getVideoType()),
+                CollaborationFilterUtil.orPlaceholder(req.getVideoType(), VideoType.REAL_SHOT_NEW),
                 emptyToNull(req.getVideoMonth()), emptyToNull(req.getVideoDateStart()), emptyToNull(req.getVideoDateEnd()),
                 emptyToNull(req.getInternalProjectNo()), emptyToNull(req.getInternalRequirementNo()),
-                emptyToNull(req.getClientOrderId()), emptyToNull(req.getClientPaymentBatch()), req.getProjectManagerId(),
+                emptyToNull(req.getClientOrderId()), emptyToNull(req.getClientPaymentBatch()),
+                CollaborationFilterUtil.isActive(req.getProjectManagerId()),
+                CollaborationFilterUtil.orPlaceholder(req.getProjectManagerId(), -1L),
                 null, false, false, req.isOnlyIncomplete(), req.isOnlyUnpublished(), req.isOnlyMissingRequirementNo(),
                 PageRequest.of(0, Integer.MAX_VALUE, Sort.by(Sort.Direction.DESC, "id"))
         ).getContent();
@@ -1277,9 +1290,14 @@ public class CollaborationTrackingService {
         requireFinanceOrManagementForPaymentReceived();
         List<CollaborationTracking> matched = findAllMatchingFilters(req);
         PaymentReceivedPreviewResponse resp = new PaymentReceivedPreviewResponse();
-        boolean hasEmpty = matched.stream().anyMatch(this::isMissingRequiredPaymentBatch);
+        List<CollaborationTracking> missingBatch = matched.stream()
+                .filter(this::isMissingRequiredPaymentBatch).collect(Collectors.toList());
+        boolean hasEmpty = !missingBatch.isEmpty();
         resp.setHasEmptyPaymentBatch(hasEmpty);
         if (hasEmpty) {
+            // 2026-08-21 新增（Shawn 要求）：把具体是哪些记录漏填了带给前端，方便财务直接对照
+            // 排查，不用回列表页自己一条条找
+            resp.setMissingPaymentBatchRecords(buildMissingBatchRecords(missingBatch));
             return resp;
         }
 
@@ -1367,6 +1385,38 @@ public class CollaborationTrackingService {
         Set<String> labels = new LinkedHashSet<>();
         for (CollaborationTracking t : list) labels.add(brandTeamLabel(t));
         return String.join("\n", labels);
+    }
+
+    /**
+     * "客户方付款批次为空"报错时的问题记录明细：内部需求编号/内部项目编号/品牌方/红人团队/
+     * 红人社媒完整名字/需求内容/视频发布链接/视频发布时间/客户合作价格，供财务对照排查
+     * （2026-08-21 新增，Shawn 要求）。红人账号名批量查一次，避免每条记录各自触发懒加载
+     * （这个校验失败的场景命中记录数不确定，可能有几十上百条，不能逐条查库）。
+     */
+    private List<PaymentReceivedPreviewResponse.MissingBatchRecord> buildMissingBatchRecords(List<CollaborationTracking> list) {
+        Set<Long> influencerIds = list.stream().map(CollaborationTracking::getInfluencerId)
+                .filter(id -> id != null).collect(Collectors.toSet());
+        Map<Long, String> accountNameById = influencerIds.isEmpty() ? Collections.emptyMap()
+                : influencerRepo.findAllById(influencerIds).stream()
+                        .collect(Collectors.toMap(Influencer::getId, Influencer::getAccountName));
+
+        List<PaymentReceivedPreviewResponse.MissingBatchRecord> result = new ArrayList<>();
+        for (CollaborationTracking t : list) {
+            PaymentReceivedPreviewResponse.MissingBatchRecord r = new PaymentReceivedPreviewResponse.MissingBatchRecord();
+            r.setInternalRequirementNo(t.getInternalRequirementNo());
+            r.setInternalProjectNo(t.getInternalProjectNo());
+            Brand brand = t.getBrandId() != null ? brandCache.findById(t.getBrandId()) : null;
+            r.setBrandName(brand != null ? brand.getName() : null);
+            InfluencerTeam team = t.getTeamId() != null ? teamCache.findById(t.getTeamId()) : null;
+            r.setTeamName(team != null ? team.getName() : null);
+            r.setAccountName(t.getInfluencerId() != null ? accountNameById.get(t.getInfluencerId()) : null);
+            r.setDemandContent(t.getDemandContent());
+            r.setPublishLink(t.getPublishLink());
+            r.setPublishDate(t.getPublishDate());
+            r.setClientPrice(t.getClientPrice());
+            result.add(r);
+        }
+        return result;
     }
 
     /**

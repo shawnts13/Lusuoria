@@ -23,6 +23,7 @@ import com.lusuoria.settlement.repository.CollaborationTrackingRepository;
 import com.lusuoria.settlement.repository.ImportBatchRepository;
 import com.lusuoria.settlement.repository.PendingApprovalRepository;
 import com.lusuoria.settlement.service.impl.CollaborationTrackingService;
+import com.lusuoria.settlement.util.CollaborationFilterUtil;
 import com.lusuoria.settlement.util.EmployeeRoleUtil;
 import com.lusuoria.settlement.util.ProjectFieldVisibility;
 import com.lusuoria.settlement.util.RoleUtil;
@@ -165,11 +166,23 @@ public class CollaborationTrackingController {
                         clientOrderId, clientPaymentBatch, projectManagerId,
                         priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, onlyUnpublished,
                         onlyMissingRequirementNo, sort, pageable)
+                // progress/influencerPaymentProgress/videoType/projectManagerId 这4个多选筛选
+                // 不能直接把可能为 null 的 List 传给 findByFilters，要先用 CollaborationFilterUtil
+                // 算出 (xxxActive, xxx) 这一对参数，原因见 CollaborationTrackingRepository.findByFilters
+                // 上方的说明（规避 Hibernate 经典 HQL 解析器的 "unexpected AST node: {vector}" bug）
                 : trackingRepo.findByFilters(
                         brandId, teamId, countryMarket, accountName, influencerId, platform,
-                        progress, influencerPaymentProgress, videoType, videoMonthParam, videoDateStartParam, videoDateEndParam,
+                        CollaborationFilterUtil.isActive(progress),
+                        CollaborationFilterUtil.orPlaceholder(progress, CollaborationProgress.PENDING_CLIENT_BRIEF),
+                        CollaborationFilterUtil.isActive(influencerPaymentProgress),
+                        CollaborationFilterUtil.orPlaceholder(influencerPaymentProgress, InfluencerPaymentProgress.PENDING_INVOICE),
+                        CollaborationFilterUtil.isActive(videoType),
+                        CollaborationFilterUtil.orPlaceholder(videoType, VideoType.REAL_SHOT_NEW),
+                        videoMonthParam, videoDateStartParam, videoDateEndParam,
                         internalProjectNo, internalRequirementNo,
-                        clientOrderId, clientPaymentBatch, projectManagerId,
+                        clientOrderId, clientPaymentBatch,
+                        CollaborationFilterUtil.isActive(projectManagerId),
+                        CollaborationFilterUtil.orPlaceholder(projectManagerId, -1L),
                         priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, onlyUnpublished,
                         onlyMissingRequirementNo, pageable);
 
@@ -223,11 +236,23 @@ public class CollaborationTrackingController {
         // 但排序（sort 参数）已经在这条 SQL 里生效了，所以每个桶内部的记录相对顺序，就是
         // "已经在正常工作的排序"（优先展示 + 用户选的列排序），下面分桶只是在这基础上再分组，
         // 不会打乱桶内已经排好的顺序
+        // progress/influencerPaymentProgress/videoType/projectManagerId 这4个多选筛选同样要
+        // 先转成 (xxxActive, xxx) 这一对参数再传下去，原因见 CollaborationTrackingRepository.
+        // findByFilters 上方的说明（规避 Hibernate 经典 HQL 解析器的"unexpected AST node:
+        // {vector}"bug），跟上面 list() 直接调 findByFilters 那条分支用的是同一套转换逻辑
         List<Object[]> liteRows = trackingRepo.findLitePriorityProjectionByFilters(
                 brandId, teamId, countryMarket, accountName, influencerId, platform,
-                progress, influencerPaymentProgress, videoType, videoMonthParam, videoDateStartParam, videoDateEndParam,
+                CollaborationFilterUtil.isActive(progress),
+                CollaborationFilterUtil.orPlaceholder(progress, CollaborationProgress.PENDING_CLIENT_BRIEF),
+                CollaborationFilterUtil.isActive(influencerPaymentProgress),
+                CollaborationFilterUtil.orPlaceholder(influencerPaymentProgress, InfluencerPaymentProgress.PENDING_INVOICE),
+                CollaborationFilterUtil.isActive(videoType),
+                CollaborationFilterUtil.orPlaceholder(videoType, VideoType.REAL_SHOT_NEW),
+                videoMonthParam, videoDateStartParam, videoDateEndParam,
                 internalProjectNo, internalRequirementNo,
-                clientOrderId, clientPaymentBatch, projectManagerId,
+                clientOrderId, clientPaymentBatch,
+                CollaborationFilterUtil.isActive(projectManagerId),
+                CollaborationFilterUtil.orPlaceholder(projectManagerId, -1L),
                 priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, onlyUnpublished,
                 onlyMissingRequirementNo, sort);
 
@@ -564,11 +589,22 @@ public class CollaborationTrackingController {
         // 筛选结果（findByFilters 的 WHERE 子句），但跟 list() 一样无条件算一次，成本很低。
         Long priorityEmployeeId = resolvePriorityEmployeeId();
         boolean prioritizeFinance = resolvePrioritizeFinance();
+        // 同 list() 的处理：多选筛选要先转成 (xxxActive, xxx) 参数对，见
+        // CollaborationTrackingRepository.findByFilters 上方对 "unexpected AST node: {vector}"
+        // 这个 Hibernate 解析器 bug 的说明
         List<CollaborationTracking> list = trackingRepo.findByFilters(
                 brandId, teamId, countryMarket, accountName, influencerId, platform,
-                progress, influencerPaymentProgress, videoType, videoMonthParam, videoDateStartParam, videoDateEndParam,
+                CollaborationFilterUtil.isActive(progress),
+                CollaborationFilterUtil.orPlaceholder(progress, CollaborationProgress.PENDING_CLIENT_BRIEF),
+                CollaborationFilterUtil.isActive(influencerPaymentProgress),
+                CollaborationFilterUtil.orPlaceholder(influencerPaymentProgress, InfluencerPaymentProgress.PENDING_INVOICE),
+                CollaborationFilterUtil.isActive(videoType),
+                CollaborationFilterUtil.orPlaceholder(videoType, VideoType.REAL_SHOT_NEW),
+                videoMonthParam, videoDateStartParam, videoDateEndParam,
                 internalProjectNo, internalRequirementNo,
-                clientOrderId, clientPaymentBatch, projectManagerId,
+                clientOrderId, clientPaymentBatch,
+                CollaborationFilterUtil.isActive(projectManagerId),
+                CollaborationFilterUtil.orPlaceholder(projectManagerId, -1L),
                 priorityEmployeeId, prioritizeFinance, onlyMyResponsibility, onlyIncomplete, onlyUnpublished,
                 onlyMissingRequirementNo, all).getContent();
         // canViewFull：汇率/其他外部成本/内部执行成本/毛利/提成/公司利润这些财务字段，

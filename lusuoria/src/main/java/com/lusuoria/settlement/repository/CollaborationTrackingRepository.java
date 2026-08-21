@@ -145,6 +145,19 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      * "红人需求管理"的任何需求，方便排查/补关联。为 false/null 时完全不影响原有筛选结果，
      * 可以跟 onlyIncomplete/onlyUnpublished/onlyMyResponsibility 同时生效（互不影响，
      * 纯 AND 叠加）。
+     *
+     * progress/influencerPaymentProgress/videoType/projectManagerId 这4个筛选（2026-08-21
+     * 起支持多选，类型从单值改成 List）：JPQL 里不是写成常见的 "(:progress IS NULL OR
+     * c.progress IN :progress)"，而是额外带一个 progressActive 布尔参数、写成
+     * "(:progressActive = false OR c.progress IN :progress)"——这不是随手换的写法，是刻意
+     * 规避 Hibernate 5.x 经典 HQL 解析器的一个已知 bug：同一个具名参数既做 IS NULL 判断、
+     * 又做集合类型的 IN 判断，会被解析成非法的 "vector" AST 节点，线上直接报
+     * QuerySyntaxException（跟这个类下面 findLitePriorityProjectionByFilters 之前在
+     * JpaSort.unsafe 链式排序上踩的是同一类"本地没有数据库环境验证不了、只能线上报错后
+     * 回退"的 Hibernate 解析器脆弱问题）。调用方必须用 CollaborationFilterUtil.isActive()/
+     * orPlaceholder() 计算这4组 (xxxActive, xxx) 参数，不能直接把可能为 null 的 List 传进来，
+     * 见 CollaborationTrackingController.list()/exportExcel()、
+     * CollaborationTrackingService.findAllMatchingFilters() 的用法。
      */
     @Query("SELECT c FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false " +
@@ -154,9 +167,9 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:accountName IS NULL OR c.influencer.accountName LIKE %:accountName%) " +
            "AND (:influencerId IS NULL OR c.influencerId = :influencerId) " +
            "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
-           "AND (:progress IS NULL OR c.progress IN :progress) " +
-           "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress IN :influencerPaymentProgress) " +
-           "AND (:videoType IS NULL OR c.videoType IN :videoType) " +
+           "AND (:progressActive = false OR c.progress IN :progress) " +
+           "AND (:influencerPaymentProgressActive = false OR c.influencerPaymentProgress IN :influencerPaymentProgress) " +
+           "AND (:videoTypeActive = false OR c.videoType IN :videoType) " +
            "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth) " +
            "AND (:videoDateStart IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYY-MM-DD') >= :videoDateStart) " +
            "AND (:videoDateEnd IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYY-MM-DD') <= :videoDateEnd) " +
@@ -164,7 +177,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:internalRequirementNo IS NULL OR c.internalRequirementNo LIKE %:internalRequirementNo%) " +
            "AND (:clientOrderId IS NULL OR c.clientOrderId LIKE %:clientOrderId%) " +
            "AND (:clientPaymentBatch IS NULL OR c.clientPaymentBatch LIKE %:clientPaymentBatch%) " +
-           "AND (:projectManagerId IS NULL OR c.projectManagerId IN :projectManagerId) " +
+           "AND (:projectManagerIdActive = false OR c.projectManagerId IN :projectManagerId) " +
            "AND (:onlyMyResponsibility = false " +
            "     OR (:priorityEmployeeId IS NOT NULL AND (c.projectManagerId = :priorityEmployeeId OR c.executorId = :priorityEmployeeId)) " +
            "     OR (:prioritizeFinance = true AND c.progress IN (" +
@@ -184,8 +197,11 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("accountName") String accountName,
             @Param("influencerId") Long influencerId,
             @Param("platform") String platform,
+            @Param("progressActive") boolean progressActive,
             @Param("progress") List<CollaborationProgress> progress,
+            @Param("influencerPaymentProgressActive") boolean influencerPaymentProgressActive,
             @Param("influencerPaymentProgress") List<InfluencerPaymentProgress> influencerPaymentProgress,
+            @Param("videoTypeActive") boolean videoTypeActive,
             @Param("videoType") List<VideoType> videoType,
             @Param("videoMonth") String videoMonth,
             @Param("videoDateStart") String videoDateStart,
@@ -194,6 +210,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("internalRequirementNo") String internalRequirementNo,
             @Param("clientOrderId") String clientOrderId,
             @Param("clientPaymentBatch") String clientPaymentBatch,
+            @Param("projectManagerIdActive") boolean projectManagerIdActive,
             @Param("projectManagerId") List<Long> projectManagerId,
             @Param("priorityEmployeeId") Long priorityEmployeeId,
             @Param("prioritizeFinance") Boolean prioritizeFinance,
@@ -225,9 +242,9 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:accountName IS NULL OR c.influencer.accountName LIKE %:accountName%) " +
            "AND (:influencerId IS NULL OR c.influencerId = :influencerId) " +
            "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
-           "AND (:progress IS NULL OR c.progress IN :progress) " +
-           "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress IN :influencerPaymentProgress) " +
-           "AND (:videoType IS NULL OR c.videoType IN :videoType) " +
+           "AND (:progressActive = false OR c.progress IN :progress) " +
+           "AND (:influencerPaymentProgressActive = false OR c.influencerPaymentProgress IN :influencerPaymentProgress) " +
+           "AND (:videoTypeActive = false OR c.videoType IN :videoType) " +
            "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth) " +
            "AND (:videoDateStart IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYY-MM-DD') >= :videoDateStart) " +
            "AND (:videoDateEnd IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYY-MM-DD') <= :videoDateEnd) " +
@@ -235,7 +252,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:internalRequirementNo IS NULL OR c.internalRequirementNo LIKE %:internalRequirementNo%) " +
            "AND (:clientOrderId IS NULL OR c.clientOrderId LIKE %:clientOrderId%) " +
            "AND (:clientPaymentBatch IS NULL OR c.clientPaymentBatch LIKE %:clientPaymentBatch%) " +
-           "AND (:projectManagerId IS NULL OR c.projectManagerId IN :projectManagerId) " +
+           "AND (:projectManagerIdActive = false OR c.projectManagerId IN :projectManagerId) " +
            "AND (:onlyMyResponsibility = false " +
            "     OR (:priorityEmployeeId IS NOT NULL AND (c.projectManagerId = :priorityEmployeeId OR c.executorId = :priorityEmployeeId)) " +
            "     OR (:prioritizeFinance = true AND c.progress IN (" +
@@ -255,8 +272,11 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("accountName") String accountName,
             @Param("influencerId") Long influencerId,
             @Param("platform") String platform,
+            @Param("progressActive") boolean progressActive,
             @Param("progress") List<CollaborationProgress> progress,
+            @Param("influencerPaymentProgressActive") boolean influencerPaymentProgressActive,
             @Param("influencerPaymentProgress") List<InfluencerPaymentProgress> influencerPaymentProgress,
+            @Param("videoTypeActive") boolean videoTypeActive,
             @Param("videoType") List<VideoType> videoType,
             @Param("videoMonth") String videoMonth,
             @Param("videoDateStart") String videoDateStart,
@@ -265,6 +285,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("internalRequirementNo") String internalRequirementNo,
             @Param("clientOrderId") String clientOrderId,
             @Param("clientPaymentBatch") String clientPaymentBatch,
+            @Param("projectManagerIdActive") boolean projectManagerIdActive,
             @Param("projectManagerId") List<Long> projectManagerId,
             @Param("priorityEmployeeId") Long priorityEmployeeId,
             @Param("prioritizeFinance") Boolean prioritizeFinance,
