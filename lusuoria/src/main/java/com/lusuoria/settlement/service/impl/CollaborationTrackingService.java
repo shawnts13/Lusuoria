@@ -1389,9 +1389,10 @@ public class CollaborationTrackingService {
 
     /**
      * "客户方付款批次为空"报错时的问题记录明细：内部需求编号/内部项目编号/品牌方/红人团队/
-     * 红人社媒完整名字/需求内容/视频发布链接/视频发布时间/客户合作价格，供财务对照排查
-     * （2026-08-21 新增，Shawn 要求）。红人账号名批量查一次，避免每条记录各自触发懒加载
-     * （这个校验失败的场景命中记录数不确定，可能有几十上百条，不能逐条查库）。
+     * 红人社媒完整名字/需求内容/视频发布链接/视频发布时间/客户合作价格/客户方的项目订单
+     * （2026-08-21 新增，Shawn 要求；同日追加客户方的项目订单，放在客户合作价格后面），
+     * 供财务对照排查。红人账号名批量查一次，避免每条记录各自触发懒加载（这个校验失败的场景
+     * 命中记录数不确定，可能有几十上百条，不能逐条查库）。
      */
     private List<PaymentReceivedPreviewResponse.MissingBatchRecord> buildMissingBatchRecords(List<CollaborationTracking> list) {
         Set<Long> influencerIds = list.stream().map(CollaborationTracking::getInfluencerId)
@@ -1414,6 +1415,7 @@ public class CollaborationTrackingService {
             r.setPublishLink(t.getPublishLink());
             r.setPublishDate(t.getPublishDate());
             r.setClientPrice(t.getClientPrice());
+            r.setClientOrderId(t.getClientOrderId());
             result.add(r);
         }
         return result;

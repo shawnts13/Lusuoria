@@ -46,7 +46,8 @@ public class PaymentReceivedPreviewResponse {
         private BigDecimal totalClientPrice;
     }
 
-    /** "客户方付款批次为空"报错时的问题记录明细一行，字段跟 Shawn 要求的排查用列一一对应 */
+    /** "客户方付款批次为空"报错时的问题记录明细一行，字段跟 Shawn 要求的排查用列一一对应
+     *  （clientOrderId 2026-08-21 同日追加，放在 clientPrice 后面） */
     @Data
     public static class MissingBatchRecord {
         private String internalRequirementNo;
@@ -58,5 +59,6 @@ public class PaymentReceivedPreviewResponse {
         private String publishLink;
         private Date publishDate;
         private BigDecimal clientPrice;
+        private String clientOrderId;
     }
 }
