@@ -830,10 +830,11 @@ public class ProgressReminderService {
         Map<String, OverdueUrgency> urgencyByKey = new HashMap<>();
         Map<String, Set<Long>> involvedByKey = new HashMap<>();
 
-        // "项目管理员"按品牌方范围顺带可见的累加器（2026-08-21 新增），跟上面 4 个 Map 是完全
-        // 独立的一份，key 里存的是项目管理员的员工 id 而不是项目负责人 id
+        // "项目管理员"按品牌方范围顺带可见的累加器（2026-08-21 新增，同日改成按项目负责人分组，
+        // 见 addToProjectAdminBucket() 说明），跟上面 4 个 Map 是完全独立的一份
         Map<String, List<ProgressReminderDetail>> paByKey = new LinkedHashMap<>();
-        Map<String, Long> paIdByKey = new HashMap<>();
+        Map<String, Long> paAdminIdByKey = new HashMap<>();
+        Map<String, Long> paPmIdByKey = new HashMap<>();
         Map<String, OverdueUrgency> paUrgencyByKey = new HashMap<>();
 
         for (CollaborationTracking t : all) {
@@ -852,11 +853,12 @@ public class ProgressReminderService {
 
             // 负责这个品牌方的项目管理员（排除掉恰好就是这条记录项目负责人本人的情况，见
             // projectAdminsFor() 说明）：每个人各累加一份*新建*的 detail 实例，不能复用上面
-            // 那份——同一个 detail 对象不能同时属于两条不同的 ProgressReminder
+            // 那份——同一个 detail 对象不能同时属于两条不同的 ProgressReminder。按项目负责人
+            // 分组（不再合并成一个总数），管理员才知道是名下哪个项目负责人的记录滞留
             for (Long adminId : projectAdminsFor(t.getBrandId(), t.getProjectManagerId())) {
-                addToOwnerBucket(paByKey, paIdByKey, paUrgencyByKey, new HashMap<>(),
-                        adminId, urgency, buildStallDetail(t, accountNameById, overdueDays, threshold),
-                        Collections.emptySet());
+                addToProjectAdminBucket(paByKey, paAdminIdByKey, paPmIdByKey, paUrgencyByKey,
+                        adminId, t.getProjectManagerId(), urgency,
+                        buildStallDetail(t, accountNameById, overdueDays, threshold));
             }
         }
 
@@ -869,8 +871,8 @@ public class ProgressReminderService {
         for (Map.Entry<String, List<ProgressReminderDetail>> entry : paByKey.entrySet()) {
             String key = entry.getKey();
             saveStallReminder(batchDate, ReminderCategory.PM_EXECUTOR_PROGRESS_STALL,
-                    paIdByKey.get(key), "项目管理员", paUrgencyByKey.get(key), entry.getValue(),
-                    "笔视频项目进度长时间未流转", null);
+                    paAdminIdByKey.get(key), "项目管理员", paPmIdByKey.get(key), paUrgencyByKey.get(key),
+                    entry.getValue(), "笔视频项目进度长时间未流转", null);
         }
     }
 
@@ -898,6 +900,24 @@ public class ProgressReminderService {
      * 负责人"个人卡片看到了，不需要再通过"项目管理员"这个身份重复看一遍同一条记录（Shawn
      * 明确要求"要去重掉自己作为项目负责人的记录，别重复提醒2遍"）。
      */
+    /**
+     * "项目管理员"按项目负责人分组的累加器（2026-08-21 新增，2026-08-21 同日改成按项目负责人
+     * 分组——Shawn 要求项目管理员能一眼看出是名下哪个项目负责人的记录滞留，不是笼统一个总数）：
+     * key 是 adminId+"|"+pmId+"|"+urgency，PM_EXECUTOR_PROGRESS_STALL/FINANCE_PROGRESS_STALL/
+     * REQUIREMENT_INVOICE_OVERDUE/REQUIREMENT_CONTRACT_OVERDUE/CONTRACT_EXPIRING_SOON 五处共用
+     * （泛型 U 兼容 OverdueUrgency/ReminderUrgency 两种紧急度类型，各自调用点自己决定传哪种）。
+     */
+    private <U> void addToProjectAdminBucket(Map<String, List<ProgressReminderDetail>> byKey,
+                                               Map<String, Long> adminIdByKey, Map<String, Long> pmIdByKey,
+                                               Map<String, U> urgencyByKey,
+                                               Long adminId, Long pmId, U urgency, ProgressReminderDetail detail) {
+        String key = adminId + "|" + pmId + "|" + urgency;
+        byKey.computeIfAbsent(key, k -> new ArrayList<>()).add(detail);
+        adminIdByKey.put(key, adminId);
+        pmIdByKey.put(key, pmId);
+        urgencyByKey.put(key, urgency);
+    }
+
     private Set<Long> projectAdminsFor(Long brandId, Long excludePmId) {
         Set<Long> admins = employeeManagedBrandCache.findEmployeeIdsByBrandId(brandId);
         if (admins.isEmpty() || excludePmId == null) return admins;
@@ -978,9 +998,11 @@ public class ProgressReminderService {
         Map<String, ReminderUrgency> pmUrgencyByKey = new HashMap<>();
         Map<String, Set<Long>> pmInvolvedByKey = new HashMap<>();
 
-        // "项目管理员"按品牌方范围顺带可见的累加器（2026-08-21 新增），同 runPmExecutorProgressStall
+        // "项目管理员"按品牌方范围顺带可见的累加器（2026-08-21 新增，同日改成按项目负责人分组），
+        // 同 runPmExecutorProgressStall
         Map<String, List<ProgressReminderDetail>> paByKey = new LinkedHashMap<>();
-        Map<String, Long> paIdByKey = new HashMap<>();
+        Map<String, Long> paAdminIdByKey = new HashMap<>();
+        Map<String, Long> paPmIdByKey = new HashMap<>();
         Map<String, ReminderUrgency> paUrgencyByKey = new HashMap<>();
 
         for (CollaborationTracking t : all) {
@@ -1012,13 +1034,11 @@ public class ProgressReminderService {
                 }
             }
 
-            // 负责这个品牌方的项目管理员，理由同 runPmExecutorProgressStall
+            // 负责这个品牌方的项目管理员，按项目负责人分组，理由同 runPmExecutorProgressStall
             for (Long adminId : projectAdminsFor(t.getBrandId(), t.getProjectManagerId())) {
-                String paKey = adminId + "|" + urgency.name();
-                paByKey.computeIfAbsent(paKey, k -> new ArrayList<>())
-                        .add(buildStallDetail(t, accountNameById, overdueDays, stallThreshold));
-                paIdByKey.put(paKey, adminId);
-                paUrgencyByKey.put(paKey, urgency);
+                addToProjectAdminBucket(paByKey, paAdminIdByKey, paPmIdByKey, paUrgencyByKey,
+                        adminId, t.getProjectManagerId(), urgency,
+                        buildStallDetail(t, accountNameById, overdueDays, stallThreshold));
             }
         }
 
@@ -1042,8 +1062,8 @@ public class ProgressReminderService {
         }
         for (Map.Entry<String, List<ProgressReminderDetail>> entry : paByKey.entrySet()) {
             String key = entry.getKey();
-            saveFinancePmStallReminder(batchDate, paIdByKey.get(key), "项目管理员", paUrgencyByKey.get(key),
-                    entry.getValue(), null);
+            saveFinancePmStallReminder(batchDate, paAdminIdByKey.get(key), "项目管理员", paPmIdByKey.get(key),
+                    paUrgencyByKey.get(key), entry.getValue(), null);
         }
     }
 
@@ -1052,6 +1072,14 @@ public class ProgressReminderService {
      * （involvedEmployeeIds）定向，标题格式仿 saveStallReminder() 的"项目负责人-XX-手下的"。 */
     private void saveFinancePmStallReminder(Date batchDate, Long audienceEmployeeId, String audienceRoleLabel,
                                               ReminderUrgency urgency,
+                                              List<ProgressReminderDetail> details, Set<Long> involvedExecutorIds) {
+        saveFinancePmStallReminder(batchDate, audienceEmployeeId, audienceRoleLabel, null, urgency,
+                details, involvedExecutorIds);
+    }
+
+    /** groupedPmId 非空时是"项目管理员"按项目负责人分组的卡片，见 buildOwnerPrefix() 说明 */
+    private void saveFinancePmStallReminder(Date batchDate, Long audienceEmployeeId, String audienceRoleLabel,
+                                              Long groupedPmId, ReminderUrgency urgency,
                                               List<ProgressReminderDetail> details, Set<Long> involvedExecutorIds) {
         ProgressReminder reminder = new ProgressReminder();
         reminder.setIsDeleted(false);
@@ -1065,9 +1093,8 @@ public class ProgressReminderService {
                     .map(String::valueOf).collect(Collectors.joining("\n")));
         }
         reminder.setCount(details.size());
-        Employee emp = employeeCache.findById(audienceEmployeeId);
-        String empName = emp != null ? emp.getName() : ("员工#" + audienceEmployeeId);
-        reminder.setTitle(audienceRoleLabel + "-" + empName + "-手下的" + details.size() + "笔视频项目进度长时间未结算");
+        reminder.setTitle(buildOwnerPrefix(audienceRoleLabel, audienceEmployeeId, groupedPmId)
+                + details.size() + "笔视频项目进度长时间未结算");
         reminder = reminderRepo.save(reminder);
         for (ProgressReminderDetail d : details) d.setReminderId(reminder.getId());
         detailRepo.saveAll(details);
@@ -1129,9 +1156,11 @@ public class ProgressReminderService {
         Map<String, OverdueUrgency> urgencyByKey = new HashMap<>();
         Map<String, Set<Long>> involvedByKey = new HashMap<>();
 
-        // "项目管理员"按品牌方范围顺带可见的累加器（2026-08-21 新增），同 runPmExecutorProgressStall
+        // "项目管理员"按品牌方范围顺带可见的累加器（2026-08-21 新增，同日改成按项目负责人分组），
+        // 同 runPmExecutorProgressStall
         Map<String, List<ProgressReminderDetail>> paByKey = new LinkedHashMap<>();
-        Map<String, Long> paIdByKey = new HashMap<>();
+        Map<String, Long> paAdminIdByKey = new HashMap<>();
+        Map<String, Long> paPmIdByKey = new HashMap<>();
         Map<String, OverdueUrgency> paUrgencyByKey = new HashMap<>();
 
         int overdueThreshold = thresholdCache.getInt(ReminderCategory.REQUIREMENT_INVOICE_OVERDUE, "OVERDUE_THRESHOLD", 5);
@@ -1166,10 +1195,9 @@ public class ProgressReminderService {
                         pmEntry.getValue());
 
                 for (Long adminId : projectAdminsFor(r.getBrandId(), pmEntry.getKey())) {
-                    addToOwnerBucket(paByKey, paIdByKey, paUrgencyByKey, new HashMap<>(),
-                            adminId, urgency,
-                            buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays, overdueThreshold, accountNameByInfluencerId),
-                            Collections.emptySet());
+                    addToProjectAdminBucket(paByKey, paAdminIdByKey, paPmIdByKey, paUrgencyByKey,
+                            adminId, pmEntry.getKey(), urgency,
+                            buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays, overdueThreshold, accountNameByInfluencerId));
                 }
             }
         }
@@ -1183,8 +1211,8 @@ public class ProgressReminderService {
         for (Map.Entry<String, List<ProgressReminderDetail>> entry : paByKey.entrySet()) {
             String key = entry.getKey();
             saveStallReminder(batchDate, ReminderCategory.REQUIREMENT_INVOICE_OVERDUE,
-                    paIdByKey.get(key), "项目管理员", paUrgencyByKey.get(key), entry.getValue(),
-                    "个需求完成后长时间未上传Invoice", null);
+                    paAdminIdByKey.get(key), "项目管理员", paPmIdByKey.get(key), paUrgencyByKey.get(key),
+                    entry.getValue(), "个需求完成后长时间未上传Invoice", null);
         }
     }
 
@@ -1223,9 +1251,11 @@ public class ProgressReminderService {
         Map<String, OverdueUrgency> urgencyByKey = new HashMap<>();
         Map<String, Set<Long>> involvedByKey = new HashMap<>();
 
-        // "项目管理员"按品牌方范围顺带可见的累加器（2026-08-21 新增），同 runPmExecutorProgressStall
+        // "项目管理员"按品牌方范围顺带可见的累加器（2026-08-21 新增，同日改成按项目负责人分组），
+        // 同 runPmExecutorProgressStall
         Map<String, List<ProgressReminderDetail>> paByKey = new LinkedHashMap<>();
-        Map<String, Long> paIdByKey = new HashMap<>();
+        Map<String, Long> paAdminIdByKey = new HashMap<>();
+        Map<String, Long> paPmIdByKey = new HashMap<>();
         Map<String, OverdueUrgency> paUrgencyByKey = new HashMap<>();
 
         int overdueThreshold = thresholdCache.getInt(ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE, "OVERDUE_THRESHOLD", 14);
@@ -1260,10 +1290,9 @@ public class ProgressReminderService {
                         pmEntry.getValue());
 
                 for (Long adminId : projectAdminsFor(r.getBrandId(), pmEntry.getKey())) {
-                    addToOwnerBucket(paByKey, paIdByKey, paUrgencyByKey, new HashMap<>(),
-                            adminId, urgency,
-                            buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays, overdueThreshold, accountNameByInfluencerId),
-                            Collections.emptySet());
+                    addToProjectAdminBucket(paByKey, paAdminIdByKey, paPmIdByKey, paUrgencyByKey,
+                            adminId, pmEntry.getKey(), urgency,
+                            buildRequirementOverdueDetail(r, brand, placeholderTrackingId, overdueDays, overdueThreshold, accountNameByInfluencerId));
                 }
             }
         }
@@ -1277,8 +1306,8 @@ public class ProgressReminderService {
         for (Map.Entry<String, List<ProgressReminderDetail>> entry : paByKey.entrySet()) {
             String key = entry.getKey();
             saveStallReminder(batchDate, ReminderCategory.REQUIREMENT_CONTRACT_OVERDUE,
-                    paIdByKey.get(key), "项目管理员", paUrgencyByKey.get(key), entry.getValue(),
-                    "个需求完成后长时间未上传合同", null);
+                    paAdminIdByKey.get(key), "项目管理员", paPmIdByKey.get(key), paUrgencyByKey.get(key),
+                    entry.getValue(), "个需求完成后长时间未上传合同", null);
         }
     }
 
@@ -1344,9 +1373,11 @@ public class ProgressReminderService {
         Map<String, ReminderUrgency> urgencyByKey = new HashMap<>();
         Map<String, Set<Long>> involvedByKey = new HashMap<>();
 
-        // "项目管理员"按品牌方范围顺带可见的累加器（2026-08-21 新增），同 runPmExecutorProgressStall
+        // "项目管理员"按品牌方范围顺带可见的累加器（2026-08-21 新增，同日改成按项目负责人分组），
+        // 同 runPmExecutorProgressStall
         Map<String, List<ProgressReminderDetail>> paByKey = new LinkedHashMap<>();
-        Map<String, Long> paIdByKey = new HashMap<>();
+        Map<String, Long> paAdminIdByKey = new HashMap<>();
+        Map<String, Long> paPmIdByKey = new HashMap<>();
         Map<String, ReminderUrgency> paUrgencyByKey = new HashMap<>();
 
         int expiryWindowDays = thresholdCache.getInt(ReminderCategory.CONTRACT_EXPIRING_SOON, "EXPIRY_WINDOW_DAYS", CONTRACT_EXPIRY_WINDOW_DAYS);
@@ -1397,15 +1428,13 @@ public class ProgressReminderService {
                     involvedByKey.computeIfAbsent(key, k -> new LinkedHashSet<>()).addAll(pmEntry.getValue());
                 }
 
-                // 负责这个品牌方的项目管理员：每个人各累加一份*新建*的 detail 实例，理由同
-                // runPmExecutorProgressStall
+                // 负责这个品牌方的项目管理员，按项目负责人分组：每个人各累加一份*新建*的 detail
+                // 实例，理由同 runPmExecutorProgressStall
                 for (Long adminId : projectAdminsFor(sample.getBrandId(), pmEntry.getKey())) {
                     ProgressReminderDetail paDetail = buildContractExpiryDetail(sample, brand, team, sourceLabel,
                             expiryWindowDays, endDate, daysRemaining);
-                    String paKey = adminId + "|" + urgency.name();
-                    paByKey.computeIfAbsent(paKey, k -> new ArrayList<>()).add(paDetail);
-                    paIdByKey.put(paKey, adminId);
-                    paUrgencyByKey.put(paKey, urgency);
+                    addToProjectAdminBucket(paByKey, paAdminIdByKey, paPmIdByKey, paUrgencyByKey,
+                            adminId, pmEntry.getKey(), urgency, paDetail);
                 }
             }
         }
@@ -1417,8 +1446,8 @@ public class ProgressReminderService {
         }
         for (Map.Entry<String, List<ProgressReminderDetail>> entry : paByKey.entrySet()) {
             String key = entry.getKey();
-            saveContractExpiryReminder(batchDate, paIdByKey.get(key), "项目管理员", paUrgencyByKey.get(key),
-                    entry.getValue(), null);
+            saveContractExpiryReminder(batchDate, paAdminIdByKey.get(key), "项目管理员", paPmIdByKey.get(key),
+                    paUrgencyByKey.get(key), entry.getValue(), null);
         }
     }
 
@@ -1459,6 +1488,14 @@ public class ProgressReminderService {
     private void saveContractExpiryReminder(Date batchDate, Long audienceEmployeeId, String audienceRoleLabel,
                                               ReminderUrgency urgency,
                                               List<ProgressReminderDetail> details, Set<Long> involvedExecutorIds) {
+        saveContractExpiryReminder(batchDate, audienceEmployeeId, audienceRoleLabel, null, urgency,
+                details, involvedExecutorIds);
+    }
+
+    /** groupedPmId 非空时是"项目管理员"按项目负责人分组的卡片，见 buildOwnerPrefix() 说明 */
+    private void saveContractExpiryReminder(Date batchDate, Long audienceEmployeeId, String audienceRoleLabel,
+                                              Long groupedPmId, ReminderUrgency urgency,
+                                              List<ProgressReminderDetail> details, Set<Long> involvedExecutorIds) {
         ProgressReminder reminder = new ProgressReminder();
         reminder.setIsDeleted(false);
         reminder.setBatchDate(batchDate);
@@ -1471,9 +1508,8 @@ public class ProgressReminderService {
                     .map(String::valueOf).collect(Collectors.joining("\n")));
         }
         reminder.setCount(details.size());
-        Employee emp = audienceEmployeeId != null ? employeeCache.findById(audienceEmployeeId) : null;
-        String empName = emp != null ? emp.getName() : ("员工#" + audienceEmployeeId);
-        reminder.setTitle(audienceRoleLabel + "-" + empName + "-手下的" + details.size() + "个品牌方团队，合同签订周期即将到期或已到期，请跟进续签");
+        reminder.setTitle(buildOwnerPrefix(audienceRoleLabel, audienceEmployeeId, groupedPmId)
+                + details.size() + "个品牌方团队，合同签订周期即将到期或已到期，请跟进续签");
         reminder = reminderRepo.save(reminder);
         for (ProgressReminderDetail d : details) d.setReminderId(reminder.getId());
         detailRepo.saveAll(details);
@@ -1641,6 +1677,19 @@ public class ProgressReminderService {
                                      String audienceRoleLabel, OverdueUrgency urgency,
                                      List<ProgressReminderDetail> details, String titleSuffix,
                                      Set<Long> involvedExecutorIds) {
+        saveStallReminder(batchDate, category, audienceEmployeeId, audienceRoleLabel, null, urgency,
+                details, titleSuffix, involvedExecutorIds);
+    }
+
+    /**
+     * groupedPmId 非空时（2026-08-21 新增，"项目管理员"卡片专用）：这条卡片是项目管理员视角，
+     * 按具体项目负责人分组展示的其中一组，标题会带上"管理的项目负责人-XX"这一段，见
+     * buildOwnerPrefix()。为空时是老逻辑（项目负责人自己视角），行为完全不变。
+     */
+    private void saveStallReminder(Date batchDate, ReminderCategory category, Long audienceEmployeeId,
+                                     String audienceRoleLabel, Long groupedPmId, OverdueUrgency urgency,
+                                     List<ProgressReminderDetail> details, String titleSuffix,
+                                     Set<Long> involvedExecutorIds) {
         ProgressReminder reminder = new ProgressReminder();
         reminder.setIsDeleted(false);
         reminder.setBatchDate(batchDate);
@@ -1656,25 +1705,35 @@ public class ProgressReminderService {
                     .map(String::valueOf).collect(Collectors.joining("\n")));
         }
         reminder.setCount(details.size());
-        // 按项目负责人定向的这两类，管理层/ADMIN 是"全量可见"（看到所有项目负责人的卡片混在
-        // 一起，不是只看自己的），标题里必须带上具体是谁的、以及是"谁手下的"，不用"作为XX"这种
-        // 口吻——红人合作跟踪的主责人始终是项目负责人，不该暗示执行人员是另一个主责人：
-        // "项目负责人-陈洁-手下的2笔视频项目进度长时间未流转"
+        // 标题前缀见 buildOwnerPrefix()：项目负责人卡片是"项目负责人-陈洁-手下的2笔..."；
+        // 项目管理员卡片（groupedPmId 非空）是"项目管理员-张三-管理的项目负责人-陈洁-手下的
+        // 2笔..."，2026-08-21 起按项目负责人分组展示，让项目管理员一眼看出是名下哪个项目
+        // 负责人的记录滞留，不是笼统的一个总数（Shawn 明确要求）。
         // 严重度已经用单独的彩色标签展示在卡片上了（ProgressReminderCardList.vue 的
-        // urgencyLabel），标题文字里不需要再重复一遍"3-7天"这种档位描述（之前财务视角这里
-        // 会拼出"3-7天：18笔..."，跟旁边的严重度标签重复）
-        String prefix;
-        if (audienceEmployeeId != null) {
-            Employee emp = employeeCache.findById(audienceEmployeeId);
-            String empName = emp != null ? emp.getName() : ("员工#" + audienceEmployeeId);
-            prefix = audienceRoleLabel + "-" + empName + "-手下的";
-        } else {
-            prefix = "";
-        }
-        reminder.setTitle(prefix + details.size() + titleSuffix);
+        // urgencyLabel），标题文字里不需要再重复一遍"3-7天"这种档位描述。
+        reminder.setTitle(buildOwnerPrefix(audienceRoleLabel, audienceEmployeeId, groupedPmId)
+                + details.size() + titleSuffix);
         reminder = reminderRepo.save(reminder);
         for (ProgressReminderDetail d : details) d.setReminderId(reminder.getId());
         detailRepo.saveAll(details);
+    }
+
+    /**
+     * 卡片标题前缀（2026-08-21 抽出来，供 saveStallReminder()/saveFinancePmStallReminder()/
+     * saveContractExpiryReminder() 三处共用）："项目负责人"卡片（groupedPmId 为空）是
+     * "项目负责人-XX-手下的"；"项目管理员"卡片（groupedPmId 非空，按项目负责人分组展示的
+     * 其中一组）是"项目管理员-XX-管理的项目负责人-YY-手下的"。
+     */
+    private String buildOwnerPrefix(String audienceRoleLabel, Long audienceEmployeeId, Long groupedPmId) {
+        if (audienceEmployeeId == null) return "";
+        Employee emp = employeeCache.findById(audienceEmployeeId);
+        String empName = emp != null ? emp.getName() : ("员工#" + audienceEmployeeId);
+        if (groupedPmId == null) {
+            return audienceRoleLabel + "-" + empName + "-手下的";
+        }
+        Employee pm = employeeCache.findById(groupedPmId);
+        String pmName = pm != null ? pm.getName() : ("员工#" + groupedPmId);
+        return audienceRoleLabel + "-" + empName + "-管理的项目负责人-" + pmName + "-手下的";
     }
 
     // ============ 查询（供 Controller 用） ============

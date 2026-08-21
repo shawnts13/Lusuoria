@@ -732,14 +732,33 @@ public class PayslipService {
                         .isSummaryRow(false).build());
             }
         }
-        // tierBonus 只从 othersConfirmed（finalConfirmed=true）取——这是真正"没确认就是算不出来"
-        // 的值：阶梯Bonus 要按当月最终锁定的提成总额判档，没到 finalConfirmed 之前这个数字本身
-        // 就不存在，不是"故意不展示"，是真的还没有
+        // tierBonus：2026-08-21 修正（Shawn 明确要求）——最初这里只从 othersConfirmed 取，
+        // 误以为"没 finalConfirmed 就是算不出来"，但 buildProjectManagerDetail() 在项目负责人
+        // 自己查看"工资单详情"时，未确认也一直是实时算出 tierBonusAmount 的（当前提成总额 +
+        // 已配置的阶梯规则，两者随时都能读到）。改成"预计 vs 已确认"两态：finalConfirmed=true
+        // 的负责人读冻结快照（不会因为之后又有新记录而变动）；没确认的负责人现算实时值——用
+        // 上面 commissionByManager 已经算好的当月实时提成总额，套用该负责人的阶梯规则现算一次
+        // （commissionBonusService.hasBonusTierConfigured()/computeBonus()，跟
+        // DashboardStatsService.tierBonusTotalUsd() 用的是同一对方法，两边保持同一个算法）
+        Map<Long, PayslipDetailResponse> confirmedSnapshotByPmId = new HashMap<>();
         for (Payslip other : othersConfirmed) {
-            PayslipDetailResponse snap = readSnapshot(other);
-            if (snap.getTierBonusAmount() != null) {
-                tierBonusTotalUsd = tierBonusTotalUsd.add(snap.getTierBonusAmount());
-                tierBonusByManager.put(other.getEmployeeId(), snap.getTierBonusAmount());
+            confirmedSnapshotByPmId.put(other.getEmployeeId(), readSnapshot(other));
+        }
+        for (Map.Entry<Long, BigDecimal> entry : commissionByManager.entrySet()) {
+            Long pmId = entry.getKey();
+            Employee pm = employeeCache.findById(pmId);
+            if (pm == null) continue; // 防御性兜底，理论上不会发生
+            PayslipDetailResponse confirmedSnap = confirmedSnapshotByPmId.get(pmId);
+            BigDecimal bonus;
+            if (confirmedSnap != null) {
+                bonus = confirmedSnap.getTierBonusAmount();
+            } else {
+                boolean hasBonusRule = commissionBonusService.hasBonusTierConfigured(pm);
+                bonus = hasBonusRule ? commissionBonusService.computeBonus(pm, entry.getValue(), rate) : null;
+            }
+            if (bonus != null) {
+                tierBonusTotalUsd = tierBonusTotalUsd.add(bonus);
+                tierBonusByManager.put(pmId, bonus);
             }
         }
         // 2026-08-21 修复：奖金（extraBonusAmount）/法务当月工资（legalSalaryRmb）之前也是从

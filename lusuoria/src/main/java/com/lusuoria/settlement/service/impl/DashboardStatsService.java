@@ -361,31 +361,56 @@ public class DashboardStatsService {
     }
 
     /**
-     * 当月所有项目负责人/管理层的阶梯Bonus（美金，Payslip.detailJson 快照里的
-     * tierBonusAmount）合计——2026-08-10 新增，修复"负责人提成合计"跟工资单模块对不上的问题：
-     * PayslipService.computeManagement() 的"负责人提成合计（含Bonus）"= 原始提成 + 这笔阶梯
-     * Bonus，看板这边之前完全没算这一项、也没在"公司利润"公式里扣掉，导致管理层确认某个月后，
-     * 看板算出来的公司利润比工资单偏高（少扣了这笔真实成本），Shawn 手动比对两边公式发现的。
+     * 当月所有项目负责人的阶梯Bonus（美金）合计——2026-08-10 新增，修复"负责人提成合计"跟
+     * 工资单模块对不上的问题（管理层确认某个月后，看板公司利润比工资单偏高，少扣了这笔真实
+     * 成本）。
      *
-     * 只统计 finalConfirmed=true 的记录，不像 extraBonusTotalUsd()/legalStaffCostRmb() 那样
-     * "预计"性质地读未确认的实时值——这不是本方法自己收紧口径，是这个字段本身的性质决定的：
-     * 阶梯Bonus 只有在 Payslip 被确认成最终版时才会按当时锁定的提成金额算出来、写进
-     * detailJson 快照（见 PayslipService.applyFinalSnapshot），未确认之前压根没有这个值可读；
-     * PayslipService.computeManagement() 自己汇总"其他人的"阶梯Bonus 时（othersConfirmed）
-     * 用的也是同一个 finalConfirmed 条件，这里保持一致，不是新引入的限制。
-     * tierBonusAmount 快照里已经是美金（见 PayslipDetailResponse 字段注释），不需要再按汇率换算。
+     * 2026-08-21 修正（Shawn 明确要求）：最初这里只统计 finalConfirmed=true 的记录，理由是
+     * "阶梯Bonus 只有确认成最终版时才算得出来"——这个理由是错的：`buildProjectManagerDetail()`
+     * 在项目负责人自己查看"工资单详情"时，未确认也一直是实时算出 tierBonusAmount 的（当前
+     * 提成总额 + 已配置的阶梯规则，两者随时都能读到），只是没有把这同一套实时计算搬到这个
+     * 汇总方法里，才误以为"没确认就是没有这个数"。改成跟提成/奖金一样的"预计 vs 已确认"
+     * 两态：finalConfirmed=true 的负责人读冻结快照（不会因为之后又有新记录而变动）；没确认的
+     * 负责人现算实时值——按当月未删除记录汇总出的实时提成总额，套用该负责人已配置的阶梯规则
+     * 现算一次（复用 drilldownCommission() 同一套 hasBonusTierConfigured()/computeBonus()）。
+     * "管理层"这个特殊项目负责人不参与阶梯Bonus，同 drilldownCommission() 的口径整行剔除。
      */
     private BigDecimal tierBonusTotalUsd(String yearMonth) {
-        BigDecimal sum = BigDecimal.ZERO;
+        List<CollaborationTracking> orders = excludeDamaged(trackingRepo.findByPublishMonth(yearMonth));
+        // 已确认的负责人：冻结快照，employeeId -> 反序列化后的 detail
+        Map<Long, PayslipDetailResponse> confirmedSnapshotById = new HashMap<>();
         for (Payslip p : payslipRepo.findByYearMonthAndIsDeletedFalse(yearMonth)) {
             if (!Boolean.TRUE.equals(p.getFinalConfirmed()) || p.getDetailJson() == null) continue;
             try {
-                PayslipDetailResponse snap = objectMapper.readValue(p.getDetailJson(), PayslipDetailResponse.class);
-                if (snap.getTierBonusAmount() != null) sum = sum.add(snap.getTierBonusAmount());
+                confirmedSnapshotById.put(p.getEmployeeId(), objectMapper.readValue(p.getDetailJson(), PayslipDetailResponse.class));
             } catch (Exception e) {
-                // 反序列化失败不该让整个看板汇总接口挂掉——跳过这一条按0处理，不影响其他记录
-                // （正常情况下不会走到这里，detailJson 是系统自己写的，格式必然合法）
+                // 反序列化失败不该让整个看板汇总接口挂掉——跳过这一条，未确认负责人走下面实时兜底
             }
+        }
+        // 未确认的负责人现算用：当月每个负责人的实时提成总额（美金原值，未按月份汇率折算——
+        // 阶梯判档本来就该用原始美金总额，跟 drilldownCommission() 里 groupedUsd 是同一个用途）
+        Map<Long, BigDecimal> liveCommissionByManager = new HashMap<>();
+        for (CollaborationTracking o : orders) {
+            if (o.getProjectManagerId() == null) continue;
+            liveCommissionByManager.merge(o.getProjectManagerId(), compute(o).commissionAmount, BigDecimal::add);
+        }
+        BigDecimal rate = exchangeRateService.getRateForMonth(yearMonth).getUsdToCny();
+
+        BigDecimal sum = BigDecimal.ZERO;
+        for (Long managerId : liveCommissionByManager.keySet()) {
+            Employee manager = employeeCache.findById(managerId);
+            if (manager == null || "管理层".equals(manager.getRole())) continue; // 管理层不参与阶梯Bonus
+            PayslipDetailResponse confirmedSnap = confirmedSnapshotById.get(managerId);
+            BigDecimal bonus;
+            if (confirmedSnap != null) {
+                bonus = confirmedSnap.getTierBonusAmount();
+            } else {
+                boolean hasBonusRule = commissionBonusService.hasBonusTierConfigured(manager);
+                bonus = hasBonusRule
+                        ? commissionBonusService.computeBonus(manager, liveCommissionByManager.get(managerId), rate)
+                        : null;
+            }
+            if (bonus != null) sum = sum.add(bonus);
         }
         return sum;
     }
