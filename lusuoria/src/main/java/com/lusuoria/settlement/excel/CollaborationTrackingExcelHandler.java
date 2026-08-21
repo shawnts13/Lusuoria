@@ -46,6 +46,11 @@ import java.util.*;
  * 2026-08-21 新增：员工角色="财务"的账号导入时只允许"更新"已有记录（financeImportUpdateOnly
  * 参数，见 importData() 系列方法），任何会落到"新增"分支的行一律拒绝，防止财务误操作把不该
  * 新建的行当成新记录导进来。
+ *
+ * 2026-08-21 同日再新增：更新分支落库前后各拍一份/一次快照比对（见 captureSnapshot()/
+ * isDirty()），如果这一行 Excel 内容其实跟数据库现有值完全一样（一个字段都没变），不计入
+ * "更新"，改计入"无变化跳过"，避免误导——之前不管这一行内容有没有变化，只要匹配到存量记录
+ * 就无差别地算"更新成功"。
  */
 @Component
 public class CollaborationTrackingExcelHandler {
@@ -605,7 +610,7 @@ public class CollaborationTrackingExcelHandler {
             if ("执行人员".equals(role)) executorCandidates.add(e);
         }
 
-        int processedCount = 0, createdCount = 0, updatedCount = 0;
+        int processedCount = 0, createdCount = 0, updatedCount = 0, unchangedCount = 0;
         SimpleDateFormat[] dateFormats = {
             new SimpleDateFormat("yyyy-MM-dd"),
             new SimpleDateFormat("yyyy/MM/dd"),
@@ -712,12 +717,11 @@ public class CollaborationTrackingExcelHandler {
                 Date publishDate = parseDate(row, colMap, dateFormats);
                 req.setPublishDate(publishDate);
 
-                // 收到回款日期（2026-08-21 新增）：不像视频发布时间那样有"进度不达标就不能填"的
-                // 强校验，这里原样读了就设置——跟 clientOrderId/clientPaymentBatch 是同一种"任何
-                // 时候都能填，只在流转到特定进度时才强制要求"的字段，具体的必填校验交给
-                // doSave() 统一处理（视频项目进度="已收到客户回款"却没有这一列的值时，doSave()
-                // 会抛出"必须填写收到回款日期"，这里不用重复校验）
-                req.setClientPaymentReceivedDate(parseDateColumn(row, colMap, dateFormats, "收到回款日期"));
+                // 收到回款日期（2026-08-21 新增）：先解析到本地变量，暂不设置到 req 上——下面
+                // 校验完"只有视频项目进度=已收到客户回款时才能填"之后再设置，避免校验失败的行
+                // 也把这个字段带进 req（虽然实际不影响结果，因为这一行会 continue 跳过，但保持
+                // 跟"先校验、校验通过再赋值"的一致写法，不留隐患）
+                Date clientPaymentReceivedDate = parseDateColumn(row, colMap, dateFormats, "收到回款日期");
 
                 // 视频项目进度、项目视频类型：Excel 导入无论新建还是更新已有记录，都允许带状态
                 // 填了但匹配不到有效选项时要报错，不能像以前那样静默地变成空值
@@ -732,6 +736,17 @@ public class CollaborationTrackingExcelHandler {
                     }
                     req.setProgress(progress);
                 }
+
+                // 收到回款日期：只有视频项目进度="已收到客户回款"时才能填，其余情况（含这一行
+                // 没填视频项目进度）填了这一列直接拒绝，跟下面"视频发布时间"那条对称校验是
+                // 同一个思路（2026-08-21 新增，Shawn 要求）——不像 clientOrderId/clientPaymentBatch
+                // 那样"任何时候都能填、只在特定进度才强制要求"，这个字段反过来是"只有特定进度
+                // 才允许填"，语义更严格
+                if (clientPaymentReceivedDate != null && req.getProgress() != CollaborationProgress.PAYMENT_RECEIVED) {
+                    errors.add("第" + (i + 1) + "行：只有\"视频项目进度\"为\"已收到客户回款\"时才能填写\"收到回款日期\"，请核对");
+                    continue;
+                }
+                req.setClientPaymentReceivedDate(clientPaymentReceivedDate);
 
                 // 视频发布时间：只有上面解析出来的视频项目进度达到前置条件（已发布(未结算)/
                 // 已加入客户未结算列表/客户已结算）时才允许填写，不满足条件却填了值 -> 整行导入失败
@@ -918,12 +933,29 @@ public class CollaborationTrackingExcelHandler {
                     continue;
                 }
 
+                // 2026-08-21 新增（Shawn 要求）："无变化跳过"判定：更新分支在真正落库前，先把
+                // 存量记录这次会被 Excel 覆盖到的那几个字段拍一份快照（DirtyCheckSnapshot，
+                // 只挑 isDirty() 会比较到的字段单独记一份——existingOrNull 是 BulkLookupContext
+                // 导入开始前一次性批量查出来的，这时候多半早就脱离了 Hibernate 会话，直接
+                // BeanUtils 整个实体克隆一份会在读到 brand/team 这类懒加载关联时抛
+                // LazyInitializationException，只能挑直读镜像列/标量字段单独记）。saveBulk()
+                // 落库之后，拿这份快照跟这次 Excel 请求（req）比，如果一个字段都没变，就不算
+                // "更新成功"，改记进 unchangedCount。新建的行不存在"有没有变化"这个概念，
+                // 天然不参与这个判定，snapshot 留 null。
+                DirtyCheckSnapshot originalSnapshot = isUpdate ? captureSnapshot(existingOrNull) : null;
+
                 // 内部项目编号：新建时会自动生成一次（走内存里的编号池，不查库）；
                 // 命中更新分支时 id 不为空，会保留数据库里原有的编号，不会重新生成
                 trackingService.saveBulk(req, influencer, existingOrNull, bulkCtx, canSetFinanceSettlementProgress,
                         isAdminOrManagement, currentEmployeeId);
 
-                if (isUpdate) updatedCount++; else createdCount++;
+                if (!isUpdate) {
+                    createdCount++;
+                } else if (isDirty(originalSnapshot, req, canViewSensitive)) {
+                    updatedCount++;
+                } else {
+                    unchangedCount++;
+                }
             } catch (Exception e) {
                 log.error("合作跟踪导入第{}行失败：{}", (i + 1), e.getMessage(), e);
                 errors.add("第" + (i + 1) + "行导入失败：" + friendlyErrorMessage(e));
@@ -932,8 +964,8 @@ public class CollaborationTrackingExcelHandler {
 
         workbook.close();
 
-        errors.add(0, "新增 " + createdCount + " 条，更新 " + updatedCount + " 条，失败 " + (errors.size())
-                + " 条（共处理 " + processedCount + " 行）");
+        errors.add(0, "新增 " + createdCount + " 条，更新 " + updatedCount + " 条，无变化跳过 " + unchangedCount
+                + " 条，失败 " + (errors.size()) + " 条（共处理 " + processedCount + " 行）");
         return errors;
         } finally {
             FORMULA_EVALUATOR.remove();
@@ -1045,6 +1077,101 @@ public class CollaborationTrackingExcelHandler {
         cb.setTime(b);
         return ca.get(java.util.Calendar.YEAR) == cb.get(java.util.Calendar.YEAR)
                 && ca.get(java.util.Calendar.DAY_OF_YEAR) == cb.get(java.util.Calendar.DAY_OF_YEAR);
+    }
+
+    // ============ "无变化跳过"判定（2026-08-21 新增，Shawn 要求） ============
+
+    /**
+     * 更新分支落库前，从存量记录上挑出 isDirty() 会比较到的那几个标量字段单独记一份快照——
+     * 不能直接 BeanUtils 整个实体克隆，existingOrNull 这时候多半已经脱离 Hibernate 会话，
+     * 读 brand/team 这类懒加载关联会直接抛 LazyInitializationException，所以只挑直读的
+     * 镜像列/标量字段，不碰任何 @ManyToOne 关联本身。
+     */
+    private DirtyCheckSnapshot captureSnapshot(CollaborationTracking t) {
+        DirtyCheckSnapshot s = new DirtyCheckSnapshot();
+        s.internalRequirementNo = t.getInternalRequirementNo();
+        s.brandId = t.getBrandId();
+        s.platform = t.getPlatform();
+        s.demandContent = t.getDemandContent();
+        s.publishLink = t.getPublishLink();
+        s.publishDate = t.getPublishDate();
+        s.progress = t.getProgress();
+        s.clientPaymentReceivedDate = t.getClientPaymentReceivedDate();
+        s.videoType = t.getVideoType();
+        s.oldMaterialSourceLink = t.getOldMaterialSourceLink();
+        s.clientOrderId = t.getClientOrderId();
+        s.clientPaymentBatch = t.getClientPaymentBatch();
+        s.projectManagerId = t.getProjectManagerId();
+        s.executorId = t.getExecutorId();
+        s.influencerCost = t.getInfluencerCost();
+        s.clientPrice = t.getClientPrice();
+        s.notes = t.getNotes();
+        return s;
+    }
+
+    /**
+     * 这次 Excel 请求跟落库前的存量快照比，是不是真的改动了哪个字段——只比较 Excel 能直接
+     * 影响到的这批字段，不含品牌方/团队自动解析（MultiValueUtil.resolveSingleChoice()）、
+     * 系统自动计算的利润/执行成本/汇率这些派生字段：红人团队/服务国家市场这两列 Excel 留空时
+     * 是"按红人当前唯一可选项自动带入"而不是"清空"，直接拿 req 上可能是 null 的原始值跟快照比
+     * 会导致"这一行其实什么都没改，就因为团队列照例留空"被错误地判成"有变化"，所以这两个字段
+     * 不参与这里的比较（Excel 批量更新常见的用法本来就很少去改团队/国家市场）。
+     * canViewSensitive=false 时 req 上的红人成本/客户合作价格恒为 null（Excel 处理循环那边
+     * 压根没读这两列），这里同样跳过，不然会被误判成"清空了"。
+     */
+    private boolean isDirty(DirtyCheckSnapshot original, CollaborationTrackingRequest req, boolean canViewSensitive) {
+        if (original == null) return true;
+        boolean dirty = !java.util.Objects.equals(original.internalRequirementNo, req.getInternalRequirementNo())
+                || !java.util.Objects.equals(original.brandId, req.getBrandId())
+                || !java.util.Objects.equals(original.platform, req.getPlatform())
+                || !java.util.Objects.equals(original.demandContent, req.getDemandContent())
+                || !java.util.Objects.equals(original.publishLink, req.getPublishLink())
+                || !java.util.Objects.equals(original.publishDate, req.getPublishDate())
+                || !java.util.Objects.equals(original.progress, req.getProgress())
+                || !java.util.Objects.equals(original.clientPaymentReceivedDate, req.getClientPaymentReceivedDate())
+                || !java.util.Objects.equals(original.videoType, req.getVideoType())
+                || !java.util.Objects.equals(original.oldMaterialSourceLink, req.getOldMaterialSourceLink())
+                || !java.util.Objects.equals(original.clientOrderId, req.getClientOrderId())
+                || !java.util.Objects.equals(original.clientPaymentBatch, req.getClientPaymentBatch())
+                || !java.util.Objects.equals(original.projectManagerId, req.getProjectManagerId())
+                || !java.util.Objects.equals(original.executorId, req.getExecutorId())
+                || !java.util.Objects.equals(original.notes, req.getNotes());
+        if (dirty) return true;
+        if (canViewSensitive) {
+            // BigDecimal 不能直接用 Objects.equals（100.00 跟 100.0 因为 scale 不同会被判定
+            // "不相等"，即便数值上完全一样），要用 compareTo() == 0
+            return !eqBigDecimal(original.influencerCost, req.getInfluencerCost())
+                    || !eqBigDecimal(original.clientPrice, req.getClientPrice());
+        }
+        return false;
+    }
+
+    /** BigDecimal null 安全比较，数值相等即可（不看 scale），isDirty() 专用 */
+    private boolean eqBigDecimal(java.math.BigDecimal a, java.math.BigDecimal b) {
+        if (a == null && b == null) return true;
+        if (a == null || b == null) return false;
+        return a.compareTo(b) == 0;
+    }
+
+    /** isDirty() 比较用的存量记录快照，字段集合见 captureSnapshot() 的说明 */
+    private static class DirtyCheckSnapshot {
+        String internalRequirementNo;
+        Long brandId;
+        String platform;
+        String demandContent;
+        String publishLink;
+        Date publishDate;
+        CollaborationProgress progress;
+        Date clientPaymentReceivedDate;
+        VideoType videoType;
+        String oldMaterialSourceLink;
+        String clientOrderId;
+        String clientPaymentBatch;
+        Long projectManagerId;
+        Long executorId;
+        java.math.BigDecimal influencerCost;
+        java.math.BigDecimal clientPrice;
+        String notes;
     }
 
     // ============ 工具方法 ============
