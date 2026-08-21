@@ -130,8 +130,12 @@ public class DashboardStatsService {
         // 奖金（Payslip.extraBonusAmount，任何角色都可能设置，2026-07 新增计入公司利润扣减）：
         // 跟"内部其他员工成本"是两回事，也要从公司利润里扣掉——工资单模块（PayslipService.
         // computeManagement）早就是这么算的，看板这里之前漏了，导致看板"公司利润"比工资单里
-        // 实际的公司利润偏高
-        BigDecimal totalExtraBonusUsd = extraBonusTotalUsd(yearMonth, rate);
+        // 实际的公司利润偏高。2026-08-21 起先算人民币汇总（extraBonusTotalRmb()），"公司利润"
+        // 公式是美金口径，这里单独转一次美金；展示给前端的值（.totalExtraBonus）直接从人民币
+        // 汇总转，不复用这个美金中间值——见 extraBonusTotalRmb() 顶部注释，避免两次换算
+        BigDecimal totalExtraBonusRmb = extraBonusTotalRmb(yearMonth, rate);
+        BigDecimal totalExtraBonusUsd = (rate != null && rate.compareTo(BigDecimal.ZERO) > 0)
+                ? totalExtraBonusRmb.divide(rate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
         totalCompanyProfit = totalCompanyProfit.subtract(totalExtraBonusUsd);
 
         // 负责人阶梯Bonus（2026-08-10 新增，见 tierBonusTotalUsd() 注释）：并进"负责人提成合计"
@@ -152,7 +156,7 @@ public class DashboardStatsService {
                 .totalInternalExecutionCost(convertFromRmb(totalExecCost, rate, toRmb))
                 .totalInternalExecutionCostForProfit(convert(totalExecCostForProfitUsd, rate, toRmb))
                 .totalOtherStaffCost(convertFromRmb(totalOtherStaffCostRmb, rate, toRmb))
-                .totalExtraBonus(convert(totalExtraBonusUsd, rate, toRmb))
+                .totalExtraBonus(convertFromRmb(totalExtraBonusRmb, rate, toRmb))
                 .totalGrossProfit(convert(totalGrossProfit, rate, toRmb))
                 .totalDistributableProfit(convert(totalDistributable, rate, toRmb))
                 .totalCommissionAmount(convert(totalCommission, rate, toRmb))
@@ -227,10 +231,12 @@ public class DashboardStatsService {
                 ? totalOtherStaffCostRmb.divide(rate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
         totalCompanyProfit = totalCompanyProfit.subtract(totalOtherStaffCostUsd);
 
-        BigDecimal totalExtraBonusUsd = BigDecimal.ZERO;
+        BigDecimal totalExtraBonusRmb = BigDecimal.ZERO;
         for (String m : touchedMonths) {
-            totalExtraBonusUsd = totalExtraBonusUsd.add(extraBonusTotalUsd(m, rate));
+            totalExtraBonusRmb = totalExtraBonusRmb.add(extraBonusTotalRmb(m, rate));
         }
+        BigDecimal totalExtraBonusUsd = (rate != null && rate.compareTo(BigDecimal.ZERO) > 0)
+                ? totalExtraBonusRmb.divide(rate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
         totalCompanyProfit = totalCompanyProfit.subtract(totalExtraBonusUsd);
 
         // 负责人阶梯Bonus（2026-08-10 新增，见 tierBonusTotalUsd() 注释及 getSummary() 同一处的
@@ -254,7 +260,7 @@ public class DashboardStatsService {
                 .totalInternalExecutionCost(convertFromRmb(totalExecCost, rate, toRmb))
                 .totalInternalExecutionCostForProfit(convert(totalExecCostForProfitUsd, rate, toRmb))
                 .totalOtherStaffCost(convertFromRmb(totalOtherStaffCostRmb, rate, toRmb))
-                .totalExtraBonus(convert(totalExtraBonusUsd, rate, toRmb))
+                .totalExtraBonus(convertFromRmb(totalExtraBonusRmb, rate, toRmb))
                 .totalGrossProfit(convert(totalGrossProfit, rate, toRmb))
                 .totalDistributableProfit(convert(totalDistributable, rate, toRmb))
                 .totalCommissionAmount(convert(totalCommission, rate, toRmb))
@@ -339,23 +345,31 @@ public class DashboardStatsService {
     }
 
     /**
-     * 当月所有员工"奖金"（Payslip.extraBonusAmount）合计，换算成美金——跟 PayslipService 里
-     * 汇总"其他员工已确认的奖金"用的是同一套换算口径（RMB 按当月汇率换算成美金，汇率无效时
-     * 保守按 0 算，不是任何角色专属，管理层给谁设置了都算）。这里不要求 Payslip 已确认/
-     * 已是最终版——看板是"预计"性质的数字，只要设置了就算，不像 PayslipService 那边要等
-     * 所有相关方都确认完才把这个人算进"其他人已确认"的合计。
+     * 当月所有员工"奖金"（Payslip.extraBonusAmount）合计，换算成人民币——不是任何角色专属，
+     * 管理层给谁设置了都算。这里不要求 Payslip 已确认/已是最终版——看板是"预计"性质的数字，
+     * 只要设置了就算，不像 PayslipService 那边要等所有相关方都确认完才把这个人算进"其他人
+     * 已确认"的合计。
+     *
+     * 2026-08-21 修正（Shawn 反馈"奖金显示的值不正确，带了多余的小数点"）：最初这里换算成美金
+     * 合计（RMB 设置的奖金先除以汇率转成美金），调用方后续展示成人民币时又乘回汇率转一次——
+     * 工资单里奖金一般是配置成人民币的，等于绕了一圈"人民币→美金→人民币"，两次除法/乘法的
+     * 舍入误差会让最终显示的人民币金额跟当初录入的原值对不上（多出几分钱的尾数）。改成跟
+     * otherStaffCostRmb() 一样直接以人民币累加（只有原始就是美金设置的奖金才需要在这里转一次
+     * 成人民币，绝大多数人民币设置的条目全程不做任何换算，原样累加），调用方需要美金参与
+     * "公司利润"公式时，直接从这个人民币汇总值转一次（见 getSummary()/getSummaryByDateRange()
+     * 改动），不再各自条目分别转换。
      */
-    private BigDecimal extraBonusTotalUsd(String yearMonth, BigDecimal rate) {
+    private BigDecimal extraBonusTotalRmb(String yearMonth, BigDecimal rate) {
         BigDecimal sum = BigDecimal.ZERO;
         for (Payslip p : payslipRepo.findByYearMonthAndIsDeletedFalse(yearMonth)) {
             if (p.getExtraBonusAmount() == null) continue;
             boolean isRmb = "RMB".equals(p.getExtraBonusCurrency());
-            BigDecimal usd = isRmb
-                    ? (rate != null && rate.compareTo(BigDecimal.ZERO) > 0
-                        ? p.getExtraBonusAmount().divide(rate, SCALE, RoundingMode.HALF_UP)
-                        : BigDecimal.ZERO)
-                    : p.getExtraBonusAmount();
-            sum = sum.add(usd);
+            BigDecimal rmb = isRmb
+                    ? p.getExtraBonusAmount()
+                    : (rate != null && rate.compareTo(BigDecimal.ZERO) > 0
+                        ? p.getExtraBonusAmount().multiply(rate).setScale(SCALE, RoundingMode.HALF_UP)
+                        : BigDecimal.ZERO);
+            sum = sum.add(rmb);
         }
         return sum;
     }

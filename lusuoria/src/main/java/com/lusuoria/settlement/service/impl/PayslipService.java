@@ -692,7 +692,9 @@ public class PayslipService {
         List<Payslip> othersConfirmed = payslipRepo
                 .findByYearMonthAndFinalConfirmedTrueAndIsDeletedFalseAndEmployeeIdNot(yearMonth, mgmt.getId());
         BigDecimal tierBonusTotalUsd = BigDecimal.ZERO;
-        BigDecimal extraBonusTotalUsd = BigDecimal.ZERO;
+        // extraBonusTotalUsd 不在这里声明——2026-08-21 起改成先累加人民币（extraBonusTotalRmb，
+        // 见下面 othersThisMonth 那段），需要美金参与"公司利润"公式时才现场转一次，就近声明
+        // 在那段代码旁边，避免这里留一个容易让人误用的、一开始就是0的美金变量
         // 每个项目负责人自己的阶梯Bonus（2026-08-10 新增，供 commissionBreakdownRows 用）——
         // 只有已确认（finalConfirmed，即在 othersConfirmed 里）的项目负责人才有值可读，没确认的
         // 在下面组装明细行时按 null 处理（前端显示"—"，不是误导性的 0.00）
@@ -778,15 +780,24 @@ public class PayslipService {
         List<Payslip> othersThisMonth = payslipRepo.findByYearMonthAndIsDeletedFalse(yearMonth).stream()
                 .filter(p -> !p.getEmployeeId().equals(mgmt.getId()))
                 .collect(Collectors.toList());
+        // 2026-08-21 修正（Shawn 反馈"奖金显示的值不正确，带了多余的小数点"）：这里之前直接
+        // 累加成美金（extraBonusTotalUsd），下面 toDisplayResponse() 展示成人民币时又拿这个
+        // 美金值乘回汇率转一次——工资单里奖金一般是配置成人民币的，等于绕了一圈"人民币→美金→
+        // 人民币"，两次除法/乘法的舍入误差会让最终显示的人民币金额跟当初录入的原值对不上（多出
+        // 几分钱的尾数）。改成先累加成人民币（只有原始就是美金设置的条目才需要在这里转一次成
+        // 人民币，绝大多数人民币设置的条目全程不做任何换算，原样累加），"公司利润"公式需要美金
+        // 参与运算时单独转一次（extraBonusTotalUsd，见下面），展示给前端的值直接用这个人民币
+        // 汇总（.extraBonusPayoutTotal，见本方法末尾的 builder），不再复用这个美金中间值。
+        BigDecimal extraBonusTotalRmb = BigDecimal.ZERO;
         for (Payslip other : othersThisMonth) {
             if (other.getExtraBonusAmount() != null) {
                 boolean isRmb = "RMB".equals(other.getExtraBonusCurrency());
-                BigDecimal usd = isRmb
-                        ? (rate != null && rate.compareTo(BigDecimal.ZERO) > 0
-                                ? other.getExtraBonusAmount().divide(rate, SCALE, RoundingMode.HALF_UP)
-                                : BigDecimal.ZERO)
-                        : other.getExtraBonusAmount();
-                extraBonusTotalUsd = extraBonusTotalUsd.add(usd);
+                BigDecimal rmb = isRmb
+                        ? other.getExtraBonusAmount()
+                        : (rate != null && rate.compareTo(BigDecimal.ZERO) > 0
+                                ? other.getExtraBonusAmount().multiply(rate).setScale(SCALE, RoundingMode.HALF_UP)
+                                : BigDecimal.ZERO);
+                extraBonusTotalRmb = extraBonusTotalRmb.add(rmb);
             }
             if ("法务".equals(roleById.get(other.getEmployeeId())) && other.getLegalSalaryRmb() != null) {
                 otherStaffCostRmb = otherStaffCostRmb.add(other.getLegalSalaryRmb());
@@ -799,6 +810,8 @@ public class PayslipService {
         otherStaffCostBreakdownRows.add(buildSummaryRow(otherStaffCostBreakdownRows));
 
         BigDecimal otherStaffCostUsd = dashboardStatsService.convertFromRmb(otherStaffCostRmb, rate, false);
+        BigDecimal extraBonusTotalUsd = (rate != null && rate.compareTo(BigDecimal.ZERO) > 0)
+                ? extraBonusTotalRmb.divide(rate, SCALE, RoundingMode.HALF_UP) : BigDecimal.ZERO;
         BigDecimal execCostUsd = totalExecCostUsd.setScale(SCALE, RoundingMode.HALF_UP);
         BigDecimal companyProfitBeforePayouts = totalCompanyProfitUsd.subtract(otherStaffCostUsd);
 
@@ -849,8 +862,12 @@ public class PayslipService {
                 .distributableProfit(totalDistributable.setScale(SCALE, RoundingMode.HALF_UP))
                 .managerCommissionTotal(managerCommissionTotal.setScale(SCALE, RoundingMode.HALF_UP))
                 .executorPayTotal(execCostUsd)
-                .otherStaffCost(otherStaffCostUsd)
-                .extraBonusPayoutTotal(extraBonusTotalUsd.setScale(SCALE, RoundingMode.HALF_UP))
+                // 2026-08-21 起改传人民币原值（otherStaffCostRmb/extraBonusTotalRmb），不再传
+                // 上面为"公司利润"美金公式单独转出来的 otherStaffCostUsd/extraBonusTotalUsd——
+                // toDisplayResponse() 对这两个字段的换算方式已同步改成"人民币原值"，避免
+                // 美金/人民币来回转两次导致展示值出现多余的舍入尾数，见上面两处的说明
+                .otherStaffCost(otherStaffCostRmb.setScale(SCALE, RoundingMode.HALF_UP))
+                .extraBonusPayoutTotal(extraBonusTotalRmb.setScale(SCALE, RoundingMode.HALF_UP))
                 .companyProfit(companyProfit.setScale(SCALE, RoundingMode.HALF_UP))
                 .executorWageRows(ownWageDetail.rows)
                 .executorWageTotal(ownWageDetail.total.setScale(SCALE, RoundingMode.HALF_UP))
@@ -1496,8 +1513,14 @@ public class PayslipService {
         BigDecimal distributable = convertAmount(src.getDistributableProfit(), false, rate, toRmb);
         BigDecimal managerCommissionTotal = convertAmount(src.getManagerCommissionTotal(), false, rate, toRmb);
         BigDecimal executorPayTotal = convertAmount(src.getExecutorPayTotal(), false, rate, toRmb);
-        BigDecimal otherStaffCost = convertAmount(src.getOtherStaffCost(), false, rate, toRmb);
-        BigDecimal extraBonusPayoutTotal = convertAmount(src.getExtraBonusPayoutTotal(), false, rate, toRmb);
+        // otherStaffCost/extraBonusPayoutTotal 2026-08-21 起改成人民币原值（amountIsRmb=true，
+        // 跟 otherStaffCostBreakdownRows 的换算口径本来就是一致的，见下面那处的说明），不再当
+        // 美金处理——computeManagement() 现在传的就是人民币原值（otherStaffCostRmb/
+        // extraBonusTotalRmb），如果这里继续按美金转换，人民币设置的金额会被"人民币→美金→
+        // 人民币"来回转两次，两次舍入误差会让最终显示值跟原始录入值对不上（Shawn 反馈"奖金
+        // 显示的值不正确，带了多余的小数点"）
+        BigDecimal otherStaffCost = convertAmount(src.getOtherStaffCost(), true, rate, toRmb);
+        BigDecimal extraBonusPayoutTotal = convertAmount(src.getExtraBonusPayoutTotal(), true, rate, toRmb);
         BigDecimal companyProfit = convertAmount(src.getCompanyProfit(), false, rate, toRmb);
 
         BigDecimal extraBonus = null;
@@ -1667,6 +1690,7 @@ public class PayslipService {
                 .videoCount(videoCount)
                 .baseAmount(d.getBaseAmount())
                 .tierBonusAmount(d.getTierBonusAmount())
+                .projectAdminSalaryRmb(d.getProjectAdminSalaryRmb())
                 .extraBonusAmount(d.getExtraBonusAmount())
                 .extraBonusAmountNative(d.getExtraBonusAmountNative())
                 .extraBonusCurrencyNative(d.getExtraBonusCurrencyNative())

@@ -43,6 +43,12 @@ public class PayslipRowResponse {
     /** 仅项目负责人配置了阶梯bonus时非空 */
     private BigDecimal tierBonusAmount;
 
+    /** "项目管理员"固定月薪（2026-08-21 新增，已换算好）：仅项目负责人同时是项目管理员且这个
+     *  月份已生效时非空。列表页"薪酬"列展示时会加到 baseAmount 上——不然"薪酬+阶梯Bonus+奖金"
+     *  跟"总工资"这几列会对不上（Shawn 反馈），跟"查看详情"弹窗把这块单独展示成一行是两种
+     *  展示策略：详情弹窗有位置拆开展示构成，列表这几列窄、没有位置再加一列，直接并进"薪酬"里 */
+    private BigDecimal projectAdminSalaryRmb;
+
     private BigDecimal extraBonusAmount;
     /** 奖金的原始录入值/币种（未换算），供"设置奖金"弹窗回显真实原值用 */
     private BigDecimal extraBonusAmountNative;
