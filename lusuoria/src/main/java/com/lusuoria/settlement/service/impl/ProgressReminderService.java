@@ -381,7 +381,16 @@ public class ProgressReminderService {
     @Async("reminderRecomputeTaskExecutor")
     public void runProjectFlowBatchesAsync() {
         try {
-            runProjectFlowBatches();
+            // 2026-08-21 修复：这里必须经 self 代理调用 runProjectFlowBatches()，不能直接
+            // this.runProjectFlowBatches()——同一个类内部的直接调用会绕开 Spring 的 AOP 代理，
+            // 导致它头上的 @Transactional 完全不生效（这跟 @Async 必须经代理调用是同一个坑，
+            // 类字段 self 的注释提过，但这里最初只在"谁调用 runProjectFlowBatchesAsync()"这一层
+            // 用了 self，没意识到这个方法内部自己调 runProjectFlowBatches() 也是同样的同类调用）。
+            // 没有事务的后果：runProjectFlowBatches() 内部 clearCategories() 的批量删除、
+            // reminderRepo.save() 这些写操作会直接抛 TransactionRequiredException（Shawn 反馈
+            // "重新计算失败：...TransactionRequiredException: Executing an update/delete query"，
+            // 就是这个原因）。
+            self.runProjectFlowBatches();
         } catch (RuntimeException e) {
             projectFlowRecomputeError = e.getMessage() != null ? e.getMessage() : "重新计算失败，请联系技术支持";
         } finally {
