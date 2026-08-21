@@ -39,6 +39,16 @@ public interface InfluencerRepository extends JpaRepository<Influencer, Long> {
 
     Optional<Influencer> findByIdAndIsDeletedFalse(Long id);
 
+    /**
+     * 精简投影：配置了"特殊回款周期"的红人 id + 天数（2026-08-21 新增），只查这两列，不加载
+     * notes/联系方式/成本等大字段——供 ProgressReminderService.runCollabPaymentDue() 每天跑批
+     * 时批量判断哪些记录要走这条最高优先级的回款周期规则，跟这个文件其它精简投影
+     * （findSimpleProjections/findIdsByFilters）是同一个思路。
+     */
+    @Query("SELECT i.id, i.specialPaymentCycleDays FROM Influencer i " +
+           "WHERE i.isDeleted = false AND i.specialPaymentCycleDays IS NOT NULL")
+    List<Object[]> findSpecialPaymentCycleDaysProjections();
+
     Optional<Influencer> findByAccountNameAndIsDeletedFalse(String accountName);
 
     /** "提取需求内容"账号匹配用：忽略大小写精确匹配 */

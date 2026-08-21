@@ -39,6 +39,11 @@ public class PaymentCandidateItem {
     /** 最迟结款日，品牌方未配置付款周期规则时为 null */
     private Date deadlineDate;
 
+    /** 上面这个 cycleDays/deadlineDate 是不是走的红人"特殊回款周期"（2026-08-21 新增，优先级
+     *  最高，覆盖品牌方/团队级别配置）算出来的——供前端"选择涉及的红人视频项目"弹窗判断要不要
+     *  展示"该结款记录涉及特殊回款周期的红人"这条红字提示 */
+    private Boolean specialPaymentCycle;
+
     /** 红人结款进度 = 待红人发送invoice，前端红框+感叹号+提示文案用 */
     private boolean invoiceWarning;
 

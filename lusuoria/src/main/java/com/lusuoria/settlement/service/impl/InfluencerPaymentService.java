@@ -211,6 +211,7 @@ public class InfluencerPaymentService {
                 CycleInfo cycleInfo = computeCycleInfo(t, brand, requirement, specialCycleDays);
                 item.setCycleDays(cycleInfo.cycleDays);
                 item.setDeadlineDate(cycleInfo.deadlineDate);
+                item.setSpecialPaymentCycle(cycleInfo.isSpecial);
             }
 
             boolean defaultChecked = false;
@@ -233,6 +234,9 @@ public class InfluencerPaymentService {
     private static class CycleInfo {
         Integer cycleDays;
         Date deadlineDate;
+        /** 这次算出来的周期是不是走的红人"特殊回款周期"（2026-08-21 新增）——供调用方决定
+         *  要不要在"选择涉及的红人视频项目"弹窗提示"这条记录涉及特殊回款周期的红人" */
+        boolean isSpecial;
     }
 
     /**
@@ -277,6 +281,7 @@ public class InfluencerPaymentService {
             if (requirement == null || requirement.completedAt == null) return info;
             info.cycleDays = specialPaymentCycleDays;
             info.deadlineDate = toDate(toLocalDate(requirement.completedAt).plusDays(specialPaymentCycleDays));
+            info.isSpecial = true;
             return info;
         }
 

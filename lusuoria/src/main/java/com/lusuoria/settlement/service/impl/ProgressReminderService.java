@@ -476,17 +476,32 @@ public class ProgressReminderService {
                 monthEndBrands.put(b.getId(), b);
             }
         }
-        if (costThresholdBrands.isEmpty() && monthEndBrands.isEmpty()) return;
+        // 红人"特殊回款周期"（2026-08-21 新增）：优先级最高，不管品牌方有没有配置付款周期、
+        // 配的是哪一种，只要红人配了这个字段就统一走这条最高优先级规则——所以下面这批候选的
+        // 判断要放在"品牌方是否配置了付款周期"这个早退判断*之前*，不能被那个判断连带跳过
+        Map<Long, Integer> specialCycleDaysByInfluencerId = new HashMap<>();
+        for (Object[] row : influencerRepo.findSpecialPaymentCycleDaysProjections()) {
+            specialCycleDaysByInfluencerId.put((Long) row[0], (Integer) row[1]);
+        }
+        if (costThresholdBrands.isEmpty() && monthEndBrands.isEmpty() && specialCycleDaysByInfluencerId.isEmpty()) return;
 
         List<CollaborationTracking> allCandidates = new ArrayList<>();
+        List<CollaborationTracking> specialCycleCandidates = new ArrayList<>();
         for (CollaborationTracking t : trackingRepo.findByIsDeletedFalse()) {
             if (t.getBrandId() == null) continue;
+            if (t.getInfluencerPaymentProgress() != null && t.getInfluencerPaymentProgress().isIncludedInBatch()) continue;
+            if (t.getProgress() == CollaborationProgress.DELAYED) continue; // 折损不会真正付款，不提醒，四档统一在这里过滤一次
+            // 特殊回款周期命中就直接归入这一档、不再进入下面品牌方付款周期那几档的候选池——
+            // 两边互斥，同一条记录只会走其中一条口径
+            if (specialCycleDaysByInfluencerId.containsKey(t.getInfluencerId())) {
+                specialCycleCandidates.add(t);
+                continue;
+            }
             if (!costThresholdBrands.containsKey(t.getBrandId()) && !monthEndBrands.containsKey(t.getBrandId())) continue;
             if (t.getPublishDate() == null) continue;
-            if (t.getInfluencerPaymentProgress() != null && t.getInfluencerPaymentProgress().isIncludedInBatch()) continue;
             allCandidates.add(t);
         }
-        if (allCandidates.isEmpty()) return;
+        if (allCandidates.isEmpty() && specialCycleCandidates.isEmpty()) return;
 
         List<CollaborationTracking> perItemCandidates = new ArrayList<>();
         List<CollaborationTracking> perRequirementCandidates = new ArrayList<>();
@@ -499,13 +514,15 @@ public class ProgressReminderService {
                 } else if (t.getInfluencerCost() != null) { // 没有成本没法判断走哪个天数档位，跳过
                     perItemCandidates.add(t);
                 }
-            } else if (t.getProgress() != CollaborationProgress.DELAYED) { // 折损不会真正付款，不提醒
-                monthEndCandidates.add(t);
+            } else {
+                monthEndCandidates.add(t); // 折损已经在上面统一过滤过，这里不用再判断一次
             }
         }
-        if (perItemCandidates.isEmpty() && perRequirementCandidates.isEmpty() && monthEndCandidates.isEmpty()) return;
+        if (perItemCandidates.isEmpty() && perRequirementCandidates.isEmpty()
+                && monthEndCandidates.isEmpty() && specialCycleCandidates.isEmpty()) return;
 
-        List<String> requirementNos = perRequirementCandidates.stream()
+        List<String> requirementNos = java.util.stream.Stream.concat(
+                        perRequirementCandidates.stream(), specialCycleCandidates.stream())
                 .map(CollaborationTracking::getInternalRequirementNo).collect(Collectors.toList());
         Map<String, InfluencerRequirementService.RequirementPaymentInfo> requirementByNo =
                 requirementService.fetchPaymentInfo(requirementNos);
@@ -513,6 +530,9 @@ public class ProgressReminderService {
         // 批量查红人账号名，避免逐条查库
         Set<Long> influencerIds = new HashSet<>();
         for (CollaborationTracking t : allCandidates) {
+            if (t.getInfluencerId() != null) influencerIds.add(t.getInfluencerId());
+        }
+        for (CollaborationTracking t : specialCycleCandidates) {
             if (t.getInfluencerId() != null) influencerIds.add(t.getInfluencerId());
         }
         Map<Long, String> accountNameById = new HashMap<>();
@@ -560,6 +580,23 @@ public class ProgressReminderService {
             LocalDate deadlineLocalDate = simulatedReconcileDate.plusDays(cycleDays);
             addCollabPaymentDueDetail(byUrgency, today, overdueMaxDays, nearMaxDays, windowMaxDays,
                     t, brand, accountNameById, cycleDays, deadlineLocalDate, null);
+        }
+
+        // 红人"特殊回款周期"（2026-08-21 新增）：起算点统一是"关联需求完成进度达到100%"
+        // （InfluencerRequirement.completedAt），不管这个红人所在的品牌方是否要求invoice/是否
+        // 月结——跟 InfluencerPaymentService.computeCycleInfo() 的特殊回款周期分支保持同一套
+        // 触发点口径。brand 现查（不一定在 costThresholdBrands/monthEndBrands 里，这条记录的
+        // 品牌方甚至可能压根没配置付款周期），只用来取品牌方名称展示，不参与天数计算。
+        for (CollaborationTracking t : specialCycleCandidates) {
+            String reqNo = t.getInternalRequirementNo();
+            InfluencerRequirementService.RequirementPaymentInfo info = reqNo != null ? requirementByNo.get(reqNo) : null;
+            if (info == null || !info.isComplete() || info.completedAt == null) continue;
+            Brand brand = brandCache.findById(t.getBrandId());
+            if (brand == null) continue;
+            int cycleDays = specialCycleDaysByInfluencerId.get(t.getInfluencerId());
+            LocalDate deadlineLocalDate = toLocalDate(info.completedAt).plusDays(cycleDays);
+            addCollabPaymentDueDetail(byUrgency, today, overdueMaxDays, nearMaxDays, windowMaxDays,
+                    t, brand, accountNameById, cycleDays, deadlineLocalDate, info.completedAt);
         }
 
         for (ReminderUrgency urgency : ReminderUrgency.values()) {
