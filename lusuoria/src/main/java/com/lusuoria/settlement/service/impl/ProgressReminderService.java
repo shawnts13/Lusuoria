@@ -817,19 +817,27 @@ public class ProgressReminderService {
         return null;
     }
 
-    /** 财务视角的滞留候选状态：已发布（未结算）/已加入客户未结算列表，到了客户已结算就不算了 */
+    /**
+     * 财务视角的滞留候选状态：已发布（未结算）/已加入客户未结算列表/客户已结算，到了"已收到客户
+     * 回款"（PAYMENT_RECEIVED）才算真正完成、不再算滞留。2026-08-21 新增"客户已结算"——这个
+     * 状态不再是终态（改成代表"客户结算完成、钱还没真正到账"），停在这个状态同样需要财务跟进，
+     * 所以纳入滞留候选，跟其余两个阶段共用同一档阈值（见 ReminderThresholdCache 里
+     * FINANCE_PROGRESS_STALL/STALL_THRESHOLD 那一档的描述文案，已同步更新覆盖范围）。
+     */
     private boolean isFinanceStallCandidate(CollaborationProgress progress) {
         return progress == CollaborationProgress.PUBLISHED_UNSETTLED
-                || progress == CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST;
+                || progress == CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST
+                || progress == CollaborationProgress.SETTLED;
     }
 
     /**
-     * Part D（2026-07 新增，2026-07 修正两次，2026-08 再次放宽）：财务视角，"已发布（未结算）"/
-     * "已加入客户未结算列表"长时间没到"客户已结算"，阈值统一14工作日。财务按角色整体可见
-     * （audienceEmployeeRole="财务"），不做按人定向。
+     * Part D（2026-07 新增，2026-07 修正两次，2026-08 再次放宽，2026-08-21 再次扩围）：财务
+     * 视角，"已发布（未结算）"/"已加入客户未结算列表"/"客户已结算"长时间没流转到"已收到客户
+     * 回款"（真正的最终状态），阈值统一14工作日。财务按角色整体可见（audienceEmployeeRole=
+     * "财务"），不做按人定向。
      *
-     * 按"视频项目进度"和严重度两个维度分桶——两个阶段分开报数，不合并成一句笼统的提醒，
-     * 财务能一眼看出是卡在"已发布（未结算）"还是"已加入客户未结算列表"没往下流转。
+     * 按"视频项目进度"和严重度两个维度分桶——三个阶段分开报数，不合并成一句笼统的提醒，
+     * 财务能一眼看出是卡在"已发布（未结算）"、"已加入客户未结算列表"还是"客户已结算"没往下流转。
      *
      * 严重度判定 2026-07 改成"临近阈值"模式，跟"临近结款"提醒（ReminderUrgency）用同一套
      * 档位，不再是"超出阈值之后才算"：距离14个工作日阈值还有4-7天=3-7天档（绿），还有1-3天=
@@ -837,14 +845,14 @@ public class ProgressReminderService {
      * OverdueUrgency 是"超出阈值之后才分档"（1-3/4-7/8+天超出），这里改用 ReminderUrgency
      * 本身就是"距离阈值还有几天"的语义，直接复用即可，不需要另外发明一套。
      *
-     * 2026-08 新增（Shawn 反馈）：财务在推进这两个阶段时经常需要项目负责人/执行人员配合
+     * 2026-08 新增（Shawn 反馈）：财务在推进这几个阶段时经常需要项目负责人/执行人员配合
      * （比如催红人补invoice、核对信息），不能只有财务自己看得到——这里额外按项目负责人归类
      * （跟 runPmExecutorProgressStall 同一套"按人定向"机制：ProgressReminder.audienceEmployeeId
      * = 项目负责人，涉及的执行人员通过 involvedEmployeeIds 顺带获得可见性），生成一批独立的
      * 定向卡片，跟财务角色整体可见的那批卡片并存、互不影响——不合并、不拆分角色整体可见的
-     * 那批（财务视角仍然按进度阶段分两张卡）。不提醒给"IT后勤"（IT后勤不是这条记录的负责人/
-     * 执行人员，没有直接关联）。两批卡片指向同一批底层记录，"标记已处理"按 (category,
-     * trackingId) 定位，两边共用同一份状态，不会各自为政。
+     * 那批（财务视角仍然按进度阶段分开报数，2026-08-21 起从两张卡变成最多三张卡）。不提醒给
+     * "IT后勤"（IT后勤不是这条记录的负责人/执行人员，没有直接关联）。两批卡片指向同一批底层
+     * 记录，"标记已处理"按 (category, trackingId) 定位，两边共用同一份状态，不会各自为政。
      */
     private void runFinanceProgressStall(LocalDate today, Date batchDate, List<CollaborationTracking> all) {
         Map<Long, String> accountNameById = buildAccountNameIndex(all);

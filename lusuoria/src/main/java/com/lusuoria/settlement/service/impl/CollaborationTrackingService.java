@@ -4,8 +4,10 @@ import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.config.EmployeeCache;
 import com.lusuoria.settlement.dto.request.CollaborationTrackingRequest;
 import com.lusuoria.settlement.dto.request.CollaborationTrackingStatusRequest;
+import com.lusuoria.settlement.dto.request.MarkPaymentReceivedRequest;
 import com.lusuoria.settlement.dto.response.CollaborationStatusUpdateResult;
 import com.lusuoria.settlement.dto.response.ExecutorCostSuggestionResponse;
+import com.lusuoria.settlement.dto.response.PaymentReceivedPreviewResponse;
 import com.lusuoria.settlement.entity.Brand;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.Employee;
@@ -34,9 +36,12 @@ import com.lusuoria.settlement.util.ProjectFieldVisibility;
 import com.lusuoria.settlement.util.RoleUtil;
 import com.lusuoria.settlement.util.UrlNormalizer;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -102,19 +107,21 @@ public class CollaborationTrackingService {
      *  记录才会撞上，重试一两次基本必中，留够余量设成 3 次 */
     private static final int PROJECT_NO_CONFLICT_MAX_RETRY = 3;
 
-    /** "状态流转"到这10个前期制作流程状态（待客户出brief~已发布未结算，即"已加入客户未结算
-     * 列表"/"客户已结算"/"折损"以外的全部状态；2026-08-17 新增"待红人下单"后从8个变成9个，
-     * 2026-08-21 新增"待客户给草稿反馈"后从9个变成10个）时，同步提供"客户方的项目订单"
-     * 输入框、可选填写（2026-08 新增，Shawn 要求：拿到订单号就顺手登记，不用等到"已加入客户
-     * 未结算列表"那一步才能填）。跟下面 JOINED_CLIENT_UNSETTLED_LIST/SETTLED 那条"按品牌方
-     * 配置强制要求填写"的规则是两回事——这里永远不强制、永远不会因为空值报错。 */
+    /** "状态流转"到这9个前期制作流程状态（待客户出brief~待发布，即"已发布（未结算）"/
+     * "已加入客户未结算列表"/"客户已结算"/"已收到客户回款"/"折损"以外的全部状态；2026-08-17
+     * 新增"待红人下单"后从8个变成9个，2026-08-21 新增"待客户给草稿反馈"后一度变成10个，同日
+     * "已发布（未结算）"改成强制要求填写（见下面 doSave()/updateStatus() 里跟 JOINED_CLIENT_
+     * UNSETTLED_LIST/SETTLED/PAYMENT_RECEIVED 合并的那条必填校验），从这个"可选"集合里移出，
+     * 又变回9个）时，同步提供"客户方的项目订单"输入框、可选填写（2026-08 新增，Shawn 要求：
+     * 拿到订单号就顺手登记，不用等到"已加入客户未结算列表"那一步才能填）。跟下面强制填写的规则
+     * 是两回事——这里永远不强制、永远不会因为空值报错。 */
     private static final Set<CollaborationProgress> EARLY_STAGE_CLIENT_ORDER_ID_PROGRESSES = java.util.EnumSet.of(
             CollaborationProgress.PENDING_CLIENT_BRIEF, CollaborationProgress.CONTRACT_SENT,
             CollaborationProgress.PENDING_INFLUENCER_ORDER, CollaborationProgress.INFLUENCER_ORDERED,
             CollaborationProgress.SHOOTING_GUIDE_SENT,
             CollaborationProgress.PENDING_DRAFT, CollaborationProgress.PENDING_CLIENT_DRAFT_FEEDBACK,
             CollaborationProgress.PENDING_REVISION,
-            CollaborationProgress.PENDING_PUBLISH, CollaborationProgress.PUBLISHED_UNSETTLED);
+            CollaborationProgress.PENDING_PUBLISH);
 
     /** 这次 DataIntegrityViolationException 是不是 internal_project_no 唯一约束冲突导致的
      *  （ProjectNoAllocator.allocate() 的并发竞态，见其类注释）——只有这种情况才值得自动重试，
@@ -555,20 +562,36 @@ public class CollaborationTrackingService {
         // 加这层限制，存量的、当初进度已经落在这两个阶段但还没填这两个字段的历史记录，
         // 会因为这条新规则连备注这种不相关字段都改不了，一直卡到有人补上这两个字段为止，
         // 跟"内部执行成本"那条硬性校验只在真正改动时触发是同一个道理。
+        //
+        // 2026-08-21 新增两处：
+        //   1. "已发布（未结算）"（PUBLISHED_UNSETTLED）加入客户方的项目订单必填校验——之前这个
+        //      阶段属于"可选填写"的 EARLY_STAGE_CLIENT_ORDER_ID_PROGRESSES，现在改成强制（Shawn
+        //      要求），跟 JOINED_CLIENT_UNSETTLED_LIST/SETTLED 合并成同一条判断，同样受品牌方
+        //      requiresClientOrderId() 开关约束（不是所有品牌都要求这个字段）。
+        //   2. "已收到客户回款"（PAYMENT_RECEIVED，客户回款流程真正的最终状态）：客户方的项目订单/
+        //      客户方付款批次的必填要求，跟"客户已结算"完全一样（同样受品牌方配置开关约束）；
+        //      另外多要求一个"收到回款日期"，这个字段不受品牌方配置约束，一律必填。
         if (existingOrNull == null || allowStatusUpdateOnEdit) {
             CollaborationProgress finalProgress = tracking.getProgress();
             boolean requiresOrderIdOnSave = tracking.getBrand() == null || tracking.getBrand().requiresClientOrderId();
             boolean requiresPaymentBatchOnSave = tracking.getBrand() == null || tracking.getBrand().requiresClientPaymentBatch();
-            if ((finalProgress == CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST || finalProgress == CollaborationProgress.SETTLED)
+            if ((finalProgress == CollaborationProgress.PUBLISHED_UNSETTLED
+                    || finalProgress == CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST
+                    || finalProgress == CollaborationProgress.SETTLED
+                    || finalProgress == CollaborationProgress.PAYMENT_RECEIVED)
                     && requiresOrderIdOnSave
                     && (req.getClientOrderId() == null || req.getClientOrderId().trim().isEmpty())) {
                 throw new RuntimeException("该品牌方涉及\"客户方的项目订单\"，视频项目进度为\""
                         + finalProgress.getLabel() + "\"时必须填写\"客户方的项目订单\"");
             }
-            if (finalProgress == CollaborationProgress.SETTLED
+            if ((finalProgress == CollaborationProgress.SETTLED || finalProgress == CollaborationProgress.PAYMENT_RECEIVED)
                     && requiresPaymentBatchOnSave
                     && (req.getClientPaymentBatch() == null || req.getClientPaymentBatch().trim().isEmpty())) {
-                throw new RuntimeException("该品牌方涉及\"客户方付款批次\"，视频项目进度为\"客户已结算\"时必须填写\"客户方付款批次\"");
+                throw new RuntimeException("该品牌方涉及\"客户方付款批次\"，视频项目进度为\""
+                        + finalProgress.getLabel() + "\"时必须填写\"客户方付款批次\"");
+            }
+            if (finalProgress == CollaborationProgress.PAYMENT_RECEIVED && req.getClientPaymentReceivedDate() == null) {
+                throw new RuntimeException("视频项目进度为\"已收到客户回款\"时必须填写\"收到回款日期\"");
             }
         }
 
@@ -590,6 +613,7 @@ public class CollaborationTrackingService {
         VideoType oldVideoType = existingOrNull != null ? existingOrNull.getVideoType() : null;
         tracking.setVideoType(req.getVideoType());
         tracking.setClientPaymentBatch(req.getClientPaymentBatch());
+        tracking.setClientPaymentReceivedDate(req.getClientPaymentReceivedDate());
         tracking.setNotes(req.getNotes());
 
         // 关联的"红人需求管理"内部需求编号：填了值就校验红人/品牌方/团队/项目视频类型/合作平台/
@@ -899,9 +923,9 @@ public class CollaborationTrackingService {
         // 接口，必须是员工角色="财务"或"管理层"才行——AUDITOR 只是"全字段只读+导出"的通用
         // SysUser 角色，可能被分配给财务，也可能被分配给法务/其他只读岗位，不能只凭
         // "SysUser角色是AUDITOR"就当成财务放行，必须再看关联员工的业务角色，避免法务这类
-        // 同样是 AUDITOR 的账号被误放行。财务角色本身也只能在已经进入结算区间的三个阶段
-        // （已发布未结算/已加入客户未结算列表/客户已结算）之间流转，不能碰前期制作流程的状态
-        // 或"折损"。删除/进度倒退这两个操作走 assertOwnerOrAdmin，财务本来就不是记录的项目
+        // 同样是 AUDITOR 的账号被误放行。财务角色本身也只能在已经进入结算区间的四个阶段
+        // （已发布未结算/已加入客户未结算列表/客户已结算/已收到客户回款）之间流转，不能碰前期
+        // 制作流程的状态或"折损"。删除/进度倒退这两个操作走 assertOwnerOrAdmin，财务本来就不是记录的项目
         // 负责人/执行人员，天然会被那边挡掉，这里不用重复处理。
         // 2026-08 起：项目负责人/执行人员/IT后勤如果账号也是 AUDITOR 档（比如只给只读+状态
         // 流转、没有常规写权限），同样放行——跟下面 requireFinanceForSettlementProgress() 放宽
@@ -917,12 +941,12 @@ public class CollaborationTrackingService {
                     && newProgress != null && newProgress.allowsPaymentProgress();
             if (!withinSettlementZone) {
                 throw new RuntimeException("财务账号只能在\"已发布（未结算）\"、\"已加入客户未结算列表\"、"
-                        + "\"客户已结算\"这三个阶段之间流转视频项目进度");
+                        + "\"客户已结算\"、\"已收到客户回款\"这四个阶段之间流转视频项目进度");
             }
         }
 
-        // "已加入客户未结算列表"/"客户已结算"这两个状态只能由财务/管理层流转进入，
-        // 普通员工（项目负责人/执行人员/基础权限）只能流转到"已发布（未结算）"和"折损"这两个终态。
+        // "已加入客户未结算列表"/"客户已结算"/"已收到客户回款"这三个状态只能由财务/管理层流转
+        // 进入，普通员工（项目负责人/执行人员/基础权限）只能流转到"已发布（未结算）"和"折损"这两个终态。
         // 只拦截真正的变动——原样提交回去（值没变）不受影响，跟下面 isSystemManagedChange 的
         // 放行原则保持一致。2026-08 起：项目负责人/执行人员/IT后勤也放行（Shawn 反馈），
         // 见 EmployeeRoleUtil.canSetSettlementProgressExtraRole()
@@ -979,20 +1003,22 @@ public class CollaborationTrackingService {
             throw new RuntimeException(InfluencerPaymentProgress.SYSTEM_MANAGED_ERROR);
         }
 
-        // 2026-07 起：目标进度是"已发布（未结算）"/"已加入客户未结算列表"/"客户已结算"这三个
-        // 阶段之一时，必须已经有视频发布时间和视频发布链接——不再像以前那样只在"首次进入"这个
-        // 时间点校验、且缺发布时间就静默帮填"今天"。现在只要这次操作真的把进度改成了这三个阶段
-        // 之一（不管是不是首次进入，哪怕是在这三个阶段之间来回流转），缺发布时间或者发布链接
-        // 任意一个就直接拒绝，提示操作人先通过"编辑"功能把这两个字段填好再回来流转——这两个
-        // 字段代表"视频事实上已经发布"，不能是空的，也不该是系统随手垫的"今天"。
+        // 2026-07 起：目标进度是"已发布（未结算）"/"已加入客户未结算列表"/"客户已结算"/
+        // "已收到客户回款"（2026-08-21 新增第四个）这四个阶段之一时，必须已经有视频发布时间和
+        // 视频发布链接——不再像以前那样只在"首次进入"这个时间点校验、且缺发布时间就静默帮填
+        // "今天"。现在只要这次操作真的把进度改成了这四个阶段之一（不管是不是首次进入，哪怕是
+        // 在这四个阶段之间来回流转），缺发布时间或者发布链接任意一个就直接拒绝，提示操作人先
+        // 通过"编辑"功能把这两个字段填好再回来流转——这两个字段代表"视频事实上已经发布"，
+        // 不能是空的，也不该是系统随手垫的"今天"。
         // 只在进度真的发生变化时才校验——原样提交回去（进度没变，比如历史遗留的问题记录被
         // 打开又原样保存）不受这条限制影响，不然这类历史数据会连状态流转弹窗都打不开/保存不了，
         // 需要单独走别的渠道修复，不该被这里的校验卡死。
         // 2026-08 起：前端 CollaborationStatusModal 只在流转到"已发布（未结算）"时展示这两个
-        // 输入框，"已加入客户未结算列表"/"客户已结算"不再重复问一遍（避免每次流转都要把前面
-        // 阶段的字段再填一次）——但下面这条后端校验本身不放松：这两个字段只要缺，不管目标是三个
-        // 阶段里的哪一个都拒绝，作为"没经过已发布（未结算）就被直接跳过去"这种边界情况的兜底
-        // （此时前端会检测到记录缺这两个字段，重新把输入框露出来，不会出现"报错但没地方填"的情况）
+        // 输入框，"已加入客户未结算列表"/"客户已结算"/"已收到客户回款"不再重复问一遍（避免
+        // 每次流转都要把前面阶段的字段再填一次）——但下面这条后端校验本身不放松：这两个字段
+        // 只要缺，不管目标是四个阶段里的哪一个都拒绝，作为"没经过已发布（未结算）就被直接跳过去"
+        // 这种边界情况的兜底（此时前端会检测到记录缺这两个字段，重新把输入框露出来，不会出现
+        // "报错但没地方填"的情况）
         boolean progressActuallyChangedForPublishCheck = !java.util.Objects.equals(oldProgress, newProgress);
         if (progressActuallyChangedForPublishCheck && newProgress != null && newProgress.allowsPaymentProgress()) {
             // 2026-08 新增：这次请求如果带了视频发布链接/视频发布时间，直接写入这条记录——
@@ -1044,9 +1070,10 @@ public class CollaborationTrackingService {
             t.setNotes(req.getNotes().trim());
         }
 
-        // 客户方的项目订单——前期制作流程这10个状态（待客户出brief~已发布未结算）可选填写
+        // 客户方的项目订单——前期制作流程这9个状态（待客户出brief~待发布）可选填写
         // （2026-08 新增）：有值就更新，没值就保持原样，永远不校验/不报错，纯粹是"拿到订单号
-        // 就顺手登记"，跟下面"已加入客户未结算列表"/"客户已结算"那条强制要求的规则完全独立
+        // 就顺手登记"，跟下面"已发布（未结算）"/"已加入客户未结算列表"/"客户已结算"/
+        // "已收到客户回款"那条强制要求的规则完全独立
         if (EARLY_STAGE_CLIENT_ORDER_ID_PROGRESSES.contains(newProgress)) {
             String earlyStageClientOrderId = req.getClientOrderId() != null ? req.getClientOrderId().trim() : null;
             if (earlyStageClientOrderId != null && !earlyStageClientOrderId.isEmpty()) {
@@ -1055,11 +1082,16 @@ public class CollaborationTrackingService {
         }
 
         // 客户方的项目订单：品牌方涉及这个字段时（Brand.requiresClientOrderId()），流转到
-        // "已加入客户未结算列表"/"客户已结算"需要同步填写，直接更新到这条记录上（2026-08 新增）。
-        // 不看是不是真的发生了变化——已经在这两个状态之一的记录也可以借这个弹窗补填/改这个字段，
-        // 所以只要这次提交的目标落在这两个状态就校验
+        // "已发布（未结算）"/"已加入客户未结算列表"/"客户已结算"/"已收到客户回款"需要同步填写，
+        // 直接更新到这条记录上（2026-08 新增；2026-08-21 把"已发布（未结算）"/"已收到客户回款"
+        // 也并进这条必填校验，之前"已发布（未结算）"是可选填写的 EARLY_STAGE 分支，现在改成
+        // 强制）。不看是不是真的发生了变化——已经在这几个状态之一的记录也可以借这个弹窗补填/
+        // 改这个字段，所以只要这次提交的目标落在这几个状态就校验
         boolean requiresClientOrderId = t.getBrand() == null || t.getBrand().requiresClientOrderId();
-        if ((newProgress == CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST || newProgress == CollaborationProgress.SETTLED)
+        if ((newProgress == CollaborationProgress.PUBLISHED_UNSETTLED
+                || newProgress == CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST
+                || newProgress == CollaborationProgress.SETTLED
+                || newProgress == CollaborationProgress.PAYMENT_RECEIVED)
                 && requiresClientOrderId) {
             if (req.getClientOrderId() == null || req.getClientOrderId().trim().isEmpty()) {
                 throw new RuntimeException("该品牌方涉及\"客户方的项目订单\"，流转到\""
@@ -1069,16 +1101,30 @@ public class CollaborationTrackingService {
         }
 
         // 客户方付款批次：品牌方涉及这个字段时（Brand.requiresClientPaymentBatch()），流转到
-        // "客户已结算"需要同步填写，直接更新到这条记录上（2026-07 新增；2026-08 起从"仅限
-        // 财务角色"改成按品牌方配置判断——能走到这个分支的只有财务/管理层/ADMIN，
-        // 跟 requireFinanceForSettlementProgress() 判定的"能不能流转进来"是两条独立的规则，
-        // 这里管的是"填没填这个字段"，不重复判断角色）
+        // "客户已结算"/"已收到客户回款"需要同步填写，直接更新到这条记录上（2026-07 新增；
+        // 2026-08 起从"仅限财务角色"改成按品牌方配置判断——能走到这个分支的只有财务/管理层/
+        // ADMIN，跟 requireFinanceForSettlementProgress() 判定的"能不能流转进来"是两条独立的
+        // 规则，这里管的是"填没填这个字段"，不重复判断角色；2026-08-21 把"已收到客户回款"
+        // 也并进来，要求同"客户已结算"）
         boolean requiresClientPaymentBatch = t.getBrand() == null || t.getBrand().requiresClientPaymentBatch();
-        if (newProgress == CollaborationProgress.SETTLED && requiresClientPaymentBatch) {
+        if ((newProgress == CollaborationProgress.SETTLED || newProgress == CollaborationProgress.PAYMENT_RECEIVED)
+                && requiresClientPaymentBatch) {
             if (req.getClientPaymentBatch() == null || req.getClientPaymentBatch().trim().isEmpty()) {
-                throw new RuntimeException("该品牌方涉及\"客户方付款批次\"，流转到\"客户已结算\"状态需要填写客户方付款批次单号");
+                throw new RuntimeException("该品牌方涉及\"客户方付款批次\"，流转到\""
+                        + newProgress.getLabel() + "\"状态需要填写客户方付款批次单号");
             }
             t.setClientPaymentBatch(req.getClientPaymentBatch().trim());
+        }
+
+        // 收到回款日期：流转到"已收到客户回款"必填，不受品牌方配置开关约束（2026-08-21 新增）。
+        // 前端日期选择控件默认填当天，允许人工改成别的日期，这里原样接受请求里的值，不做
+        // "自动补今天"的静默兜底（跟 publishDate 那套"状态流转自动补今天"的逻辑不同，收到回款
+        // 这个动作必须是操作人明确核对过的日期）
+        if (newProgress == CollaborationProgress.PAYMENT_RECEIVED) {
+            if (req.getClientPaymentReceivedDate() == null) {
+                throw new RuntimeException("流转到\"已收到客户回款\"状态需要填写收到回款日期");
+            }
+            t.setClientPaymentReceivedDate(req.getClientPaymentReceivedDate());
         }
 
         // 汇率自动补全 + 利润重算（2026-08 修复）：以前 updateStatus() 这条路径全程不会重新算
@@ -1115,7 +1161,7 @@ public class CollaborationTrackingService {
         // ——项目负责人视角下唯一需要考虑执行人员成本的终态——且是从别的状态第一次流转进来时
         // 才弹一次；不再看这条记录内部执行成本是不是已经有值，哪怕之前在编辑表单里误填过金额，
         // 到了这个状态也应该重新弹一次确认，只有已经明确点过"不涉及内部执行人员"的记录才不再弹。
-        // "已加入客户未结算列表"/"客户已结算"这两个财务专属状态不会触发这个弹窗
+        // "已加入客户未结算列表"/"客户已结算"/"已收到客户回款"这三个财务专属状态不会触发这个弹窗
         // （财务流转到这两个状态时不涉及执行人员的设置）。
         if (enteringPublishedUnsettled && !Boolean.TRUE.equals(saved.getExecutorCostNotApplicable())) {
             result.setNeedExecutorCost(true);
@@ -1134,12 +1180,20 @@ public class CollaborationTrackingService {
     }
 
     /**
-     * "已加入客户未结算列表"/"客户已结算"这两个状态只能由财务/管理层（ProjectFieldVisibility
-     * 判定为 FULL 层级：ADMIN，或关联员工角色是"财务"/"管理层"的 STAFF 账号）流转进入；
-     * 2026-08 起放宽：员工角色是"项目负责人"/"执行人员"/"IT后勤"的账号也放行（Shawn 反馈，
-     * 见 EmployeeRoleUtil.canSetSettlementProgressExtraRole()）。其余角色（基础权限的 STAFF）
-     * 只能流转到"已发布（未结算）"和"折损"这两个终态。只拦截真正把值改成这两个状态之一的
-     * 操作，原样提交回去（值没变，比如 Excel 重新导入同一批已经在这两个状态的记录）不受影响。
+     * "已加入客户未结算列表"/"客户已结算"/"已收到客户回款"这三个状态只能由财务/管理层
+     * （ProjectFieldVisibility 判定为 FULL 层级：ADMIN，或关联员工角色是"财务"/"管理层"的
+     * STAFF 账号）流转进入；2026-08 起放宽：员工角色是"项目负责人"/"执行人员"/"IT后勤"的
+     * 账号也放行（Shawn 反馈，见 EmployeeRoleUtil.canSetSettlementProgressExtraRole()）。
+     * 其余角色（基础权限的 STAFF）只能流转到"已发布（未结算）"和"折损"这两个终态。只拦截
+     * 真正把值改成这三个状态之一的操作，原样提交回去（值没变，比如 Excel 重新导入同一批
+     * 已经在这三个状态的记录）不受影响。
+     *
+     * 2026-08-21 新增"已收到客户回款"：这个状态是"客户已结算"之后才能到达的真正最终状态，
+     * 谁能流转进 SETTLED 就该同样能流转进 PAYMENT_RECEIVED，权限口径直接沿用，不单独收紧
+     * ——注意这跟"批量标记为已收到客户回款"那个按钮不是一回事：那个按钮是给财务的高频批量
+     * 操作入口，Shawn 明确要求只对财务/管理层开放，权限判断在
+     * markClientPaymentReceivedPreview()/markClientPaymentReceivedBulk() 里单独做，
+     * 比这里（走单条状态流转弹窗）更严格，不能共用这个方法。
      *
      * canSetSettlementProgress（原参数名 isFull，2026-08 改名以反映放宽后的实际语义——不再
      * 单纯是"财务字段可见性"）由调用方现场传入，不在这里自己调
@@ -1153,11 +1207,152 @@ public class CollaborationTrackingService {
     private void requireFinanceForSettlementProgress(CollaborationProgress oldProgress, CollaborationProgress newProgress,
                                                        boolean canSetSettlementProgress) {
         boolean isSettlementProgress = newProgress == CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST
-                || newProgress == CollaborationProgress.SETTLED;
+                || newProgress == CollaborationProgress.SETTLED
+                || newProgress == CollaborationProgress.PAYMENT_RECEIVED;
         if (isSettlementProgress && newProgress != oldProgress && !canSetSettlementProgress) {
-            throw new RuntimeException("\"已加入客户未结算列表\"/\"客户已结算\"这两个状态仅能由财务/管理层/"
+            throw new RuntimeException("\"已加入客户未结算列表\"/\"客户已结算\"/\"已收到客户回款\"这三个状态仅能由财务/管理层/"
                     + "项目负责人/执行人员/IT后勤设置");
         }
+    }
+
+    // ============ "批量标记为已收到客户回款"（2026-08-21 新增，见 dto/request/MarkPaymentReceivedRequest） ============
+
+    /**
+     * 按"红人合作跟踪"列表页当前筛选条件（复用 findByFilters 的 WHERE 子句），取出全部命中记录
+     * （不分页——这个按钮要操作的是"共XX条"这个完整范围，不是当前这一页），供预览/批量标记
+     * 两个接口共用，避免这两步之间筛选口径不一致。
+     * priorityEmployeeId/prioritizeFinance/onlyMyResponsibility 这三个参数只影响排序/"只看我
+     * 负责的"这个跟本功能无关的筛选，这里固定传 null/false/false，不影响命中范围。
+     */
+    private List<CollaborationTracking> findAllMatchingFilters(MarkPaymentReceivedRequest req) {
+        return trackingRepo.findByFilters(
+                req.getBrandId(), req.getTeamId(), req.getCountryMarket(), emptyToNull(req.getAccountName()),
+                req.getInfluencerId(), emptyToNull(req.getPlatform()),
+                req.getProgress(), req.getInfluencerPaymentProgress(), req.getVideoType(),
+                emptyToNull(req.getVideoMonth()), emptyToNull(req.getVideoDateStart()), emptyToNull(req.getVideoDateEnd()),
+                emptyToNull(req.getInternalProjectNo()), emptyToNull(req.getInternalRequirementNo()),
+                emptyToNull(req.getClientOrderId()), emptyToNull(req.getClientPaymentBatch()), req.getProjectManagerId(),
+                null, false, false, req.isOnlyIncomplete(), req.isOnlyUnpublished(), req.isOnlyMissingRequirementNo(),
+                PageRequest.of(0, Integer.MAX_VALUE, Sort.by(Sort.Direction.DESC, "id"))
+        ).getContent();
+    }
+
+    /**
+     * "批量标记为已收到客户回款"权限校验：仅 ADMIN 或员工角色=财务/管理层，预览接口（会返回
+     * 客户合作总价格这类财务数据）和确认执行接口共用同一份校验——预览接口虽然不改数据，但
+     * 泄露的分组金额本身就是敏感信息，不能因为"只是查询"就放宽，跟按钮在前端只对财务/管理层
+     * 展示的口径保持一致，抽成方法避免两处各自维护一份判断逻辑。
+     */
+    private void requireFinanceOrManagementForPaymentReceived() {
+        String employeeRole = employeeRoleUtil.getCurrentEmployeeRole();
+        boolean isFinanceOrManagement = "财务".equals(employeeRole) || "管理层".equals(employeeRole);
+        if (!RoleUtil.isAdmin() && !isFinanceOrManagement) {
+            throw new RuntimeException("无权限执行此操作：仅财务/管理层可以操作\"批量标记为已收到客户回款\"");
+        }
+    }
+
+    /**
+     * "批量标记为已收到客户回款"弹窗打开时调用：按当前筛选条件取出命中记录，按"客户方付款批次"
+     * 分组统计条数/客户合作总价格（美金），供财务在真正提交前肉眼核对范围对不对，不修改任何数据。
+     *
+     * 命中范围里只要有一条记录"客户方付款批次"是空的，就直接把 hasEmptyPaymentBatch 置 true、
+     * 不再费劲分组（前端据此展示"当前页面存在'客户方付款批次'为空的记录，请重新确认筛选条件！"，
+     * 不渲染分组明细）——这是防止财务筛选条件选错、误将不该动的记录也纳入范围的硬性前置校验，
+     * 见 markClientPaymentReceivedBulk() 里同样的校验（那边是防御两次请求之间数据发生变化，
+     * 不能只信预览接口这一次判断）。已经是"已收到客户回款"状态的记录允许留在范围内（财务可能
+     * 只是想更新"收到回款日期"），不额外排除。
+     */
+    @Transactional(readOnly = true)
+    public PaymentReceivedPreviewResponse markClientPaymentReceivedPreview(MarkPaymentReceivedRequest req) {
+        requireFinanceOrManagementForPaymentReceived();
+        List<CollaborationTracking> matched = findAllMatchingFilters(req);
+        PaymentReceivedPreviewResponse resp = new PaymentReceivedPreviewResponse();
+        boolean hasEmpty = matched.stream()
+                .anyMatch(t -> t.getClientPaymentBatch() == null || t.getClientPaymentBatch().trim().isEmpty());
+        resp.setHasEmptyPaymentBatch(hasEmpty);
+        if (hasEmpty) {
+            return resp;
+        }
+        Map<String, List<CollaborationTracking>> byBatch = matched.stream()
+                .collect(Collectors.groupingBy(CollaborationTracking::getClientPaymentBatch, LinkedHashMap::new, Collectors.toList()));
+        List<PaymentReceivedPreviewResponse.Group> groups = new ArrayList<>();
+        BigDecimal grandTotal = BigDecimal.ZERO;
+        for (Map.Entry<String, List<CollaborationTracking>> e : byBatch.entrySet()) {
+            BigDecimal sum = e.getValue().stream()
+                    .map(t -> t.getClientPrice() != null ? t.getClientPrice() : BigDecimal.ZERO)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            grandTotal = grandTotal.add(sum);
+            PaymentReceivedPreviewResponse.Group g = new PaymentReceivedPreviewResponse.Group();
+            g.setClientPaymentBatch(e.getKey());
+            g.setCount(e.getValue().size());
+            g.setTotalClientPrice(sum);
+            groups.add(g);
+        }
+        resp.setGroups(groups);
+        resp.setTotalCount(matched.size());
+        resp.setTotalClientPrice(grandTotal);
+        return resp;
+    }
+
+    /**
+     * "批量标记为已收到客户回款"确认执行：把当前筛选条件命中的全部记录（不分页）统一流转成
+     * "已收到客户回款"，并写入这次提交的收到回款日期。Shawn 明确要求这个按钮只对财务/管理层
+     * 开放——比状态流转弹窗（requireFinanceForSettlementProgress()，额外放行项目负责人/执行
+     * 人员/IT后勤）收紧，权限判断单独写在这里，不能复用那个方法。
+     *
+     * 校验顺序：先权限，再"收到回款日期必填"，再重新查一遍命中范围校验"客户方付款批次"是否
+     * 全部非空——不能只信前端传来的预览结果，两次请求之间数据可能已经发生变化（比如另一个人
+     * 刚好在这期间清空了某条记录的客户方付款批次）。命中范围为空（筛选条件太窄，一条都没有）
+     * 直接拒绝，避免点了按钮却"成功标记了0条"这种无意义的空转。
+     *
+     * 每条记录的处理逻辑（进度变化时刷新 progressChangedAt、汇率缺失自动回填、重算利润、
+     * 联动刷新需求完成时间）都跟 updateStatus() 单条流转到 PAYMENT_RECEIVED 时保持一致，
+     * 只是这里是循环批量做，不经过 updateStatus() 那一整套单条流转特有的校验（比如进度倒退
+     * 审核）——这个按钮的语义就是"直接把这批记录钉死在已收到客户回款"，不存在倒退场景。
+     *
+     * @return 实际标记的记录数
+     */
+    @Transactional
+    public int markClientPaymentReceivedBulk(MarkPaymentReceivedRequest req) {
+        // 权限：仅 ADMIN 或员工角色=财务/管理层，比 requireFinanceForSettlementProgress()
+        // （状态流转弹窗那套，额外放行项目负责人/执行人员/IT后勤）收紧，见方法上方注释；
+        // 跟预览接口共用同一份校验，见 requireFinanceOrManagementForPaymentReceived()
+        requireFinanceOrManagementForPaymentReceived();
+        if (req.getClientPaymentReceivedDate() == null) {
+            throw new RuntimeException("请填写收到回款日期");
+        }
+        // 按当前筛选条件重新查一遍全部命中记录（不分页），不信任前端传来的预览结果，见方法注释
+        List<CollaborationTracking> matched = findAllMatchingFilters(req);
+        if (matched.isEmpty()) {
+            throw new RuntimeException("当前筛选条件下没有命中任何记录，请重新确认筛选条件");
+        }
+        boolean hasEmpty = matched.stream()
+                .anyMatch(t -> t.getClientPaymentBatch() == null || t.getClientPaymentBatch().trim().isEmpty());
+        if (hasEmpty) {
+            throw new RuntimeException("当前页面存在\"客户方付款批次\"为空的记录，请重新确认筛选条件！");
+        }
+        Date batchNow = new Date();
+        int updated = 0;
+        for (CollaborationTracking t : matched) {
+            boolean progressChanged = t.getProgress() != CollaborationProgress.PAYMENT_RECEIVED;
+            t.setProgress(CollaborationProgress.PAYMENT_RECEIVED);
+            t.setClientPaymentReceivedDate(req.getClientPaymentReceivedDate());
+            if (progressChanged) {
+                t.setProgressChangedAt(batchNow);
+            }
+            // 汇率缺失/非法时按发布月份从"汇率维护"自动回填，跟 updateStatus()/doSave() 共用同一份逻辑
+            fillMissingExchangeRateFromCache(t);
+            // 重新计算这条记录的项目毛利/可分配利润/提成/公司利润（进度变化不影响这几个字段的
+            // 计算口径，但每次状态变更都跟着重算一遍，避免遗留脏数据）
+            profitCalculator.calculate(t);
+            trackingRepo.save(t);
+            // 联动刷新"红人需求管理"里这条需求的完成时间（取关联记录里最晚的视频发布时间）
+            if (progressChanged && t.getInternalRequirementNo() != null) {
+                requirementService.refreshCompletedAt(t.getInternalRequirementNo());
+            }
+            updated++;
+        }
+        return updated;
     }
 
     /**

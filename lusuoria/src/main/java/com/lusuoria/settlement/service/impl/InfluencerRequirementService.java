@@ -843,7 +843,8 @@ public class InfluencerRequirementService {
         public Integer totalItemCount;
         /** 需求完成进度达到100%的那一刻，阈值分档结款周期天数从这天开始算 */
         public Date completedAt;
-        /** 实际可结款成本：已发布(未结算)/已加入客户未结算列表/客户已结算 三个终态之和，不含折损 */
+        /** 实际可结款成本：已发布(未结算)/已加入客户未结算列表/客户已结算/已收到客户回款
+         *  四个终态之和（2026-08-21 新增"已收到客户回款"），不含折损 */
         public BigDecimal payableCost;
         public Integer delayedCount;
         public BigDecimal delayedCost;

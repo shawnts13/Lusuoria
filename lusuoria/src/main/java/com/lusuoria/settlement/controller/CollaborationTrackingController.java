@@ -4,10 +4,12 @@ import com.lusuoria.settlement.config.BrandCache;
 import com.lusuoria.settlement.dto.request.CollaborationTrackingRequest;
 import com.lusuoria.settlement.dto.request.CollaborationTrackingStatusRequest;
 import com.lusuoria.settlement.dto.request.DeleteRequestReasonRequest;
+import com.lusuoria.settlement.dto.request.MarkPaymentReceivedRequest;
 import com.lusuoria.settlement.dto.response.ApiResponse;
 import com.lusuoria.settlement.dto.response.CollaborationStatusUpdateResult;
 import com.lusuoria.settlement.dto.response.ExecutorCostSuggestionResponse;
 import com.lusuoria.settlement.dto.response.ExecutorCostUpdateResult;
+import com.lusuoria.settlement.dto.response.PaymentReceivedPreviewResponse;
 import com.lusuoria.settlement.entity.CollaborationTracking;
 import com.lusuoria.settlement.entity.ImportBatch;
 import com.lusuoria.settlement.entity.PendingApproval;
@@ -69,7 +71,11 @@ public class CollaborationTrackingController {
     /**
      * 红人合作跟踪列表页（CollaborationListPage.vue）的唯一数据接口——筛选栏、4 个互斥"快速筛选"
      * 开关、列头排序、分页，都是这一个方法。参数分组对应前端：
-     *   - brandId ~ projectManagerId：筛选栏里的各个下拉/输入框，一一对应，全部可选、AND 组合
+     *   - brandId ~ projectManagerId：筛选栏里的各个下拉/输入框，一一对应，全部可选、AND 组合。
+     *     其中 progress/influencerPaymentProgress/videoType/projectManagerId 这4个（2026-08-21
+     *     起）改成 List 类型，支持前端多选——单选时前端仍然只传一个值，Spring 会自动装进
+     *     单元素 List，行为不变；传多个值时 WHERE 子句用 IN 而不是 =，同一个筛选项内部是 OR
+     *     语义（比如"视频项目进度"选了 A、B，就是查 A 或 B），不同筛选项之间仍然是 AND
      *   - onlyMyResponsibility：本来是"只看我负责的"筛选，现在主要是配合 sortBy=id 时的默认排序
      *     用（见下面 resolvePriorityEmployeeId），前端筛选栏目前没有单独暴露这个开关
      *   - onlyIncomplete / onlyUnpublished / onlyMissingRequirementNo：列表页顶部"查看未完成的需求" /
@@ -87,9 +93,9 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) String accountName,
             @RequestParam(required = false) Long influencerId,
             @RequestParam(required = false) String platform,
-            @RequestParam(required = false) CollaborationProgress progress,
-            @RequestParam(required = false) InfluencerPaymentProgress influencerPaymentProgress,
-            @RequestParam(required = false) VideoType videoType,
+            @RequestParam(required = false) List<CollaborationProgress> progress,
+            @RequestParam(required = false) List<InfluencerPaymentProgress> influencerPaymentProgress,
+            @RequestParam(required = false) List<VideoType> videoType,
             @RequestParam(required = false) String videoMonth,
             @RequestParam(required = false) String videoDateStart,
             @RequestParam(required = false) String videoDateEnd,
@@ -97,7 +103,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) String internalRequirementNo,
             @RequestParam(required = false) String clientOrderId,
             @RequestParam(required = false) String clientPaymentBatch,
-            @RequestParam(required = false) Long projectManagerId,
+            @RequestParam(required = false) List<Long> projectManagerId,
             @RequestParam(defaultValue = "false") boolean onlyMyResponsibility,
             @RequestParam(defaultValue = "false") boolean onlyIncomplete,
             @RequestParam(defaultValue = "false") boolean onlyUnpublished,
@@ -121,17 +127,23 @@ public class CollaborationTrackingController {
         // 对复杂括号嵌套查询的 ORDER BY 检测 bug（详见 CollaborationTrackingRepository.findByFilters
         // 上的注释），所以改成用 JpaSort.unsafe(...) 拼进 Pageable 的 Sort，最终效果不变，
         // 且从根上避免了同一条 JPQL 出现两个 ORDER BY 关键字导致的 QuerySyntaxException。
+        // 2026-08-21："客户已结算"不再是终态（改成"已收到客户回款"之后才算），财务视角的
+        // "优先展示"这一级也跟着扩围：处于 SETTLED 的记录同样还需要财务跟进（推进到
+        // PAYMENT_RECEIVED），继续排在前面；下一级"是否已完成"的判断则相应地把 SETTLED 从
+        // "已完成"里移出，改判 PAYMENT_RECEIVED，跟 CollaborationTrackingRepository.findByFilters
+        // 的 onlyIncomplete 口径保持一致，见 CollaborationProgress 类注释。
         Sort sort = JpaSort.unsafe(Sort.Direction.ASC,
                         "CASE WHEN (:priorityEmployeeId IS NOT NULL " +
                         "AND (c.projectManagerId = :priorityEmployeeId OR c.executorId = :priorityEmployeeId)) " +
                         "OR (:prioritizeFinance = true AND c.progress IN (" +
                         "com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
-                        "com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST)) " +
+                        "com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST, " +
+                        "com.lusuoria.settlement.enums.CollaborationProgress.SETTLED)) " +
                         "THEN 0 ELSE 1 END")
                 .andUnsafe(Sort.Direction.ASC,
                         "CASE WHEN :onlyMyResponsibility = true AND :priorityEmployeeId IS NOT NULL " +
                         "AND c.progress NOT IN (" +
-                        "com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+                        "com.lusuoria.settlement.enums.CollaborationProgress.PAYMENT_RECEIVED, " +
                         "com.lusuoria.settlement.enums.CollaborationProgress.DELAYED) " +
                         "THEN 0 ELSE 1 END")
                 .and(Sort.by(userSortDirection, sortProperty));
@@ -200,10 +212,11 @@ public class CollaborationTrackingController {
      */
     private Page<CollaborationTracking> buildIncompleteAndUnbatchedFirstPage(
             Long brandId, Long teamId, String countryMarket, String accountName, Long influencerId, String platform,
-            CollaborationProgress progress, InfluencerPaymentProgress influencerPaymentProgress, VideoType videoType,
+            List<CollaborationProgress> progress, List<InfluencerPaymentProgress> influencerPaymentProgress,
+            List<VideoType> videoType,
             String videoMonthParam, String videoDateStartParam, String videoDateEndParam,
             String internalProjectNo, String internalRequirementNo,
-            String clientOrderId, String clientPaymentBatch, Long projectManagerId,
+            String clientOrderId, String clientPaymentBatch, List<Long> projectManagerId,
             Long priorityEmployeeId, boolean prioritizeFinance, boolean onlyMyResponsibility, boolean onlyIncomplete,
             boolean onlyUnpublished, boolean onlyMissingRequirementNo, Sort sort, Pageable pageable) {
         // 第一步：轻量投影查询——只取 id/progress/影响分桶用的结款批次id 这三列（不是完整实体），
@@ -220,6 +233,8 @@ public class CollaborationTrackingController {
 
         // 第二步：在内存里把每条记录的 id 按 (是否未完成, 是否未加入结款批次) 分进 4 个桶——
         // 这一步只处理 id，不涉及完整实体
+        // 2026-08-21："已完成"的判定标准从 SETTLED 改成 PAYMENT_RECEIVED（"客户已结算"不再是
+        // 终态），口径统一跟 findLitePriorityProjectionByFilters 的 onlyIncomplete 保持一致
         List<Long> bucket0 = new ArrayList<>(); // 未完成 + 未加入结款批次
         List<Long> bucket1 = new ArrayList<>(); // 未完成 + 已加入结款批次
         List<Long> bucket2 = new ArrayList<>(); // 已完成 + 未加入结款批次
@@ -228,7 +243,7 @@ public class CollaborationTrackingController {
             Long id = ((Number) row[0]).longValue();
             CollaborationProgress p = (CollaborationProgress) row[1];
             Long paymentId = row[2] != null ? ((Number) row[2]).longValue() : null;
-            boolean incomplete = p == null || (p != CollaborationProgress.SETTLED && p != CollaborationProgress.DELAYED);
+            boolean incomplete = p == null || (p != CollaborationProgress.PAYMENT_RECEIVED && p != CollaborationProgress.DELAYED);
             boolean unbatched = paymentId == null;
             if (incomplete && unbatched) bucket0.add(id);
             else if (incomplete) bucket1.add(id);
@@ -518,9 +533,9 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) String accountName,
             @RequestParam(required = false) Long influencerId,
             @RequestParam(required = false) String platform,
-            @RequestParam(required = false) CollaborationProgress progress,
-            @RequestParam(required = false) InfluencerPaymentProgress influencerPaymentProgress,
-            @RequestParam(required = false) VideoType videoType,
+            @RequestParam(required = false) List<CollaborationProgress> progress,
+            @RequestParam(required = false) List<InfluencerPaymentProgress> influencerPaymentProgress,
+            @RequestParam(required = false) List<VideoType> videoType,
             @RequestParam(required = false) String videoMonth,
             @RequestParam(required = false) String videoDateStart,
             @RequestParam(required = false) String videoDateEnd,
@@ -528,7 +543,7 @@ public class CollaborationTrackingController {
             @RequestParam(required = false) String internalRequirementNo,
             @RequestParam(required = false) String clientOrderId,
             @RequestParam(required = false) String clientPaymentBatch,
-            @RequestParam(required = false) Long projectManagerId,
+            @RequestParam(required = false) List<Long> projectManagerId,
             @RequestParam(defaultValue = "false") boolean onlyMyResponsibility,
             @RequestParam(defaultValue = "false") boolean onlyIncomplete,
             @RequestParam(defaultValue = "false") boolean onlyUnpublished,
@@ -569,11 +584,22 @@ public class CollaborationTrackingController {
         excelHandler.downloadTemplate(RoleUtil.canViewBaselineFinancials(), response);
     }
 
-    /** Excel 批量导入入口：立即建一条 ImportBatch（状态 PROCESSING）并返回其 id，真正的解析/落库
-     *  在后台线程跑，前端拿这个 id 轮询 ImportBatchController 查进度（见下方注释）。 */
+    /**
+     * Excel 批量导入入口：立即建一条 ImportBatch（状态 PROCESSING）并返回其 id，真正的解析/落库
+     * 在后台线程跑，前端拿这个 id 轮询 ImportBatchController 查进度（见下方注释）。
+     *
+     * 2026-08-21 起额外放行员工角色="财务"的账号：财务通常是 SysUser 角色 AUDITOR（"全字段
+     * 只读+导出"），@PreAuthorize 原来只放行 ADMIN/STAFF，AUDITOR 会被直接 403 挡在外面。
+     * 这里放宽成 AUDITOR 也能过注解这一关，再在方法体里精确校验"必须是财务"——不能只看
+     * SysUser 角色是 AUDITOR 就放行，AUDITOR 也可能是法务这类别的只读岗位，见
+     * CollaborationTrackingService.updateStatus() 里同样的"AUDITOR 不等于财务"注释。
+     */
     @PostMapping("/import/excel")
-    @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF','AUDITOR')")
     public ApiResponse<Long> importExcel(@RequestParam("file") MultipartFile file) throws IOException {
+        if ("AUDITOR".equals(RoleUtil.getCurrentRole()) && !"财务".equals(employeeRoleUtil.getCurrentEmployeeRole())) {
+            throw new RuntimeException("无权限执行此操作");
+        }
         // 导入改成异步了：数据量一大（比如几百行），同步等待整个导入跑完很容易撞到
         // 浏览器/反向代理的超时限制。这里立即建一条"导入批次"记录、马上把 id 返回给前端，
         // 实际的导入过程丢到后台线程慢慢跑，前端可以去"导入历史"页面随时查进度和结果。
@@ -601,6 +627,32 @@ public class CollaborationTrackingController {
         excelHandler.importDataAsync(batch.getId(), fileBytes, RoleUtil.canViewBaselineFinancials(),
                 canSetFinanceSettlementProgress, isAdminOrManagement, currentEmployeeId);
         return ApiResponse.success(batch.getId());
+    }
+
+    // ============ "批量标记为已收到客户回款"（2026-08-21 新增） ============
+
+    /**
+     * 弹窗打开时调用：按前端传来的当前列表页筛选条件（跟 list() 的筛选栏一一对应，直接把
+     * filters 对象整个序列化成请求体），取出全部命中记录（不分页），按"客户方付款批次"分组
+     * 统计条数/客户合作总价格供人核对，不修改任何数据。用 POST 而不是 GET 是因为筛选条件
+     * 字段多、还带数组（多选筛选），放 query string 不如放请求体干净。
+     */
+    @PostMapping("/payment-received/preview")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF','AUDITOR')")
+    public ApiResponse<PaymentReceivedPreviewResponse> previewMarkPaymentReceived(
+            @RequestBody MarkPaymentReceivedRequest req) {
+        return ApiResponse.success(trackingService.markClientPaymentReceivedPreview(req));
+    }
+
+    /**
+     * 弹窗确认提交调用：把预览接口同一份筛选条件命中的全部记录统一流转成"已收到客户回款"，
+     * 并写入这次提交的收到回款日期。权限收窄到财务/管理层（比状态流转弹窗更严格），
+     * 校验细节见 CollaborationTrackingService.markClientPaymentReceivedBulk()。
+     */
+    @PostMapping("/payment-received/confirm")
+    @PreAuthorize("hasAnyRole('ADMIN','STAFF','AUDITOR')")
+    public ApiResponse<Integer> confirmMarkPaymentReceived(@RequestBody MarkPaymentReceivedRequest req) {
+        return ApiResponse.success(trackingService.markClientPaymentReceivedBulk(req));
     }
 
     /**

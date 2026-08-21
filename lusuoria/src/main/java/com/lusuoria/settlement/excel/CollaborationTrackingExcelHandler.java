@@ -87,6 +87,10 @@ public class CollaborationTrackingExcelHandler {
         {"视频发布链接",               "0", "0"},
         {"视频发布时间",               "0", "0"},  // 原名"发布时间"，导入时仍兼容旧列名"发布时间"
         {"视频项目进度",               "0", "0"},  // 原名"进度"，导入时仍兼容旧列名"进度"
+        {"收到回款日期",               "0", "1"},  // 2026-08-21 新增，仅导出展示，不放进导入模板（跟"红人结款
+                                                    // 进度"一样是"状态流转"/"批量标记为已收到客户回款"专属写入口，
+                                                    // 不通过 Excel 导入设置——避免导入时缺这一列却把进度设成
+                                                    // "已收到客户回款"，doSave() 校验会直接拒绝这一行）
         {"红人结款进度",               "0", "1"},  // 2026-08 起完全由系统控制，模板不再提供这一列，仅导出展示
         {"项目视频类型",               "0", "0"},
         {"采买旧视频的原链接",         "0", "0"},
@@ -98,7 +102,15 @@ public class CollaborationTrackingExcelHandler {
         {"客户合作价格（美金）",       "1", "0"},
         // 以下财务字段（2026-07 新增，导出专属）：只有 canViewFull（ADMIN/AUDITOR，或员工角色
         // 是"管理层"/"财务"）导出时才包含，跟列表页 costBookkeeping/sensitive 那两类字段是同一批，
-        // 导出是整份文件给到 FULL 权限的人，不像列表页那样按行脱敏，所以统一按导出人整体权限判定
+        // 导出是整份文件给到 FULL 权限的人，不像列表页那样按行脱敏，所以统一按导出人整体权限判定。
+        //
+        // "项目毛利"/"可分配利润"/"负责人提成"/"公司利润（美金/人民币）"这几个由系统自动计算的
+        // 利润字段，isExportOnly=1（第三列写"1"）意味着它们根本不在导入模板里，importData()
+        // 整段代码也从来没有从任意列读值往 CollaborationTrackingRequest 的这几个字段赋值——
+        // 落库前 doSave() 末尾统一调用 profitCalculator.calculate() 现场重算，不管是谁在导入
+        // （财务/管理层/ADMIN），都不可能通过 Excel 导入改动这几个字段，Shawn 2026-08-21 提的
+        // "导入不会更改利润信息"这条要求本来就是这套"计算字段导出专属、从不接受外部输入"的
+        // 既有设计保证的，不需要额外加校验。
         {"汇率",                       "2", "1"},
         {"其他外部成本（人民币）",     "2", "1"},
         {"外部成本备注",               "2", "1"},
@@ -118,17 +130,18 @@ public class CollaborationTrackingExcelHandler {
     }
 
     // 2026-08-17 新增"待红人下单"，插在"合同已发给红人"和"红人已下单"之间；2026-08-21 新增
-    // "待客户给草稿反馈"，插在"待草稿"和"待红人修改"之间，见 CollaborationProgress 枚举类注释
+    // "待客户给草稿反馈"，插在"待草稿"和"待红人修改"之间；同日再新增"已收到客户回款"，插在
+    // "客户已结算"和"折损"之间（真正的最终状态），见 CollaborationProgress 枚举类注释
     private static final String[] PROGRESS_LABELS = {
         "待客户出brief", "合同已发给红人", "待红人下单", "红人已下单", "拍摄指导已发给红人",
         "待草稿", "待客户给草稿反馈", "待红人修改", "待发布",
-        "已发布（未结算）", "已加入客户未结算列表", "客户已结算", "折损"
+        "已发布（未结算）", "已加入客户未结算列表", "客户已结算", "已收到客户回款", "折损"
     };
 
     /** 模板里"视频发布时间"表头的提示语（Excel 原生批注，鼠标悬停可见） */
     private static final String PUBLISH_DATE_HINT =
-        "只有当\"视频项目进度\"为\"已发布（未结算）\"、\"已加入客户未结算列表\"、\"客户已结算\"时才能填写，"
-        + "否则这一行会导入失败";
+        "只有当\"视频项目进度\"为\"已发布（未结算）\"、\"已加入客户未结算列表\"、\"客户已结算\"、"
+        + "\"已收到客户回款\"时才能填写，否则这一行会导入失败";
 
     /** 模板里两个金额列表头的提示语（Excel 原生批注，鼠标悬停可见） */
     private static final String MONEY_FIELD_HINT =
@@ -198,6 +211,7 @@ public class CollaborationTrackingExcelHandler {
             setCellStr(row, c++, t.getPublishLink(),   wrap);
             setCellStr(row, c++, t.getPublishDate() != null ? df.format(t.getPublishDate()) : "", wrap);
             setCellStr(row, c++, t.getProgress() != null ? t.getProgress().getLabel() : "", wrap);
+            setCellStr(row, c++, t.getClientPaymentReceivedDate() != null ? df.format(t.getClientPaymentReceivedDate()) : "", wrap);
             setCellStr(row, c++, t.getInfluencerPaymentProgress() != null ? t.getInfluencerPaymentProgress().getLabel() : "", wrap);
             setCellStr(row, c++, t.getVideoType() != null ? t.getVideoType().getLabel() : "", wrap);
             setCellStr(row, c++, t.getOldMaterialSourceLink() != null ? t.getOldMaterialSourceLink() : "", wrap);
@@ -697,7 +711,7 @@ public class CollaborationTrackingExcelHandler {
                 // （不再像以前那样不校验直接接受）
                 if (publishDate != null && (req.getProgress() == null || !req.getProgress().allowsPaymentProgress())) {
                     errors.add("第" + (i + 1) + "行：只有\"视频项目进度\"为\"已发布（未结算）\"、\"已加入客户未结算列表\"、"
-                            + "\"客户已结算\"时才能填写\"视频发布时间\"，请核对");
+                            + "\"客户已结算\"、\"已收到客户回款\"时才能填写\"视频发布时间\"，请核对");
                     continue;
                 }
                 // 2026-07 新增：反过来，视频项目进度是这三个阶段之一时，也必须同时填了视频发布时间

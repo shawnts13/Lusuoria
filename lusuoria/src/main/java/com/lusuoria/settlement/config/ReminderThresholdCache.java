@@ -43,8 +43,12 @@ public class ReminderThresholdCache {
             {PM_EXECUTOR_PROGRESS_STALL, "TIER_MODERATE_MAX_DAYS",
                     "中度提醒边界（超出阈值多少天内算中度/橙色，超过则为重度/红色）", 7, "天", 5},
 
+            // 2026-08-21：这一档的覆盖范围从"流转到客户已结算为止"扩大到"流转到已收到客户回款
+            // 为止"（客户已结算不再是终态），描述文案同步更新——只改 paramLabel，不改
+            // paramValue，沿用原有的14工作日，见 CollaborationProgress 类注释、
+            // ProgressReminderService.isFinanceStallCandidate()
             {FINANCE_PROGRESS_STALL, "STALL_THRESHOLD",
-                    "「已发布(未结算)/已加入客户未结算列表」流转到「客户已结算」的滞留阈值", 14, "工作日", 1},
+                    "「已发布(未结算)/已加入客户未结算列表/客户已结算」流转到「已收到客户回款」的滞留阈值", 14, "工作日", 1},
             {FINANCE_PROGRESS_STALL, "TIER_OVERDUE_MAX_DAYS", "0天或已超期边界（红色，到了/超过阈值多少天内算这一档）", 0, "天", 2},
             {FINANCE_PROGRESS_STALL, "TIER_NEAR_MAX_DAYS", "临近提醒边界（距离阈值还剩多少天内算临近/橙色）", 3, "天", 3},
             {FINANCE_PROGRESS_STALL, "TIER_WINDOW_MAX_DAYS", "预告提醒边界（距离阈值还剩多少天内开始提醒/绿色）", 7, "天", 4},

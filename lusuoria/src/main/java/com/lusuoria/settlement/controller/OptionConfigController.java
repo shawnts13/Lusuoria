@@ -44,14 +44,15 @@ public class OptionConfigController {
 
         // 红人合作跟踪 - 视频项目进度（原名"进度"）。2026-08-17 新增"待红人下单"，插在
         // "合同已发给红人"和"红人已下单"之间；2026-08-21 新增"待客户给草稿反馈"，插在"待草稿"
-        // 和"待红人修改"之间，见 CollaborationProgress 枚举类注释
+        // 和"待红人修改"之间；同日再新增"已收到客户回款"，插在"客户已结算"和"折损"之间（真正的
+        // 最终状态），见 CollaborationProgress 枚举类注释
         result.put("collab_progress", toOptions(
                 new String[]{"PENDING_CLIENT_BRIEF", "CONTRACT_SENT", "PENDING_INFLUENCER_ORDER", "INFLUENCER_ORDERED", "SHOOTING_GUIDE_SENT",
                              "PENDING_DRAFT", "PENDING_CLIENT_DRAFT_FEEDBACK", "PENDING_REVISION", "PENDING_PUBLISH",
-                             "PUBLISHED_UNSETTLED", "JOINED_CLIENT_UNSETTLED_LIST", "SETTLED", "DELAYED"},
+                             "PUBLISHED_UNSETTLED", "JOINED_CLIENT_UNSETTLED_LIST", "SETTLED", "PAYMENT_RECEIVED", "DELAYED"},
                 new String[]{"待客户出brief", "合同已发给红人", "待红人下单", "红人已下单", "拍摄指导已发给红人",
                              "待草稿", "待客户给草稿反馈", "待红人修改", "待发布",
-                             "已发布（未结算）", "已加入客户未结算列表", "客户已结算", "折损"}));
+                             "已发布（未结算）", "已加入客户未结算列表", "客户已结算", "已收到客户回款", "折损"}));
 
         // 红人合作跟踪 - 红人结款进度。注意："已纳入红人结款批次"/"已纳入红人结款批次（缺少invoice）"
         // 这两个值只用于展示（列表页标签、状态流转弹窗禁用态回显），不应该出现在任何可选的下拉框里——

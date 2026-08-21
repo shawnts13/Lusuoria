@@ -66,6 +66,13 @@ public class CollaborationTrackingRequest {
 
     private String clientPaymentBatch;
 
+    /**
+     * 收到回款日期（2026-08-21 新增）：progress 是"已收到客户回款"时必填，写权限/校验规则
+     * 跟 clientOrderId/clientPaymentBatch 一样走 doSave()（编辑表单）/updateStatus()（状态流转）
+     * 共用的必填校验，见 CollaborationTrackingService。
+     */
+    private Date clientPaymentReceivedDate;
+
     /** 项目负责人（员工 id） */
     private Long projectManagerId;
 

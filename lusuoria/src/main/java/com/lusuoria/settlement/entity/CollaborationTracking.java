@@ -188,6 +188,16 @@ public class CollaborationTracking extends BaseEntity {
     @Column(name = "client_payment_batch")
     private String clientPaymentBatch;
 
+    /**
+     * 收到回款日期（2026-08-21 新增）。视频项目进度流转到"已收到客户回款"时必填，用法跟
+     * publishDate 一样是日期选择控件、默认当天、可人工修改——但这里不像 publishDate 那样有
+     * "自动补今天"的静默兜底，必须由操作人（状态流转弹窗/批量标记弹窗）显式提交，
+     * 校验见 CollaborationTrackingService.updateStatus()/markPaymentReceived()。
+     */
+    @Temporal(TemporalType.DATE)
+    @Column(name = "client_payment_received_date")
+    private Date clientPaymentReceivedDate;
+
     /** 项目负责人（员工，生成项目订单时自动带过去） */
     @Column(name = "project_manager_id", insertable = false, updatable = false)
     private Long projectManagerId;

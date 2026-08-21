@@ -98,7 +98,11 @@ public class DashboardStatsService {
         for (CollaborationTracking o : orders) {
             Computed c = compute(o);
             totalClientPrice    = totalClientPrice.add(c.clientPrice);
-            if (o.getProgress() == CollaborationProgress.SETTLED) {
+            // 2026-08-21："客户已回款总金额"卡片的口径从"客户已结算"（SETTLED）改成"已收到客户
+            // 回款"（PAYMENT_RECEIVED）——SETTLED 不再是终态，只代表"客户那边结算完成，钱还没
+            // 真正到账"，只有流转到 PAYMENT_RECEIVED 才代表公司真的收到了这笔钱，见
+            // CollaborationProgress 类注释
+            if (o.getProgress() == CollaborationProgress.PAYMENT_RECEIVED) {
                 totalClientSettledAmount = totalClientSettledAmount.add(c.clientPrice);
             }
             totalInfluencerCost = totalInfluencerCost.add(c.influencerCost);
@@ -190,7 +194,11 @@ public class DashboardStatsService {
         for (CollaborationTracking o : orders) {
             Computed c = compute(o);
             totalClientPrice    = totalClientPrice.add(c.clientPrice);
-            if (o.getProgress() == CollaborationProgress.SETTLED) {
+            // 2026-08-21："客户已回款总金额"卡片的口径从"客户已结算"（SETTLED）改成"已收到客户
+            // 回款"（PAYMENT_RECEIVED）——SETTLED 不再是终态，只代表"客户那边结算完成，钱还没
+            // 真正到账"，只有流转到 PAYMENT_RECEIVED 才代表公司真的收到了这笔钱，见
+            // CollaborationProgress 类注释
+            if (o.getProgress() == CollaborationProgress.PAYMENT_RECEIVED) {
                 totalClientSettledAmount = totalClientSettledAmount.add(c.clientPrice);
             }
             totalInfluencerCost = totalInfluencerCost.add(c.influencerCost);
@@ -661,7 +669,7 @@ public class DashboardStatsService {
         return drilldownAmountByDimension(startMonth, endMonth, startDate, endDate, currency, dimension, c -> c.clientPrice, false);
     }
 
-    // ============ 下钻：客户已回款总金额（同"客户合作价格"维度，只是多过滤 进度=客户已结算） ============
+    // ============ 下钻：客户已回款总金额（同"客户合作价格"维度，只是多过滤 进度=已收到客户回款，2026-08-21 起） ============
 
     public DashboardDrilldownResponse drilldownClientSettledAmount(String startMonth, String endMonth,
                                                                      String startDate, String endDate,
@@ -1116,10 +1124,11 @@ public class DashboardStatsService {
         // fetchOrdersForPeriod：按月份区间或日期区间二选一取记录（本类下方，两种查询方式的
         // 统一入口）；excludeDamaged：过滤掉"折损"记录，下钻的所有金额统计都不计入折损
         List<CollaborationTracking> orders = excludeDamaged(fetchOrdersForPeriod(startMonth, endMonth, startDate, endDate));
-        // settledOnly=true 供"客户已回款总金额"下钻用：只统计视频项目进度=客户已结算的记录，
-        // 维度/口径其余部分完全跟"客户合作价格"下钻一致（复用同一份分组逻辑）
+        // settledOnly=true 供"客户已回款总金额"下钻用：只统计视频项目进度=已收到客户回款的记录
+        // （2026-08-21 起，原来是"客户已结算"，见 CollaborationProgress 类注释），维度/口径其余
+        // 部分完全跟"客户合作价格"下钻一致（复用同一份分组逻辑）
         if (settledOnly) {
-            orders = orders.stream().filter(o -> o.getProgress() == CollaborationProgress.SETTLED)
+            orders = orders.stream().filter(o -> o.getProgress() == CollaborationProgress.PAYMENT_RECEIVED)
                     .collect(Collectors.toList());
         }
         boolean toRmb = "RMB".equalsIgnoreCase(currency);

@@ -154,9 +154,9 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:accountName IS NULL OR c.influencer.accountName LIKE %:accountName%) " +
            "AND (:influencerId IS NULL OR c.influencerId = :influencerId) " +
            "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
-           "AND (:progress IS NULL OR c.progress = :progress) " +
-           "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress = :influencerPaymentProgress) " +
-           "AND (:videoType IS NULL OR c.videoType = :videoType) " +
+           "AND (:progress IS NULL OR c.progress IN :progress) " +
+           "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress IN :influencerPaymentProgress) " +
+           "AND (:videoType IS NULL OR c.videoType IN :videoType) " +
            "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth) " +
            "AND (:videoDateStart IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYY-MM-DD') >= :videoDateStart) " +
            "AND (:videoDateEnd IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYY-MM-DD') <= :videoDateEnd) " +
@@ -164,14 +164,15 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:internalRequirementNo IS NULL OR c.internalRequirementNo LIKE %:internalRequirementNo%) " +
            "AND (:clientOrderId IS NULL OR c.clientOrderId LIKE %:clientOrderId%) " +
            "AND (:clientPaymentBatch IS NULL OR c.clientPaymentBatch LIKE %:clientPaymentBatch%) " +
-           "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId) " +
+           "AND (:projectManagerId IS NULL OR c.projectManagerId IN :projectManagerId) " +
            "AND (:onlyMyResponsibility = false " +
            "     OR (:priorityEmployeeId IS NOT NULL AND (c.projectManagerId = :priorityEmployeeId OR c.executorId = :priorityEmployeeId)) " +
            "     OR (:prioritizeFinance = true AND c.progress IN (" +
            "           com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
-           "           com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST))) " +
+           "           com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST, " +
+           "           com.lusuoria.settlement.enums.CollaborationProgress.SETTLED))) " +
            "AND (:onlyIncomplete = false OR c.progress IS NULL OR c.progress NOT IN (" +
-           "     com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+           "     com.lusuoria.settlement.enums.CollaborationProgress.PAYMENT_RECEIVED, " +
            "     com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)) " +
            "AND (:onlyUnpublished = false OR ((c.publishLink IS NULL OR c.publishLink = '') " +
            "     AND (c.progress IS NULL OR c.progress <> com.lusuoria.settlement.enums.CollaborationProgress.DELAYED))) " +
@@ -183,9 +184,9 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("accountName") String accountName,
             @Param("influencerId") Long influencerId,
             @Param("platform") String platform,
-            @Param("progress") CollaborationProgress progress,
-            @Param("influencerPaymentProgress") InfluencerPaymentProgress influencerPaymentProgress,
-            @Param("videoType") VideoType videoType,
+            @Param("progress") List<CollaborationProgress> progress,
+            @Param("influencerPaymentProgress") List<InfluencerPaymentProgress> influencerPaymentProgress,
+            @Param("videoType") List<VideoType> videoType,
             @Param("videoMonth") String videoMonth,
             @Param("videoDateStart") String videoDateStart,
             @Param("videoDateEnd") String videoDateEnd,
@@ -193,7 +194,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("internalRequirementNo") String internalRequirementNo,
             @Param("clientOrderId") String clientOrderId,
             @Param("clientPaymentBatch") String clientPaymentBatch,
-            @Param("projectManagerId") Long projectManagerId,
+            @Param("projectManagerId") List<Long> projectManagerId,
             @Param("priorityEmployeeId") Long priorityEmployeeId,
             @Param("prioritizeFinance") Boolean prioritizeFinance,
             @Param("onlyMyResponsibility") Boolean onlyMyResponsibility,
@@ -224,9 +225,9 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:accountName IS NULL OR c.influencer.accountName LIKE %:accountName%) " +
            "AND (:influencerId IS NULL OR c.influencerId = :influencerId) " +
            "AND (:platform IS NULL OR c.platform LIKE %:platform%) " +
-           "AND (:progress IS NULL OR c.progress = :progress) " +
-           "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress = :influencerPaymentProgress) " +
-           "AND (:videoType IS NULL OR c.videoType = :videoType) " +
+           "AND (:progress IS NULL OR c.progress IN :progress) " +
+           "AND (:influencerPaymentProgress IS NULL OR c.influencerPaymentProgress IN :influencerPaymentProgress) " +
+           "AND (:videoType IS NULL OR c.videoType IN :videoType) " +
            "AND (:videoMonth IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYYMM') = :videoMonth) " +
            "AND (:videoDateStart IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYY-MM-DD') >= :videoDateStart) " +
            "AND (:videoDateEnd IS NULL OR FUNCTION('to_char', c.publishDate, 'YYYY-MM-DD') <= :videoDateEnd) " +
@@ -234,14 +235,15 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "AND (:internalRequirementNo IS NULL OR c.internalRequirementNo LIKE %:internalRequirementNo%) " +
            "AND (:clientOrderId IS NULL OR c.clientOrderId LIKE %:clientOrderId%) " +
            "AND (:clientPaymentBatch IS NULL OR c.clientPaymentBatch LIKE %:clientPaymentBatch%) " +
-           "AND (:projectManagerId IS NULL OR c.projectManagerId = :projectManagerId) " +
+           "AND (:projectManagerId IS NULL OR c.projectManagerId IN :projectManagerId) " +
            "AND (:onlyMyResponsibility = false " +
            "     OR (:priorityEmployeeId IS NOT NULL AND (c.projectManagerId = :priorityEmployeeId OR c.executorId = :priorityEmployeeId)) " +
            "     OR (:prioritizeFinance = true AND c.progress IN (" +
            "           com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
-           "           com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST))) " +
+           "           com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST, " +
+           "           com.lusuoria.settlement.enums.CollaborationProgress.SETTLED))) " +
            "AND (:onlyIncomplete = false OR c.progress IS NULL OR c.progress NOT IN (" +
-           "     com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+           "     com.lusuoria.settlement.enums.CollaborationProgress.PAYMENT_RECEIVED, " +
            "     com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)) " +
            "AND (:onlyUnpublished = false OR ((c.publishLink IS NULL OR c.publishLink = '') " +
            "     AND (c.progress IS NULL OR c.progress <> com.lusuoria.settlement.enums.CollaborationProgress.DELAYED))) " +
@@ -253,9 +255,9 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("accountName") String accountName,
             @Param("influencerId") Long influencerId,
             @Param("platform") String platform,
-            @Param("progress") CollaborationProgress progress,
-            @Param("influencerPaymentProgress") InfluencerPaymentProgress influencerPaymentProgress,
-            @Param("videoType") VideoType videoType,
+            @Param("progress") List<CollaborationProgress> progress,
+            @Param("influencerPaymentProgress") List<InfluencerPaymentProgress> influencerPaymentProgress,
+            @Param("videoType") List<VideoType> videoType,
             @Param("videoMonth") String videoMonth,
             @Param("videoDateStart") String videoDateStart,
             @Param("videoDateEnd") String videoDateEnd,
@@ -263,7 +265,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
             @Param("internalRequirementNo") String internalRequirementNo,
             @Param("clientOrderId") String clientOrderId,
             @Param("clientPaymentBatch") String clientPaymentBatch,
-            @Param("projectManagerId") Long projectManagerId,
+            @Param("projectManagerId") List<Long> projectManagerId,
             @Param("priorityEmployeeId") Long priorityEmployeeId,
             @Param("prioritizeFinance") Boolean prioritizeFinance,
             @Param("onlyMyResponsibility") Boolean onlyMyResponsibility,
@@ -281,44 +283,51 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
     List<CollaborationTracking> findByIsDeletedFalse();
 
     /**
-     * 红人管理"合作中项目"（进度不是"客户已结算"也不是"折损"）+ "已完结项目"（进度="客户已结算"）
-     * 各自数量，按红人 id 分组。2026-07 起合并成一条 SQL（之前是两条独立的 COUNT 查询，各自
-     * 扫一遍 CollaborationTracking 表），用 SUM(CASE WHEN ... THEN 1 ELSE 0 END) 一次算出两个
-     * 口径的计数，减少一半的数据库往返——这个查询会被红人管理列表页的批量计数、以及默认排序
-     * （"合作中项目有值的排最前"）复用，后者是每次翻页/筛选都会跑一次的高频路径，值得省这一趟。
-     * 返回：[influencerId, activeCount, completedCount]，每个数字类型统一按 Number 处理再转
-     * long——不同 Hibernate 版本/方言对 SUM(CASE WHEN...) 这种聚合表达式返回的具体包装类型
-     * （Long/BigInteger）不完全一致，直接强转 Long 有把握不住的风险。
+     * 红人管理"合作中项目"（进度不是"已收到客户回款"也不是"折损"）+ "已完结项目"（进度="已收到
+     * 客户回款"）各自数量，按红人 id 分组。2026-07 起合并成一条 SQL（之前是两条独立的 COUNT
+     * 查询，各自扫一遍 CollaborationTracking 表），用 SUM(CASE WHEN ... THEN 1 ELSE 0 END)
+     * 一次算出两个口径的计数，减少一半的数据库往返——这个查询会被红人管理列表页的批量计数、
+     * 以及默认排序（"合作中项目有值的排最前"）复用，后者是每次翻页/筛选都会跑一次的高频路径，
+     * 值得省这一趟。返回：[influencerId, activeCount, completedCount]，每个数字类型统一按
+     * Number 处理再转 long——不同 Hibernate 版本/方言对 SUM(CASE WHEN...) 这种聚合表达式
+     * 返回的具体包装类型（Long/BigInteger）不完全一致，直接强转 Long 有把握不住的风险。
+     *
+     * 2026-08-21："已完结"的判定标准从"客户已结算"（SETTLED）改成"已收到客户回款"
+     * （PAYMENT_RECEIVED）——SETTLED 不再是终态，改成代表"客户结算完成、钱还没真正到账"，
+     * 处于 SETTLED 的记录现在算进"合作中项目"（Shawn 明确要求：口径统一改认 PAYMENT_RECEIVED
+     * 才是"已完成"，SETTLED 不再算，其他把 SETTLED 当终态判断的地方同理，见
+     * CollaborationProgress 类注释）。
      */
     @Query("SELECT c.influencerId, " +
            "SUM(CASE WHEN c.progress IS NULL OR c.progress NOT IN (" +
-           "  com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+           "  com.lusuoria.settlement.enums.CollaborationProgress.PAYMENT_RECEIVED, " +
            "  com.lusuoria.settlement.enums.CollaborationProgress.DELAYED) THEN 1L ELSE 0L END), " +
-           "SUM(CASE WHEN c.progress = com.lusuoria.settlement.enums.CollaborationProgress.SETTLED THEN 1L ELSE 0L END) " +
+           "SUM(CASE WHEN c.progress = com.lusuoria.settlement.enums.CollaborationProgress.PAYMENT_RECEIVED THEN 1L ELSE 0L END) " +
            "FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false AND c.influencerId IN :influencerIds " +
            "GROUP BY c.influencerId")
     List<Object[]> countActiveAndCompletedByInfluencerIds(@Param("influencerIds") List<Long> influencerIds);
 
     /**
-     * 红人管理"合作中项目/已完结项目"下钻弹窗用：某个红人 + 类别（completed=true 只看"客户
-     * 已结算"，completed=false 看"不是客户已结算也不是折损"的进行中记录）分页查询。
+     * 红人管理"合作中项目/已完结项目"下钻弹窗用：某个红人 + 类别（completed=true 只看"已收到
+     * 客户回款"，completed=false 看"不是已收到客户回款也不是折损"的进行中记录）分页查询。
      * EntityGraph 预先带上展示需要的关联，避免弹窗表格逐行触发懒加载 N+1。
      *
      * 2026-07 新增几个可选筛选（都是"传了就筛，不传不影响"，可以同时生效）：brandId/teamId/
      * platform/videoType/projectManagerId 两个类别通用；progress 主要给"合作中项目"用
-     * （"已完结项目"本身已经锁定 progress=已结算，这个筛选传了也不会报错，只是没什么实际
-     * 意义，前端只在"合作中项目"弹窗展示这一项）；videoMonth（发布月份）主要给"已完结
+     * （"已完结项目"本身已经锁定 progress=已收到客户回款，这个筛选传了也不会报错，只是没什么
+     * 实际意义，前端只在"合作中项目"弹窗展示这一项）；videoMonth（发布月份）主要给"已完结
      * 项目"用。videoMonth 用 to_char 转字符串比较，原因跟 CollaborationTrackingRepository.
      * findByFilters 的 videoMonth 注释一致（Date 类型参数在这类动态筛选查询里在 Supabase 连接池
      * 下会报"could not determine data type of parameter"）。influencerPaymentProgress 这个筛选
      * 2026-07 加上后很快又被 Shawn 要求去掉（"合作中项目"弹窗不需要），已整个删除，不要再加回来。
+     * 2026-08-21："已完结"判定口径同上，从 SETTLED 改成 PAYMENT_RECEIVED。
      */
     @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"brand", "team", "influencer", "projectManager", "executor"})
     @Query("SELECT c FROM CollaborationTracking c WHERE c.isDeleted = false AND c.influencerId = :influencerId AND (" +
-           "  (:completed = true AND c.progress = com.lusuoria.settlement.enums.CollaborationProgress.SETTLED) " +
+           "  (:completed = true AND c.progress = com.lusuoria.settlement.enums.CollaborationProgress.PAYMENT_RECEIVED) " +
            "  OR (:completed = false AND (c.progress IS NULL OR c.progress NOT IN (" +
-           "        com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+           "        com.lusuoria.settlement.enums.CollaborationProgress.PAYMENT_RECEIVED, " +
            "        com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)))) " +
            "AND (:brandId IS NULL OR c.brandId = :brandId) " +
            "AND (:teamId IS NULL OR c.teamId = :teamId) " +
@@ -348,9 +357,9 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
      */
     @Query("SELECT COUNT(c), COALESCE(SUM(c.influencerCost), 0), COALESCE(SUM(c.clientPrice), 0) " +
            "FROM CollaborationTracking c WHERE c.isDeleted = false AND c.influencerId = :influencerId AND (" +
-           "  (:completed = true AND c.progress = com.lusuoria.settlement.enums.CollaborationProgress.SETTLED) " +
+           "  (:completed = true AND c.progress = com.lusuoria.settlement.enums.CollaborationProgress.PAYMENT_RECEIVED) " +
            "  OR (:completed = false AND (c.progress IS NULL OR c.progress NOT IN (" +
-           "        com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+           "        com.lusuoria.settlement.enums.CollaborationProgress.PAYMENT_RECEIVED, " +
            "        com.lusuoria.settlement.enums.CollaborationProgress.DELAYED)))) " +
            "AND (:brandId IS NULL OR c.brandId = :brandId) " +
            "AND (:teamId IS NULL OR c.teamId = :teamId) " +
@@ -462,8 +471,11 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
 
     /**
      * 需求列表页"需求完成进度"批量计算：按 internalRequirementNo 分组统计视频项目进度属于
-     * 已发布(未结算)/已加入客户未结算列表/客户已结算/折损 这四个状态的记录数，一次查出当前页
-     * 所有需求的计数，避免逐条查库。
+     * 已发布(未结算)/已加入客户未结算列表/客户已结算/已收到客户回款/折损 这五个状态的记录数
+     * （2026-08-21 新增"已收到客户回款"），一次查出当前页所有需求的计数，避免逐条查库。
+     * 这里判断的是"视频生产/发布环节是否已经走到位"（不是"客户回款是否到账"），
+     * "已收到客户回款"是"客户已结算"之后才能到达的更靠后状态，自然也满足这个条件，
+     * 不加的话反而会漏计。
      */
     @Query("SELECT c.internalRequirementNo, COUNT(c) FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false AND c.internalRequirementNo IN :requirementNos " +
@@ -471,6 +483,7 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
            "  com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
            "  com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST, " +
            "  com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+           "  com.lusuoria.settlement.enums.CollaborationProgress.PAYMENT_RECEIVED, " +
            "  com.lusuoria.settlement.enums.CollaborationProgress.DELAYED) " +
            "GROUP BY c.internalRequirementNo")
     List<Object[]> countCompletedByRequirementNos(@Param("requirementNos") List<String> requirementNos);
@@ -490,17 +503,19 @@ public interface CollaborationTrackingRepository extends JpaRepository<Collabora
 
     /**
      * 红人结款用：按 internalRequirementNo 分组统计"实际可结款成本"——只看 已发布(未结算)/
-     * 已加入客户未结算列表/客户已结算 这三个"会真正付钱"的终态（不含折损），红人视频制作与发布
-     * 成本(influencerCost)之和。2026-08 修复：之前直接用 InfluencerRequirement.totalInfluencerCost
-     * （需求创建时按单价×数量算好的计划总成本）做阈值分档，没有排除后来被判"折损"、事实上不会
-     * 付款的条目，导致阈值/预计付款日算多了——现在改成从实际记录聚合，天然排除折损。
+     * 已加入客户未结算列表/客户已结算/已收到客户回款 这四个"会真正付钱"的终态（2026-08-21
+     * 新增"已收到客户回款"；不含折损），红人视频制作与发布成本(influencerCost)之和。2026-08
+     * 修复：之前直接用 InfluencerRequirement.totalInfluencerCost（需求创建时按单价×数量算好
+     * 的计划总成本）做阈值分档，没有排除后来被判"折损"、事实上不会付款的条目，导致阈值/预计
+     * 付款日算多了——现在改成从实际记录聚合，天然排除折损。
      */
     @Query("SELECT c.internalRequirementNo, SUM(c.influencerCost) FROM CollaborationTracking c " +
            "WHERE c.isDeleted = false AND c.internalRequirementNo IN :requirementNos " +
            "AND c.progress IN (" +
            "  com.lusuoria.settlement.enums.CollaborationProgress.PUBLISHED_UNSETTLED, " +
            "  com.lusuoria.settlement.enums.CollaborationProgress.JOINED_CLIENT_UNSETTLED_LIST, " +
-           "  com.lusuoria.settlement.enums.CollaborationProgress.SETTLED) " +
+           "  com.lusuoria.settlement.enums.CollaborationProgress.SETTLED, " +
+           "  com.lusuoria.settlement.enums.CollaborationProgress.PAYMENT_RECEIVED) " +
            "GROUP BY c.internalRequirementNo")
     List<Object[]> sumPayableCostByRequirementNos(@Param("requirementNos") List<String> requirementNos);
 

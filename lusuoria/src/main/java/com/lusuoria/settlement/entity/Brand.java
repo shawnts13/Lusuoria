@@ -40,8 +40,8 @@ public class Brand extends BaseEntity {
      *
      * 2026-08 起口径变更：需要invoice的品牌方（requiresInvoiceUpload()==true），一次结款
      * 只能对应一个"红人需求管理"里的需求（一张invoice），所以这里比较的是"单个需求实际可结款
-     * 成本"——即该需求下所有已发布(未结算)/已加入客户未结算列表/客户已结算 记录的红人视频制作
-     * 与发布成本之和，不再是单笔视频的成本，见 InfluencerPaymentService.computeCycleInfo/
+     * 成本"——即该需求下所有已发布(未结算)/已加入客户未结算列表/客户已结算/已收到客户回款
+     * （2026-08-21 新增）记录的红人视频制作与发布成本之和，不再是单笔视频的成本，见 InfluencerPaymentService.computeCycleInfo/
      * RequirementInfo.payableCost。**不是** InfluencerRequirement.totalInfluencerCost（那是
      * 需求创建时按单价×数量算好的计划总成本）——2026-08 首版曾经直接用那个字段，但发现"折损"
      * 状态的条目不会真正付款，用计划总成本会把折损部分也算进阈值，导致分档/预计付款日算多，

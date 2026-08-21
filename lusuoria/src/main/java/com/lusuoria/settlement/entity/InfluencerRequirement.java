@@ -153,7 +153,8 @@ public class InfluencerRequirement extends BaseEntity {
 
     /**
      * "需求完成进度"的分子：关联到这条需求（按 internalRequirementNo）的"红人合作跟踪"记录中，
-     * 视频项目进度属于 已发布(未结算)/已加入客户未结算列表/客户已结算/折损 这四个状态的记录数。
+     * 视频项目进度属于 已发布(未结算)/已加入客户未结算列表/客户已结算/已收到客户回款/折损
+     * 这五个状态（2026-08-21 新增"已收到客户回款"）的记录数。
      * 瞬态字段，不落库，由 Controller 在列表/详情接口里批量查出来再赋值
      * （跟 CollaborationTracking.hasPendingDeleteRequest 的批量填充方式一致）。
      */

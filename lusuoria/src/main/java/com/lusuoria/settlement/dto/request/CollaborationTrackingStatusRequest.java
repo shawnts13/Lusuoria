@@ -68,4 +68,11 @@ public class CollaborationTrackingStatusRequest {
      * 不受编辑表单那边 ADMIN-only 的限制。
      */
     private Date publishDate;
+
+    /**
+     * 收到回款日期（2026-08-21 新增）：只有当 progress 是"已收到客户回款"时才需要填写，必填，
+     * 直接覆盖更新到这条记录的 clientPaymentReceivedDate 字段。前端日期选择控件默认填当天，
+     * 允许人工改成别的日期。见 CollaborationTrackingService.updateStatus()。
+     */
+    private Date clientPaymentReceivedDate;
 }
